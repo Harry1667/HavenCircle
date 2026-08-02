@@ -21,6 +21,7 @@ fetch_news.py — 「安心圈」新聞重大事故爬蟲
     seen.json   — 已處理過的 item id（滾動上限 2000 筆），重跑不重複產出
 """
 
+import concurrent.futures
 import difflib
 import email.utils
 import fcntl
@@ -65,10 +66,13 @@ AI_PROXY_PROJECT = os.environ.get("AI_PROXY_PROJECT", "harry-HavenCircle").strip
 # 舊設定預設 10 秒、硬上限 20 秒，等於每一則都必定 DEADLINE_EXCEEDED；而只要有一則
 # 失敗，後續整輪就改走 skip_proxy 直接落到已損壞的免費 Gemini 池而熔斷——
 # 這就是新聞每輪數十則卡在「待重試」、只能靠規則判讀的真正原因。
+# 2026-08-02 規則優先＋LLM補位改造：預設值再從 30 提高到 60（硬上限也是 60）。
+# 實測改成 8 執行緒並行呼叫後，單次呼叫在並行負載下約需 25 秒，30 秒的舊預設值
+# 太緊、容易把原本會成功的請求也判定逾時而白白計入失敗率。
 try:
-    PROXY_LLM_TIMEOUT = max(3, min(60, int(os.environ.get("NEWS_PROXY_LLM_TIMEOUT", "30"))))
+    PROXY_LLM_TIMEOUT = max(3, min(60, int(os.environ.get("NEWS_PROXY_LLM_TIMEOUT", "60"))))
 except ValueError:
-    PROXY_LLM_TIMEOUT = 30
+    PROXY_LLM_TIMEOUT = 60
 # 新聞分類的 ProxyCLI 優先序；模型名稱可由 .env 覆蓋，避免新模型推出時必須
 # 更新 App 或爬蟲程式。
 #
@@ -185,6 +189,16 @@ LLM_MAX_DESCRIPTION_CHARS = 1_200
 # 只有 ProxyCLI 與免費 Gemini 都失敗、且明確打開 PAID_GEMINI_ENABLED／設定月費上限
 # 才可能落到付費層，現行正式環境兩者皆為關閉，故本次調整不影響任何費用。
 LLM_MAX_CALLS_PER_RUN = max(0, int(os.environ.get("NEWS_LLM_MAX_CALLS_PER_RUN", "120")))
+
+# 2026-08-02 規則優先＋LLM補位改造：LLM 只對「規則抽不到 county 或 district」的
+# 待補清單呼叫，且改用 concurrent.futures.ThreadPoolExecutor 並行送出，不再逐則
+# 排隊序列呼叫（序列呼叫 79 次要 1780 秒；實測 8 執行緒並行 8 個請求全部成功、
+# 總耗時約等於單次的 25 秒，是安全且有效的加速）。並行度可由環境變數覆蓋，
+# 預設 8 是實測值，調高前請先確認 ProxyCLI 端能承受對應的併發量。
+try:
+    NEWS_LLM_CONCURRENCY = max(1, int(os.environ.get("NEWS_LLM_CONCURRENCY", "8")))
+except ValueError:
+    NEWS_LLM_CONCURRENCY = 8
 
 # 只處理仍有即時價值的新聞。Oracle 最多保留 24 小時，爬蟲端先擋舊聞可避免把
 # 數百筆歷史 RSS 全送進規則與 LLM。
@@ -665,6 +679,142 @@ def district_from_text(text):
 
 
 # ---------------------------------------------------------------------------
+# 行政區抽取強化版（2026-08-02 規則優先＋LLM補位改造）
+# ---------------------------------------------------------------------------
+#
+# district_from_text() 只比對完整行政區名（「文山區」），但新聞標題常簡寫成
+# 「高雄仁武車禍」「台南新市火警」而省略「區/鄉/鎮/市」尾字，完整名比對抓不到。
+# 這裡另外建一張「去後綴索引」（仁武區→仁武）補上這個缺口；規格與理由見下方
+# 各函式的 docstring。實測行政區覆蓋率從 13/83 提升到 25/83（誤判 2 則）。
+
+_DISTRICT_SUFFIXES = ("區", "鄉", "鎮", "市")
+
+
+def _build_district_stripped_index():
+    """
+    建立「去後綴索引」：把 DISTRICT_TO_COUNTY（347 筆）行政區名尾端的
+    「區/鄉/鎮/市」拿掉當 key（仁武區→仁武、水上鄉→水上）。
+
+    兩條防呆規則，寧可少收也不要製造假地名：
+    - 去後綴後長度 < 2 的一律跳過（例如「中區」若被收進表會變成「中」，
+      這種單字 key 太容易在無關詞裡亂命中）。
+    - 去後綴後撞名的一律排除、不猜（例如「仁愛區」「仁愛鄉」都會變成「仁愛」，
+      無法判斷是哪個縣市，寧可查不到也不要猜錯）。
+    """
+    grouped = {}
+    for full, county in DISTRICT_TO_COUNTY.items():
+        stripped = full[:-1] if full[-1] in _DISTRICT_SUFFIXES else full
+        grouped.setdefault(stripped, []).append((full, county))
+    return {
+        stripped: pairs[0]
+        for stripped, pairs in grouped.items()
+        if len(stripped) >= 2 and len(pairs) == 1
+    }
+
+
+# stripped 行政區名 → (完整行政區名, 縣市)；已排除太短與撞名的 key。
+DISTRICT_STRIPPED_INDEX = _build_district_stripped_index()
+
+# 完整名＋去後綴別名合併成一張比對表（別名若剛好與某完整名字串相同，以完整名
+# 的對照為準，用 setdefault 避免覆蓋），供 district_from_text_v2 使用；
+# 依 token 長度由長到短排序，確保同一位置命中時「新竹市」優先於「新竹」
+# （長詞優先，也讓完整名優先於自己的去後綴別名）。
+DISTRICT_MATCH_TABLE = {}
+for _full, _county in DISTRICT_TO_COUNTY.items():
+    DISTRICT_MATCH_TABLE[_full] = (_full, _county)
+for _stripped, (_full, _county) in DISTRICT_STRIPPED_INDEX.items():
+    DISTRICT_MATCH_TABLE.setdefault(_stripped, (_full, _county))
+DISTRICT_MATCH_TOKENS = sorted(DISTRICT_MATCH_TABLE.keys(), key=len, reverse=True)
+
+# 去後綴別名多是兩字通名，很容易嵌在河川／山岳／道路的名字裡：
+# 實測「花蓮萬里溪堰塞湖」命中新北「萬里」而把事件釘到一百多公里外。
+# 命中後若緊接下列地物字，一律不採信——完整行政區名後面不會接這些字
+#（沒有「萬里區溪」這種地名），所以這條規則不會誤傷正常命中。
+DISTRICT_FALSE_TAIL = set("溪川江河山嶺峰湖潭埤圳港灣島嶼路街道橋隧線")
+
+
+def _county_core(county):
+    """縣市全名去掉尾字「市」或「縣」，供從文本剝除縣市核心字使用（彰化縣→彰化）"""
+    if not county:
+        return None
+    if county[-1] in ("市", "縣"):
+        return county[:-1]
+    return county
+
+
+def district_from_text_v2(text, county=None):
+    """
+    強化版行政區抽取（比 district_from_text 多三件事）：
+
+    1. 用去後綴索引（DISTRICT_STRIPPED_INDEX），讓「高雄仁武車禍」這種簡寫
+       也能命中（仁武 → 仁武區 → 高雄市）。
+    2. 若呼叫端已經知道 county（例如標題裡已掃到「彰化」→ 彰化縣），比對前
+       先把該縣市的核心字從文本剝除，再做行政區比對。理由：實測「彰化秀水
+       翁失聯」會先撞到「彰化」（彰化市的去後綴別名，在文本裡位置比「秀水」
+       更靠前）而誤判成彰化市，正確答案是後面的「秀水鄉」——縣治所在地與
+       縣市同名（彰化市/彰化縣、南投市/南投縣…）是主要誤判來源，剝除後
+       「秀水」才會浮上來。
+    3. 若已知 county，比對到的行政區必須屬於同一個 county，否則不採信、
+       整個回傳 (None, None)——寧可少填一個欄位，也不要讓地圖釘錯位置
+       （實測加了這條約束後，誤判從 10 則降到 2 則）。
+
+    取「最靠前」命中；同位置由長到短比對（DISTRICT_MATCH_TOKENS 已排序），
+    長 token 優先。抓不到、或抓到但與已知 county 衝突，一律回傳 (None, None)，
+    呼叫端要自行保留原本已知的 county，不要拿這裡的 None 去覆蓋它。
+    """
+    haystack = text or ""
+    core = _county_core(county)
+    if core:
+        haystack = haystack.replace(core, "")
+
+    best_pos, best_token = None, None
+    for token in DISTRICT_MATCH_TOKENS:
+        pos = haystack.find(token)
+        while pos != -1:
+            # 緊接地物字的命中是假的（萬里溪／大同路／信義街…），往後再找同一個
+            # token 的下一個出現位置——同一篇報導裡地名常同時以河川名與行政區名
+            # 出現，只看第一個位置會整個放棄這個 token
+            if haystack[pos + len(token): pos + len(token) + 1] in DISTRICT_FALSE_TAIL:
+                pos = haystack.find(token, pos + 1)
+                continue
+            break
+        if pos == -1:
+            continue
+        if best_pos is None or pos < best_pos:
+            best_pos, best_token = pos, token
+    if best_token is None:
+        return None, None
+
+    full_district, matched_county = DISTRICT_MATCH_TABLE[best_token]
+    if county and matched_county != county:
+        return None, None
+    return full_district, matched_county
+
+
+# ---------------------------------------------------------------------------
+# 摘要與詳述（2026-08-02 起改規則式產生，不再呼叫 AI）
+# ---------------------------------------------------------------------------
+#
+# 版權與 App Store 第三方內容審查的紅線：這支爬蟲只能把新聞當「事故發生的
+# 訊號」，不能變成新聞轉載服務。summary 直接用原標題（App 端 NewsEventProvider
+# 本來就是 summary 缺值時退回 title，這裡直接填也不影響既有行為）；detail
+# 只取新聞原文描述的前 120 字摘錄，超過就截斷加「…」，絕對不可輸出全文、
+# 也不做任何 AI 改寫／二次創作——這是規則路徑（這裡）與 LLM 路徑
+# （build_llm_prompt 已移除 summary/detail 的產出需求）共同遵守的長度上限。
+NEWS_DETAIL_EXCERPT_CHARS = 120
+
+
+def build_detail_excerpt(description):
+    """新聞原文摘錄：只取前 120 字，超過就截斷加「…」；描述為空回傳 None。"""
+    text = (description or "").strip()
+    if not text:
+        return None
+    if len(text) <= NEWS_DETAIL_EXCERPT_CHARS:
+        return text
+    return text[:NEWS_DETAIL_EXCERPT_CHARS] + "…"
+
+
+# ---------------------------------------------------------------------------
 # 第一段：規則式分類（永遠執行）
 # ---------------------------------------------------------------------------
 
@@ -704,13 +854,18 @@ def rules_classify(title, description):
 # 第二段：LLM 分類（有 AI_PROXY_TOKEN 才跑）
 # ---------------------------------------------------------------------------
 
+# 2026-08-02 規則優先＋LLM補位改造：不再要求 LLM 產出 summary/detail。
+# 原因有二：① 版權／App Store 第三方內容審查紅線——摘要與詳述改由規則式
+# 產生（原標題＋原文前 120 字摘錄，見 build_detail_excerpt），不讓 LLM 對
+# 新聞內容做二次創作或整篇改寫；② 少兩個輸出欄位能明顯縮短回應 token，
+# 對「LLM 只補地點缺口」這種講求速度的呼叫更划算。
 LLM_PROMPT_TEMPLATE = """你是災害事故新聞分類器。判斷下面這則台灣新聞是否為「正在發生或剛發生的現場事故/災害」（司法判決、起訴、政治攻防、紀念活動都不算）。
 
 標題：{title}
 描述：{description}
 
 只回覆一行 JSON，不要任何其他文字，格式：
-{{"is_incident": true或false, "county": "縣市全名（如 台中市）或null", "district": "鄉鎮市區或null", "place": "地點簡述或null", "category": "火災|交通|天災|公共安全|民生 其中之一", "confidence": 0到1的數字, "summary": "10至12個中文字的事件重點（只寫地點＋發生什麼事，如「板橋警匪追逐警破窗逮人」；不要標點、驚嘆號與媒體渲染詞；一律使用台灣繁體中文，禁止任何簡體字）", "detail": "30到60字的事件詳細說明，用中性平實的語氣重新整理（地點＋發生什麼＋目前現況或影響），不要媒體渲染詞、不要驚嘆號、不要記者名或報社名；一律使用台灣繁體中文，禁止任何簡體字", "severity": "high或medium或low 其中之一（high＝立即致命或需疏散，如大火困人、氣爆、槍擊或天災正在發生；medium＝局部危險需注意；low＝輕微、已受控或影響很小）", "is_ongoing": true或false（事件是否仍在發生或剛發生、需要人即時反應；已撲滅／已獲救／已落幕／純事後回顧或司法後續都為 false）}}"""
+{{"is_incident": true或false, "county": "縣市全名（如 台中市）或null", "district": "鄉鎮市區或null", "place": "地點簡述或null", "category": "火災|交通|天災|公共安全|民生 其中之一", "confidence": 0到1的數字, "severity": "high或medium或low 其中之一（high＝立即致命或需疏散，如大火困人、氣爆、槍擊或天災正在發生；medium＝局部危險需注意；low＝輕微、已受控或影響很小）", "is_ongoing": true或false（事件是否仍在發生或剛發生、需要人即時反應；已撲滅／已獲救／已落幕／純事後回顧或司法後續都為 false）}}"""
 
 
 class PaidGeminiUnavailable(RuntimeError):
@@ -1205,20 +1360,8 @@ def llm_classify(title, description, skip_proxy=False):
     valid_categories = {c for c, _ in INCLUDE_CATEGORIES}
     if result.get("category") not in valid_categories:
         return None, False, False, provider  # 分類不在白名單 → 不可信，退回規則
-    # summary 消毒：必須是非空字串才收，最多 12 字，並強制簡轉繁
-    summary = result.get("summary")
-    if isinstance(summary, str) and summary.strip():
-        compact_summary = re.sub(r"[\s，,。！？!?:：；;、（）()【】「」『』…—-]+", "", summary.strip())
-        result["summary"] = to_traditional(compact_summary[:12]) or None
-    else:
-        result["summary"] = None
-    # detail 消毒：保留標點（是完整句子），只去頭尾空白、截斷過長、強制簡轉繁；空則 None
-    detail = result.get("detail")
-    if isinstance(detail, str) and detail.strip():
-        result["detail"] = to_traditional(detail.strip()[:120]) or None
-    else:
-        result["detail"] = None
-    # 地點欄位同樣過簡轉繁（LLM 抽的 district/place 也可能混簡體）
+    # 地點欄位過簡轉繁（LLM 抽的 district/place 也可能混簡體）；summary/detail 已不
+    # 要求 LLM 產出（見 LLM_PROMPT_TEMPLATE 上方說明），這裡不再消毒這兩個欄位。
     for key in ("district", "place"):
         if isinstance(result.get(key), str):
             result[key] = to_traditional(result[key])
@@ -1229,6 +1372,23 @@ def llm_classify(title, description, skip_proxy=False):
     result["is_ongoing"] = ongoing is True or (isinstance(ongoing, str) and ongoing.strip().lower() == "true")
     result["_llm_provider"] = provider
     return result, False, False, provider
+
+
+def _llm_classify_safe(title, description):
+    """
+    llm_classify() 的並行呼叫包裝：main() 用 ThreadPoolExecutor 對「待補清單」
+    並行送出這個函式，任何一則丟出未預期例外都不能讓整個執行緒池掛掉、拖累
+    其他則的判讀——一律接住、記 log，轉成「本則失敗」讓呼叫端退回規則結果，
+    這正是「單則失敗就單則放棄，不要因為個別失敗就停用整輪」的體現。
+
+    llm_classify() 本身已經把 ProxyCLI／免費／付費三條路徑的已知例外都接住了，
+    這裡是最後一層防線，理論上不該真的被觸發。
+    """
+    try:
+        return llm_classify(title, description)
+    except Exception as error:  # noqa: BLE001 — 並行呼叫的最後防線，什麼例外都要接住
+        log("LLM 並行呼叫發生未預期例外（本則放棄，退回規則結果）：{}".format(error))
+        return None, False, False, None
 
 
 # ---------------------------------------------------------------------------
@@ -1345,11 +1505,12 @@ def main(feeds=None, out_dir=None):
     ) or (
         PAID_GEMINI_ENABLED and PAID_GEMINI_MONTHLY_LIMIT_USD > 0
     )
-    log("啟動：LLM 分類 {}（ProxyCLI {}／免費 Gemini {}／付費 Gemini {}）".format(
+    log("啟動：LLM 分類 {}（ProxyCLI {}／免費 Gemini {}／付費 Gemini {}，並行度 {}）".format(
         "開啟" if use_llm else "關閉，走純規則路徑",
         "已設定" if AI_PROXY_TOKEN else "未設定",
         "啟用" if FREE_GEMINI_ENABLED and FREE_GEMINI_DAILY_CALL_LIMIT > 0 else "關閉",
-        "啟用" if PAID_GEMINI_ENABLED and PAID_GEMINI_MONTHLY_LIMIT_USD > 0 else "關閉"))
+        "啟用" if PAID_GEMINI_ENABLED and PAID_GEMINI_MONTHLY_LIMIT_USD > 0 else "關閉",
+        NEWS_LLM_CONCURRENCY))
 
     seen_ids = load_seen(seen_path)
     seen_set = set(seen_ids)
@@ -1361,10 +1522,9 @@ def main(feeds=None, out_dir=None):
     skipped_seen = 0
     dropped_by_rules = 0
     dropped_by_llm = 0
-    llm_calls = 0
-    llm_retry_pending = 0
-    llm_circuit_open = False
-    prefer_free_gemini = False
+    llm_calls = 0            # 實際送出的 LLM 呼叫數（只算「規則缺地點」的待補清單）
+    llm_failed = 0           # 呼叫了、但 ProxyCLI／免費／付費三條路徑全部失敗的則數
+    llm_retry_pending = 0    # 超出單輪呼叫預算、完全沒機會呼叫、留給下一輪的則數
     stale_dropped = 0
     future_dropped = 0
     capped_dropped = 0
@@ -1374,6 +1534,22 @@ def main(feeds=None, out_dir=None):
             return
         seen_set.add(item_id)
         seen_ids.append(item_id)
+
+    def resolve_and_file(event, item_id, title, source_name):
+        """收尾共用邏輯：跨來源去重、記錄合併 log、併入 events。"""
+        dup = find_duplicate(event, events)
+        if dup is not None:
+            merge_duplicate(dup, event)
+            log("合併重複事件：「{}」({}) → 「{}」".format(
+                title[:20], source_name, dup["title"][:20]))
+        else:
+            events.append(event)
+
+    # 待補清單：規則跑完仍缺 county 或 district 的事故則，稍後統一並行呼叫 LLM
+    # 補位（改動 3）。用 list 收集、等全部 feed 掃完再一次送進執行緒池，是為了
+    # 用 ThreadPoolExecutor.map() 保證「回傳順序＝送入順序」，即使個別呼叫完成
+    # 的先後順序被網路延遲打亂，也不會把 A 則的結果錯接到 B 則上。
+    pending = []  # 每筆：{"event", "item_id", "title", "description", "source_name"}
 
     for feed in feeds:
         # 單一 feed 失敗：記 log、標 ok=false，繼續跑其他 feed
@@ -1426,16 +1602,21 @@ def main(feeds=None, out_dir=None):
                 mark_seen(item_id)
                 continue
 
-            # 規則路徑的縣市：中央社電頭優先，其次掃標題。兩者都沒中時，
-            # 退而求其次改用行政區名反查（標題常省略縣市，如「文山區惡火」）；
-            # 標題查不到再查描述——描述通常比標題完整（含記者寫的地點細節）。
+            # 規則路徑的縣市＋行政區抽取：中央社電頭優先，其次掃標題／描述的縣市
+            # token；不論縣市是否已知，都再用強化版行政區抽取（去後綴簡寫、剝除
+            # 縣市核心字、限同縣市，見 district_from_text_v2）補行政區——這是跟
+            # 舊版最大的差異：舊版只在縣市「還沒抓到」時才找行政區，等於放棄了
+            # 「縣市已知、只缺行政區」這一大塊（行政區覆蓋率 13/83 → 25/83 的
+            # 提升有一部分正是來自這裡）。
             county = county_from_cna_dateline(description) or county_from_text(title)
-            district = None
+            district, matched_county = district_from_text_v2(title, county=county)
+            if not district:
+                district, matched_county = district_from_text_v2(description, county=county)
             if not county:
-                district, county = district_from_text(title)
-                if not county:
-                    district, county = district_from_text(description)
+                county = matched_county
 
+            # 摘要／詳述改規則式產生，不再呼叫 AI（見 build_detail_excerpt 上方
+            # 的版權說明）：summary 直接用原標題；detail 只取原文前 120 字摘錄。
             event = {
                 "id": item_id,
                 "title": title,
@@ -1447,8 +1628,8 @@ def main(feeds=None, out_dir=None):
                 "place": None,
                 "category": category,
                 "confidence": 0.5,          # 規則路徑的預設信心值
-                "summary": None,            # 短摘要只有 LLM 路徑會產生；App 端 null 時退回原標題
-                "detail": None,             # 詳細描述同樣只有 LLM 路徑會產生；App 端 null 時退回其他欄位
+                "summary": title,
+                "detail": build_detail_excerpt(description),
                 "extraction": "rules",
                 "trust": "media-report",    # 媒體報導層
                 "corroboration": 1,
@@ -1456,55 +1637,95 @@ def main(feeds=None, out_dir=None):
                 "is_ongoing": False,        # 是否仍在發生需即時反應；規則路徑保守給 False
             }
 
-            # 第二段：LLM。暫時性失敗或達單輪預算時，先輸出保守規則結果但不寫 seen，
-            # 下輪繼續補地點、嚴重度與進行中狀態；避免額度恢復後仍永遠失去這則事件。
-            retry_later = False
-            if use_llm and not llm_circuit_open and llm_calls < LLM_MAX_CALLS_PER_RUN:
+            # 第二段：LLM 只補規則沒抽到的欄位（改動 3）。規則已抽到完整地點的
+            # 一律不呼叫 LLM——這正是「全用 AI」表現較差的原因（LLM 覆蓋掉更準
+            # 的規則地點）。需要補位又還在本輪呼叫預算內的，先收進待補清單，
+            # 稍後統一並行處理；預算用完的直接標記待重試，留給下一輪。
+            needs_llm = (not county) or (not district)
+            if use_llm and needs_llm and llm_calls < LLM_MAX_CALLS_PER_RUN:
                 llm_calls += 1
-                llm, retry_later, disable_for_run, transport_provider = llm_classify(
-                    title, description, skip_proxy=prefer_free_gemini
-                )
-                if transport_provider == "gemini-free":
-                    # ProxyCLI 已知在本輪失敗；不必讓每一則新聞再等一次它的 timeout。
-                    prefer_free_gemini = True
-                if disable_for_run:
-                    llm_circuit_open = True
-                if llm is not None:
-                    if not llm.get("is_incident"):
-                        dropped_by_llm += 1
-                        mark_seen(item_id)
-                        continue
-                    event.update({
-                        "county": llm.get("county") or county,
-                        "district": llm.get("district") or None,
-                        "place": llm.get("place") or None,
-                        "category": llm["category"],
-                        "confidence": llm["confidence"],
-                        "summary": llm.get("summary"),
-                        "detail": llm.get("detail"),
-                        "extraction": {
-                            "gemini-free": "llm-gemini-free",
-                            "gemini-paid": "llm-gemini-paid",
-                        }.get(llm.get("_llm_provider"), "llm"),
-                        "severity": llm.get("severity", "low"),
-                        "is_ongoing": bool(llm.get("is_ongoing")),
-                    })
-            elif use_llm:
-                retry_later = True
+                pending.append({
+                    "event": event,
+                    "item_id": item_id,
+                    "title": title,
+                    "description": description,
+                    "source_name": feed["name"],
+                })
+                continue  # 是否 mark_seen／去重都留到並行階段結束後統一處理
 
-            if retry_later:
+            if use_llm and needs_llm:
+                # 超出本輪呼叫預算：完全沒機會呼叫，保留規則結果、不寫 seen，
+                # 讓下一輪重試（跟「呼叫了但失敗」不同，那些已經定案不必重試）。
                 llm_retry_pending += 1
             else:
                 mark_seen(item_id)
 
-            # 跨來源去重：同一事件合併、corroboration +1
-            dup = find_duplicate(event, events)
-            if dup is not None:
-                merge_duplicate(dup, event)
-                log("合併重複事件：「{}」({}) → 「{}」".format(
-                    title[:20], feed["name"], dup["title"][:20]))
+            resolve_and_file(event, item_id, title, feed["name"])
+
+    # 並行補位：對待補清單統一用 ThreadPoolExecutor 並行呼叫 LLM。並行區塊只
+    # 呼叫純函式 _llm_classify_safe（內部呼叫的用量帳本已用 fcntl.flock 保護），
+    # 不觸碰 events／seen_set／各計數器等共享狀態；等 executor.map() 收集完全部
+    # 結果（保證順序＝送入順序）才回到主執行緒依序處理，天生沒有 race condition，
+    # 不需要額外加鎖。
+    if pending:
+        log("待補清單 {} 則，並行度 {}".format(len(pending), NEWS_LLM_CONCURRENCY))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=NEWS_LLM_CONCURRENCY) as executor:
+            results = list(executor.map(
+                lambda task: _llm_classify_safe(task["title"], task["description"]),
+                pending,
+            ))
+
+        for task, (llm, _retry_later, _disable_for_run, _transport_provider) in zip(pending, results):
+            event = task["event"]
+            item_id = task["item_id"]
+            title = task["title"]
+
+            if llm is None:
+                # 熔斷邏輯改造（改動 3）：單則失敗就單則放棄，保留規則結果即可，
+                # 不要因為個別失敗就停用整輪——舊邏輯是任一則失敗就整輪停用 LLM，
+                # 在實測 43% 的失敗率下等於每輪必熔斷，這正是新聞長期卡在「待
+                # 重試」、只能靠規則判讀的根本原因。
+                llm_failed += 1
+                mark_seen(item_id)
+            elif not llm.get("is_incident"):
+                # 改動 4：只有「因缺地點而呼叫 LLM」的則才會走到這個過濾——
+                # 規則地點已完整、沒呼叫 LLM 的則不受影響，維持規則判定。
+                dropped_by_llm += 1
+                mark_seen(item_id)
+                continue
             else:
-                events.append(event)
+                # 只補規則沒抽到的欄位；規則已抽到的以規則為準，不讓 LLM
+                # 覆蓋掉更準的規則地點（county/district 皆是，理由同上）。
+                merged_county = event["county"] or llm.get("county")
+                merged_district = event["district"] or llm.get("district")
+                # 但兩邊各出一半時可能湊出不存在的組合：規則對裸寫的「嘉義」
+                # 一律預設嘉義市，LLM 卻補上屬於嘉義縣的水上鄉，併起來就成了
+                # 「嘉義市水上鄉」，地圖會釘到錯的地方。行政區比縣市 specific，
+                # 衝突時以行政區反推縣市為準。
+                if merged_district and merged_county:
+                    owner = DISTRICT_TO_COUNTY.get(merged_district)
+                    if owner and owner != merged_county:
+                        merged_county = owner
+                event.update({
+                    "county": merged_county,
+                    "district": merged_district,
+                    "place": llm.get("place") or None,
+                    "category": llm["category"],
+                    "confidence": llm["confidence"],
+                    "extraction": {
+                        "gemini-free": "llm-gemini-free",
+                        "gemini-paid": "llm-gemini-paid",
+                    }.get(llm.get("_llm_provider"), "llm"),
+                    "severity": llm.get("severity", "low"),
+                    "is_ongoing": bool(llm.get("is_ongoing")),
+                })
+                mark_seen(item_id)
+
+            resolve_and_file(event, item_id, title, task["source_name"])
+
+    # 是否「本輪 LLM 大規模失效」的健康指標：待補清單裡確實呼叫過、且全部失敗
+    # 才算——單則失敗已經退回規則結果、不影響其他則，不算真正的降級。
+    llm_circuit_open = llm_calls > 0 and llm_failed == llm_calls
 
     # 輸出 latest.json
     output = {
@@ -1523,6 +1744,11 @@ def main(feeds=None, out_dir=None):
             "llmEnabled": use_llm,
             "llmCalls": llm_calls,
             "llmMaxCallsPerRun": LLM_MAX_CALLS_PER_RUN,
+            "llmConcurrency": NEWS_LLM_CONCURRENCY,
+            "llmFailed": llm_failed,
+            # 欄位名稱沿用舊版，供 App 端 AlertSourceHealthService 既有的健康
+            # 面板判斷式繼續讀取；語意已從「整輪停用」改成「本輪 LLM 大規模
+            # 失效」（見上方 llm_circuit_open 的計算方式）。
             "llmCircuitOpen": llm_circuit_open,
             "pendingLLMRetry": llm_retry_pending,
             "freeGemini": free_gemini_status(),
@@ -1535,9 +1761,9 @@ def main(feeds=None, out_dir=None):
     save_seen(seen_path, seen_ids)
 
     log("完成：原始 {}／近期 {} 則（略過已見 {}）→ 事故 {} 則｜規則排除 {}｜"
-        "LLM 排除 {}｜待重試 {}".format(
+        "LLM 呼叫 {}（失敗 {}）｜LLM 排除 {}｜待重試 {}".format(
             total_fetched, total_eligible, skipped_seen, len(events), dropped_by_rules,
-            dropped_by_llm, llm_retry_pending))
+            llm_calls, llm_failed, dropped_by_llm, llm_retry_pending))
     log("輸出：{}".format(latest_path))
 
     push_to_oracle(output, out_dir)
