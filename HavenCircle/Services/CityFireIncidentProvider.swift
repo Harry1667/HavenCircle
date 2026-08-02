@@ -41,8 +41,21 @@ struct CityFireIncidentProvider: EventProvider {
             let remaining = expiresAt.timeIntervalSinceNow
             guard remaining > 0 else { return nil }
 
-            // 沒有縣市/行政區就無法定位到地圖上，直接略過，不硬塞一個錯誤座標
-            guard let coordinate = NewsEventProvider.locate(county: event.county, district: event.district) else {
+            // 定位優先序：來源自帶的實際座標 > 行政區中心點推定。
+            // 新北市 e點通會給事發點經緯度，精度遠高於「整個行政區的中心點」——
+            // 生活圈交集判斷吃的就是這個距離，用 3 公里的推定值會讓隔壁區的火災
+            // 也落進 1 公里的警戒圈，反之亦然。有實測座標時就別退而求其次。
+            // 沒有縣市/行政區又沒有座標則無法定位，直接略過，不硬塞一個錯誤位置。
+            let exactCoordinate: (latitude: Double, longitude: Double)? = {
+                guard let lat = event.latitude, let lon = event.longitude else { return nil }
+                // 座標為 0 視同缺值（部分政府來源用 0 表示「沒有這筆資料」而非赤道外海）
+                guard lat != 0, lon != 0 else { return nil }
+                return (lat, lon)
+            }()
+            guard let coordinate = exactCoordinate
+                ?? NewsEventProvider.locate(county: event.county, district: event.district)
+                    .map({ (latitude: $0.latitude, longitude: $0.longitude) })
+            else {
                 return nil
             }
 
@@ -52,9 +65,10 @@ struct CityFireIncidentProvider: EventProvider {
                 approximateLocation: event.location.isEmpty ? "\(event.county)\(event.district)" : event.location,
                 latitude: coordinate.latitude,
                 longitude: coordinate.longitude,
-                // 只有鄉鎮市區精度（各站派遣系統不吐街道座標），比照 NFAIncidentProvider／
-                // NewsEventProvider 的「有行政區用 3 公里、只有縣市用 15 公里」慣例
-                precisionMeters: event.district.isEmpty ? 15_000 : 3_000,
+                // 誠實標示不確定度：來源給了事發點座標就用 300 公尺（門牌級誤差），
+                // 否則只有鄉鎮市區精度，比照 NFAIncidentProvider／NewsEventProvider
+                // 的「有行政區用 3 公里、只有縣市用 15 公里」慣例
+                precisionMeters: exactCoordinate != nil ? 300 : (event.district.isEmpty ? 15_000 : 3_000),
                 sourceName: event.sourceName,
                 sourceURL: Self.sourceURL(for: event.county),
                 isOfficial: true, // 各縣市消防局自己的派遣紀錄，官方第一手來源，可推播
@@ -164,4 +178,8 @@ private struct CityFireRecord: Decodable {
     let status: String
     let sourceId: String
     let sourceName: String
+    /// 事發點的實際經緯度。目前只有新北市 e點通會提供（其餘縣市的派遣系統
+    /// 不吐街道座標），故為選填；缺席時退回行政區中心點推定。
+    let latitude: Double?
+    let longitude: Double?
 }
