@@ -51,20 +51,40 @@ USER_AGENT = (
 # 抓取逾時（秒）
 FETCH_TIMEOUT = 20
 
-# LLM（ProxyCLI）設定：token 由環境變數提供，沒有就走純規則路徑
-AI_PROXY_URL = "http://cli.twloop.com:8080/api/chat"
+# LLM（ProxyCLI）設定：token 由環境變數提供，沒有就走純規則路徑。
+# 2026-08-02：舊位址 http://cli.twloop.com:8080/api/chat 已停止服務（實測連線
+# 逾時、curl 回 HTTP 000），導致每輪數十則新聞卡在「待重試」、只能靠規則式判讀，
+# 抽不出縣市的一律被 App 端丟棄——這是「事件看不到」的隱形殺手之一。
+# 改指向現行的 https://clip.twloop.com/api/chat，並開放環境變數覆蓋，
+# 日後服務再搬遷只要改 .env，不必動程式碼。
+AI_PROXY_URL = os.environ.get("AI_PROXY_URL", "https://clip.twloop.com/api/chat").strip()
 AI_PROXY_TOKEN = os.environ.get("AI_PROXY_TOKEN", "").strip()
 AI_PROXY_PROJECT = os.environ.get("AI_PROXY_PROJECT", "harry-HavenCircle").strip()
+# 2026-08-02 實測：真實分類 prompt 約 703 字，claude-haiku-4-5 要 14.2 秒、
+# gpt-4o-mini 要 23.8 秒才回得完（短 prompt 只要 0.3 秒，所以用短句測會誤判成正常）。
+# 舊設定預設 10 秒、硬上限 20 秒，等於每一則都必定 DEADLINE_EXCEEDED；而只要有一則
+# 失敗，後續整輪就改走 skip_proxy 直接落到已損壞的免費 Gemini 池而熔斷——
+# 這就是新聞每輪數十則卡在「待重試」、只能靠規則判讀的真正原因。
 try:
-    PROXY_LLM_TIMEOUT = max(3, min(20, int(os.environ.get("NEWS_PROXY_LLM_TIMEOUT", "10"))))
+    PROXY_LLM_TIMEOUT = max(3, min(60, int(os.environ.get("NEWS_PROXY_LLM_TIMEOUT", "30"))))
 except ValueError:
-    PROXY_LLM_TIMEOUT = 10
-# 新聞分類的 ProxyCLI 優先序固定為 OpenAI → Gemini → Claude；模型名稱可由 .env
-# 覆蓋，避免新模型推出時必須更新 App 或爬蟲程式。
+    PROXY_LLM_TIMEOUT = 30
+# 新聞分類的 ProxyCLI 優先序；模型名稱可由 .env 覆蓋，避免新模型推出時必須
+# 更新 App 或爬蟲程式。
+#
+# 2026-08-02 實測（從爬蟲機直接打 clip.twloop.com，同一句 prompt）：
+#   claude-haiku-4-5  → 0.2〜2.4 秒
+#   gpt-4o-mini       → 22.7 秒
+#   gemini-2.5-flash  → 21.4 秒，且回應顯示 actual_provider=openai
+#                       （proxy 端 gemini 不可用，已 fallback 到 openai）
+# PROXY_LLM_TIMEOUT 上限是 20 秒，所以舊的 openai → gemini → claude 順序，
+# 前兩條必定逾時，每則新聞都要先浪費兩次等待才輪到唯一能用的 claude；
+# 累積起來整輪 LLM 被判定全滅，日誌顯示「分類路徑皆不可用」。
+# 改為 claude 優先，另外兩條留作備援（真的復活時仍可接手）。
 PROXY_LLM_ROUTE = (
-    ("openai", os.environ.get("NEWS_PROXY_OPENAI_MODEL", "gpt-4o-mini").strip()),
-    ("gemini", os.environ.get("NEWS_PROXY_GEMINI_MODEL", "gemini-2.5-flash").strip()),
     ("claude", os.environ.get("NEWS_PROXY_CLAUDE_MODEL", "claude-haiku-4-5").strip()),
+    ("gemini", os.environ.get("NEWS_PROXY_GEMINI_MODEL", "gemini-2.5-flash").strip()),
+    ("openai", os.environ.get("NEWS_PROXY_OPENAI_MODEL", "gpt-4o-mini").strip()),
 )
 
 # Gemini 免費層也與 ProxyCLI、付費 Gemini 完全隔離。免費 key 必須屬於沒有啟用

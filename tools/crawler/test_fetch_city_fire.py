@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -291,6 +292,183 @@ class TaipeiParsingTests(unittest.TestCase):
         ]}
         rows = cf.parse_taipei_json(data)
         self.assertEqual(rows[0]["district"], "大安區")
+
+
+def _ntpc_outer(*features):
+    """組出新北市端點的雙層 JSON：外層 data 欄位是「字串化的 GeoJSON」。"""
+    geojson = {"type": "FeatureCollection", "features": list(features)}
+    return json.dumps({
+        "status": 200, "message": "successful",
+        "data": json.dumps(geojson, ensure_ascii=False),
+    }, ensure_ascii=False)
+
+
+def _ntpc_fire_feature(feature_id="260802133039", fire_type="一般火警",
+                        location="新北市三重區五華街", lat=25.08450512, lng=121.48975490):
+    return {
+        "type": "Feature",
+        "properties": {
+            "featureId": feature_id,
+            "type": "FireV2",
+            "fireType": fire_type,
+            "endPointInfo": location,
+            "lat": lat,
+            "lng": lng,
+            "caseList": [{"startPointInfo": "三重11"}],
+            "dataSource": "EDPW資料倉儲",
+        },
+    }
+
+
+def _ntpc_ambulance_feature(feature_id="260802140011"):
+    # 救護案件沒有案類/地點欄位，endPointInfo 只是送醫醫院名稱
+    return {
+        "type": "Feature",
+        "properties": {
+            "featureId": feature_id,
+            "type": "AmbulanceBack",
+            "endPointInfo": "亞東紀念醫院",
+            "lat": 25.0123,
+            "lng": 121.4567,
+        },
+    }
+
+
+class NtpcDoubleJsonParsingTests(unittest.TestCase):
+    """型態 D：新北市端點的雙層 JSON 解析（外層 data 是字串化的 GeoJSON，要 parse 兩次）。"""
+
+    def test_double_json_is_parsed_and_fire_fields_extracted(self):
+        outer_text = _ntpc_outer(_ntpc_fire_feature())
+        rows = cf.parse_ntpc_geojson(outer_text)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["nativeId"], "260802133039")
+        self.assertEqual(row["caseType"], "火災")
+        self.assertEqual(row["caseSub"], "一般火警")
+        self.assertEqual(row["location"], "新北市三重區五華街")
+        self.assertEqual(row["district"], "三重區")
+        self.assertEqual(row["unit"], "三重11")
+        self.assertAlmostEqual(row["latitude"], 25.08450512)
+        self.assertAlmostEqual(row["longitude"], 121.48975490)
+        # payload 本身沒有時間欄位，parser 階段先留 None，交給 fetch_ntpc 補上
+        self.assertIsNone(row["occurredAt"])
+
+    def test_empty_feature_collection_returns_empty_list(self):
+        # 案件空窗期端點回 features:[]，這是正常狀態，不該報錯
+        outer_text = _ntpc_outer()
+        self.assertEqual(cf.parse_ntpc_geojson(outer_text), [])
+
+    def test_malformed_inner_data_string_does_not_crash(self):
+        outer_text = json.dumps({"status": 200, "message": "successful", "data": "not json"})
+        self.assertEqual(cf.parse_ntpc_geojson(outer_text), [])
+
+
+class NtpcFireOnlyFilterTests(unittest.TestCase):
+    """只收火災（type 開頭 Fire），不收救護（AmbulanceBack 只有醫院名稱、無案類/地點）。"""
+
+    def test_ambulance_back_is_dropped(self):
+        outer_text = _ntpc_outer(_ntpc_ambulance_feature())
+        self.assertEqual(cf.parse_ntpc_geojson(outer_text), [])
+
+    def test_fire_kept_ambulance_dropped_when_mixed(self):
+        outer_text = _ntpc_outer(_ntpc_fire_feature(), _ntpc_ambulance_feature())
+        rows = cf.parse_ntpc_geojson(outer_text)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["caseType"], "火災")
+
+    def test_large_fire_subtype_is_kept_as_case_sub(self):
+        outer_text = _ntpc_outer(_ntpc_fire_feature(fire_type="大型火警"))
+        rows = cf.parse_ntpc_geojson(outer_text)
+        self.assertEqual(rows[0]["caseSub"], "大型火警")
+
+
+class NtpcDistrictExtractionTests(unittest.TestCase):
+    def test_district_extracted_from_full_address(self):
+        outer_text = _ntpc_outer(_ntpc_fire_feature(location="新北市板橋區文化路二段"))
+        rows = cf.parse_ntpc_geojson(outer_text)
+        self.assertEqual(rows[0]["district"], "板橋區")
+
+    def test_no_district_match_falls_back_to_empty_string(self):
+        outer_text = _ntpc_outer(_ntpc_fire_feature(location="不含縣市字樣的地點"))
+        rows = cf.parse_ntpc_geojson(outer_text)
+        self.assertEqual(rows[0]["district"], "")
+
+
+class NtpcFirstSeenFallbackTests(unittest.TestCase):
+    """payload 沒有時間欄位，occurredAt 用 seen.json 記錄的「首次看到時間」兜底。"""
+
+    def test_new_feature_id_is_stamped_with_now_and_marks_seen_changed(self):
+        outer_text = _ntpc_outer(_ntpc_fire_feature(feature_id="new-1"))
+        rows = cf.parse_ntpc_geojson(outer_text)
+        seen = {}
+        now_iso = "2026-08-02T13:30:00+08:00"
+        changed = cf._fill_ntpc_first_seen(rows, seen, now_iso)
+        self.assertTrue(changed)
+        self.assertEqual(seen["ntpc-first-seen|new-1"], now_iso)
+        self.assertEqual(rows[0]["occurredAt"], datetime.fromisoformat(now_iso))
+
+    def test_previously_seen_feature_id_reuses_stored_time_not_now(self):
+        # 第二輪抓到同一個 featureId：不能把 occurredAt 改寫成本輪的「現在」，
+        # 否則案件會被永遠判定成剛發生
+        first_seen_iso = "2026-08-02T13:00:00+08:00"
+        seen = {"ntpc-first-seen|existing-1": first_seen_iso}
+        outer_text = _ntpc_outer(_ntpc_fire_feature(feature_id="existing-1"))
+        rows = cf.parse_ntpc_geojson(outer_text)
+        changed = cf._fill_ntpc_first_seen(rows, seen, "2026-08-02T13:30:00+08:00")
+        self.assertFalse(changed)
+        self.assertEqual(rows[0]["occurredAt"], datetime.fromisoformat(first_seen_iso))
+        self.assertEqual(seen["ntpc-first-seen|existing-1"], first_seen_iso)
+
+    def test_key_namespace_does_not_collide_with_county_source_id(self):
+        # seen.json 同時被主程式（{縣市}|{nativeId} 算「本次新增」）與 ntpc 首見時間
+        # 共用；字首要能避免撞在一起
+        seen = {}
+        outer_text = _ntpc_outer(_ntpc_fire_feature(feature_id="260802133039"))
+        rows = cf.parse_ntpc_geojson(outer_text)
+        cf._fill_ntpc_first_seen(rows, seen, "2026-08-02T13:30:00+08:00")
+        self.assertIn("ntpc-first-seen|260802133039", seen)
+        self.assertNotIn("新北市|260802133039", seen)
+
+    def test_missing_feature_id_is_skipped_without_crashing(self):
+        rows = [{
+            "nativeId": None, "caseType": "火災", "caseSub": "",
+            "location": "", "district": "", "unit": "", "status": "",
+            "occurredAt": None, "latitude": None, "longitude": None,
+        }]
+        seen = {}
+        changed = cf._fill_ntpc_first_seen(rows, seen, "2026-08-02T13:30:00+08:00")
+        self.assertFalse(changed)
+        self.assertIsNone(rows[0]["occurredAt"])
+        self.assertEqual(seen, {})
+
+
+class CoordinateFieldTests(unittest.TestCase):
+    """schema 新增的選填座標欄位：新北自帶座標，其他縣市沒有座標時要輸出 None 而不是報錯。"""
+
+    def test_ntpc_record_carries_coordinates(self):
+        source = {"county": "新北市", "sourceName": "新北市消防局"}
+        raw = {
+            "nativeId": "260802133039", "caseType": "火災", "caseSub": "一般火警",
+            "location": "新北市三重區五華街", "district": "三重區", "unit": "三重11",
+            "status": "", "occurredAt": datetime.now(cf.TZ_TAIPEI),
+            "latitude": 25.08450512, "longitude": 121.48975490,
+        }
+        record = cf.build_record(raw, source)
+        self.assertEqual(record["latitude"], 25.08450512)
+        self.assertEqual(record["longitude"], 121.48975490)
+
+    def test_county_without_coordinates_outputs_none_not_error(self):
+        # 既有的其他縣市 raw dict 完全不帶 latitude/longitude 鍵，
+        # build_record 要能安全用 .get 拿到 None，不能 KeyError
+        source = {"county": "高雄市", "sourceName": "高雄市消防局"}
+        raw = {
+            "nativeId": "1", "caseType": "火災", "caseSub": "",
+            "location": "高雄市梓官區大舍南路", "district": "梓官區", "unit": "",
+            "status": "已派遣", "occurredAt": datetime.now(cf.TZ_TAIPEI),
+        }
+        record = cf.build_record(raw, source)
+        self.assertIsNone(record["latitude"])
+        self.assertIsNone(record["longitude"])
 
 
 if __name__ == "__main__":

@@ -106,12 +106,18 @@ class NewsCrawlerTests(unittest.TestCase):
         self.assertTrue(disable_for_run)
         self.assertIsNone(provider)
 
-    def test_proxy_prefers_openai_then_gemini_then_claude(self):
+    def test_proxy_prefers_claude_then_gemini_then_openai(self):
+        """優先序 claude → gemini → openai。
+
+        2026-08-02 實測 openai/gemini 皆需 20 秒以上、超過 PROXY_LLM_TIMEOUT 上限，
+        claude 只要 2 秒；舊的 openai 優先順序會讓每則新聞先撞兩次逾時而全滅。
+        這裡讓最後一個（openai）才成功，藉此驗證整條 fallback 鏈的先後次序。
+        """
         providers = []
 
         def proxy_stub(*_args, **kwargs):
             providers.append(kwargs["provider"])
-            if kwargs["provider"] != "claude":
+            if kwargs["provider"] != "openai":
                 raise TimeoutError("quota")
             return "{\"is_incident\":false}"
 
@@ -119,7 +125,20 @@ class NewsCrawlerTests(unittest.TestCase):
             answer = news.call_proxy_llm("測試")
 
         self.assertEqual(answer, "{\"is_incident\":false}")
-        self.assertEqual(providers, ["openai", "gemini", "claude"])
+        self.assertEqual(providers, ["claude", "gemini", "openai"])
+
+    def test_proxy_stops_at_claude_when_it_succeeds(self):
+        """claude 成功時不應再往下試——否則等於白等 openai 的 20 秒逾時。"""
+        providers = []
+
+        def proxy_stub(*_args, **kwargs):
+            providers.append(kwargs["provider"])
+            return "{\"is_incident\":false}"
+
+        with mock.patch.object(news, "_sdk_ai", side_effect=proxy_stub):
+            news.call_proxy_llm("測試")
+
+        self.assertEqual(providers, ["claude"])
 
     def test_free_pool_is_disabled_with_zero_daily_limit(self):
         with mock.patch.object(news, "FREE_GEMINI_ENABLED", True), \

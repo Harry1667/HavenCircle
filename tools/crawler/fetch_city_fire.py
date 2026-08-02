@@ -14,6 +14,14 @@
   C. 各站自有 HTML 頁面（台中／桃園／南投／彰化／嘉義／屏東），結構互不相同，各自一個
      parser；屏東頁面沒有「案別」欄位，同樣只能收到案類本身在白名單內的（火災／災害搶救），
      車禍無法從屏東判斷。
+  D. 新北市獨立端點：GET https://e.ntpc.gov.tw/v3/api/map/dynamic/layer/rescue
+     （備援 e1.ntpc.gov.tw），裸請求、無 UA/Referer/cookie/token 需求。回應是雙層 JSON——
+     外層 data 欄位是字串化的 GeoJSON，要 parse 兩次。救護案件（type=AmbulanceBack）的
+     endPointInfo 只有送醫醫院名稱、沒有案類與地點欄位，故只收火災（type 開頭 Fire）；
+     這點與台北市 service119 情況相同。payload 完全沒有時間欄位，occurredAt 用
+     seen.json 記錄「首次看到這個 featureId 的時間」兜底。案件結束後約 5 分鐘就從清單
+     消失，視窗是所有來源裡最短的之一，建議獨立跑 60 秒輪詢（現行 cron 是 2 分鐘，
+     漏接風險偏高）。難得自帶精確經緯度（lat/lng），優先於行政區推定用於生活圈比對。
 
 去重／狀態更新：DTS 有原生 CS_NO，用 {縣市}|{CS_NO} 當鍵；沒有原生案號的站用
 {縣市}|{發生時間}|{地點}。同一案的 STATUS 會隨時間變化（已派遣→已出動→已返隊），
@@ -132,6 +140,16 @@ SOURCES = [
      "sourceName": "屏東縣消防局", "enabled": True,
      "note": "頁面無案別欄位，只能收到案類在白名單內的（火災／災害搶救），"
              "車禍無法從屏東判斷；內容為 HTML entity 編碼，parser 內已 unescape"},
+
+    # --- 型態 D：新北市（獨立端點，雙層 JSON GeoJSON，自帶精確座標）---
+    {"county": "新北市", "type": "ntpc",
+     "sourceName": "新北市消防局", "enabled": True,
+     "note": "端點無案別/時間欄位；救護案件（type=AmbulanceBack）的 endPointInfo "
+             "只有送醫醫院名稱、沒有案類與地點欄位，無法判斷車禍也無法判斷事發地點，"
+             "與台北市 service119 情況相同，故只收火災（type 開頭 Fire）；"
+             "occurredAt 用 seen.json 記錄「首次看到 featureId 的時間」兜底；"
+             "案件結束後約 5 分鐘就從清單消失，視窗是所有來源裡最短的之一，"
+             "建議獨立跑 60 秒輪詢（現行 cron 是 2 分鐘，漏接風險偏高）"},
 ]
 
 
@@ -204,6 +222,8 @@ def build_record(raw, source):
 
     raw 需含：caseType, caseSub, location, district, unit, status,
               occurredAt（已是 aware datetime）, nativeId（可為 None）。
+              latitude / longitude 為選填（僅新北市 ntpc 這條線自帶座標），
+              沒有的來源用 dict.get 拿 None，不會報錯。
     回傳 None 代表這筆該丟棄（不符案類白名單，或超過時間窗）。
     """
     if raw["occurredAt"] is None:
@@ -238,6 +258,8 @@ def build_record(raw, source):
         "status": raw["status"],
         "sourceId": source_id,
         "sourceName": source["sourceName"],
+        "latitude": raw.get("latitude"),
+        "longitude": raw.get("longitude"),
     }
 
 
@@ -598,6 +620,110 @@ def fetch_pthg(source):
     return parse_pthg_html(page_html)
 
 
+# ============================================================
+# 型態 D：新北市（獨立端點，雙層 JSON GeoJSON，自帶座標，無時間欄位）
+# ============================================================
+
+# 主機＋備援，裸請求（實測不需要 UA/Referer/cookie/token，連打 15 次無限流）
+NTPC_HOSTS = ("e.ntpc.gov.tw", "e1.ntpc.gov.tw")
+_NTPC_DISTRICT_RE = re.compile(r"新北市([一-鿿]{1,3}區)")
+
+
+def parse_ntpc_geojson(outer_text):
+    """純解析函式（不碰網路、不碰 seen.json）。
+
+    回應是雙層 JSON：外層 {"status":200,"data":"...字串化的 GeoJSON..."}，
+    data 欄位要再 json.loads 一次才是真正的 FeatureCollection。
+
+    只收 type 以 Fire 開頭的案件（FireV2 等）；救護案件（AmbulanceBack）的
+    endPointInfo 只有送醫醫院名稱，沒有案類/地點欄位，無法判斷車禍也無法判斷
+    事發地點，收進來只會是醫院名稱洗版且涉個資，直接濾掉。
+
+    caseType 正規化成白名單裡的「火災」讓既有過濾規則自動放行；細分
+    （一般火警／大型火警）放進 caseSub。occurredAt 這裡先留 None，
+    由 fetch_ntpc 用 seen.json 的首見時間補上（payload 完全沒有時間欄位）。
+    """
+    outer = json.loads(outer_text)
+    try:
+        geojson = json.loads(outer.get("data") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        geojson = {}
+
+    rows = []
+    for feature in geojson.get("features", []):
+        props = feature.get("properties") or {}
+        case_type = props.get("type") or ""
+        if not case_type.startswith("Fire"):
+            continue
+
+        location = props.get("endPointInfo") or ""
+        dist_m = _NTPC_DISTRICT_RE.search(location)
+        case_list = props.get("caseList") or []
+        unit = "、".join(
+            c.get("startPointInfo", "") for c in case_list if c.get("startPointInfo")
+        )
+        lat = props.get("lat")
+        lng = props.get("lng")
+
+        rows.append({
+            "nativeId": props.get("featureId"),
+            "caseType": "火災",
+            "caseSub": props.get("fireType") or "",
+            "location": location,
+            "district": dist_m.group(1) if dist_m else "",
+            "unit": unit,
+            "status": "",  # 端點沒有獨立狀態欄位
+            "occurredAt": None,  # fetch_ntpc 用首見時間補上
+            "latitude": float(lat) if lat is not None else None,
+            "longitude": float(lng) if lng is not None else None,
+        })
+    return rows
+
+
+def _fill_ntpc_first_seen(rows, seen, now_iso):
+    """用 seen.json 記錄「首次看到這個 featureId 的時間」當作 occurredAt 兜底。
+
+    純函式（不做磁碟 I/O）方便單元測試；seen 是呼叫端傳入、就地修改的 dict，
+    key 刻意加 "ntpc-first-seen|" 字首，避免跟主程式用來計算「本次新增幾件」
+    的 {縣市}|{nativeId} 鍵混在同一個命名空間。回傳 seen 是否被修改，
+    呼叫端據此決定要不要寫回檔案。
+    """
+    changed = False
+    for raw in rows:
+        feature_id = raw["nativeId"]
+        if not feature_id:
+            continue
+        key = f"ntpc-first-seen|{feature_id}"
+        if key not in seen:
+            seen[key] = now_iso
+            changed = True
+        raw["occurredAt"] = datetime.fromisoformat(seen[key])
+    return changed
+
+
+def fetch_ntpc(source):
+    last_error = None
+    outer_text = None
+    for host in NTPC_HOSTS:
+        url = f"https://{host}/v3/api/map/dynamic/layer/rescue"
+        try:
+            outer_text = http_get(url)
+            break
+        except (urllib.error.URLError, TimeoutError) as e:
+            last_error = e
+            continue
+    if outer_text is None:
+        raise last_error
+
+    rows = parse_ntpc_geojson(outer_text)
+
+    seen = load_seen()
+    now_iso = datetime.now(TZ_TAIPEI).isoformat()
+    if _fill_ntpc_first_seen(rows, seen, now_iso):
+        save_seen(seen)
+    return rows
+
+
 HANDLERS = {
     "dts": fetch_dts,
     "taipei": fetch_taipei,
@@ -607,6 +733,7 @@ HANDLERS = {
     "chfd": fetch_chfd,
     "cyfd": fetch_cyfd,
     "pthg": fetch_pthg,
+    "ntpc": fetch_ntpc,
 }
 
 
@@ -688,6 +815,11 @@ def main():
         })
         log(f"[完成] {county}：掃到 {len(raw_rows)} 筆，符合條件 {kept} 筆")
 
+    # 新北（ntpc）的 handler 在上面迴圈中途會自行 load_seen/save_seen 寫入
+    # 「首次看到 featureId 的時間」；這裡重新讀一次檔案撿最新內容，避免下面
+    # save_seen 用迴圈開始前的舊快照覆蓋掉那些寫入（其他縣市的 key 命名空間
+    # 跟 ntpc 的 "ntpc-first-seen|" 字首不會撞在一起，重讀不影響既有邏輯）。
+    seen = load_seen()
     fresh_keys = [k for k in uniq if k not in seen]
     for k in uniq:
         seen[k] = now_iso
