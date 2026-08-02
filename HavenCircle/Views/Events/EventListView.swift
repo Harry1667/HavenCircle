@@ -25,34 +25,40 @@ struct EventListView: View {
     private var visibleEvents: [LocalSafetyEvent] {
         events.filter { !$0.isArchived && !EventVisibility.isSuppressed($0) }
     }
-    /// 需要注意＝官方確認「且真的落在某個生活圈的提醒範圍」（分類標籤與邏輯必須一致）
+    /// 需要注意＝可信（官方確認／多來源交叉驗證／主流媒體單一報導）「且真的落在某個
+    /// 生活圈的提醒範圍」（分類標籤與邏輯必須一致）。改用 isCredible 而非 isOfficiallyConfirmed，
+    /// 讓中央社、TVBS 這類一線媒體的獨家報導不再被誤收進「未驗證線索」摺疊區看不到
+    /// （產品判斷：大型新聞台一報導就會立刻播出，獨家不等於不可信）。
     private var attention: [LocalSafetyEvent] {
         visibleEvents
-            .filter { $0.isActiveForAwareness && $0.isOfficiallyConfirmed && isInAnyCircle($0) }
+            .filter { $0.isActiveForAwareness && $0.isCredible && isInAnyCircle($0) }
             .sorted { nearestCircleDistance($0, members) < nearestCircleDistance($1, members) }
     }
-    /// 官方確認、但離所有生活圈較遠的事件另立分類，不冒充「需要注意」。
+    /// 可信、但離所有生活圈較遠的事件另立分類，不冒充「需要注意」。
     /// 加距離上限：超過 NearbyScope 的全國事件再拆到「全台其他」摺疊清單，避免灌成雜訊。
     private var elsewhere: [LocalSafetyEvent] {
         visibleEvents
             .filter {
-                $0.isActiveForAwareness && $0.isOfficiallyConfirmed && !isInAnyCircle($0)
+                $0.isActiveForAwareness && $0.isCredible && !isInAnyCircle($0)
                     && nearestCircleDistance($0, members) <= NearbyScope.maxMeters
             }
             .sorted { nearestCircleDistance($0, members) < nearestCircleDistance($1, members) }
     }
 
-    /// 離所有生活圈超過上限的全國官方事件（預設摺疊）
+    /// 離所有生活圈超過上限的全國可信事件（預設摺疊）
     private var nationwide: [LocalSafetyEvent] {
         visibleEvents
             .filter {
-                $0.isActiveForAwareness && $0.isOfficiallyConfirmed && !isInAnyCircle($0)
+                $0.isActiveForAwareness && $0.isCredible && !isInAnyCircle($0)
                     && nearestCircleDistance($0, members) > NearbyScope.maxMeters
             }
             .sorted { $0.occurredAt > $1.occurredAt }
     }
+    /// 與上面三類互斥且互補：非可信（!isCredible）的事件才落在「未驗證線索」——
+    /// 四個集合合起來剛好涵蓋 visibleEvents 中所有 isActiveForAwareness 的事件，
+    /// 且彼此不重疊（先按 isCredible 二分，可信的一半再按 isInAnyCircle／距離三分）。
     private var confirming: [LocalSafetyEvent] {
-        visibleEvents.filter { $0.isActiveForAwareness && !$0.isOfficiallyConfirmed }
+        visibleEvents.filter { $0.isActiveForAwareness && !$0.isCredible }
     }
     /// 全台動態是「看見資訊密度」的獨立層，不改變首頁與通知的生活圈優先原則。
     /// 未驗證新聞也可在這裡閱讀，但每一列都保留明確的驗證文字，絕不偽裝成官方訊息。
@@ -60,8 +66,8 @@ struct EventListView: View {
         visibleEvents
             .filter(\.isActiveForAwareness)
             .sorted { lhs, rhs in
-                if lhs.isOfficiallyConfirmed != rhs.isOfficiallyConfirmed {
-                    return lhs.isOfficiallyConfirmed
+                if lhs.isCredible != rhs.isCredible {
+                    return lhs.isCredible
                 }
                 return lhs.occurredAt > rhs.occurredAt
             }
@@ -102,9 +108,9 @@ struct EventListView: View {
                 regionAlertSection
                 // 顯示面積跟「可信度／急迫性」成正比：需要注意永遠攤開；
                 // 未驗證的確認中、離圈遠的附近動態、已結束——預設收合，點標題展開
-                section(title: "需要注意", subtitle: "官方確認且位於有效警戒圈內", items: attention)
+                section(title: "需要注意", subtitle: "已充分驗證（官方／主流媒體／多來源）且位於有效警戒圈內", items: attention)
                 section(title: "未驗證線索", subtitle: "資料尚未充分驗證，不會推播", items: confirming, collapsible: true)
-                section(title: "附近動態", subtitle: "官方事件，離警戒圈 10 公里內", items: elsewhere, collapsible: true)
+                section(title: "附近動態", subtitle: "已驗證事件，離警戒圈 10 公里內", items: elsewhere, collapsible: true)
                 nationwideSection
             } else {
                 nationwideDynamicsSection
@@ -155,7 +161,7 @@ struct EventListView: View {
         } footer: {
             Text(feedScope == .related
                  ? "通知只會依你的生活圈與設定發送；全台內容不會干擾你。"
-                 : "全台內容供了解動態；「持續確認中」代表尚未由官方或多來源充分驗證。")
+                 : "全台內容供了解動態；「持續確認中」代表尚未由官方、主流媒體或多來源充分驗證。")
         }
     }
 
@@ -245,7 +251,7 @@ struct EventListView: View {
     private var nationwideSection: some View {
         if !nationwide.isEmpty {
             Section {
-                DisclosureGroup("全台其他官方示警（\(nationwide.count)）") {
+                DisclosureGroup("全台其他已驗證事件（\(nationwide.count)）") {
                     ForEach(Array(nationwide.prefix(15))) { event in
                         Button {
                             selected = event
@@ -256,7 +262,7 @@ struct EventListView: View {
                     }
                 }
             } footer: {
-                Text("離所有警戒圈超過 30 公里的官方事件收在這裡，避免稀釋與你相關的訊號。")
+                Text("離所有警戒圈較遠的已驗證事件（官方／主流媒體／多來源）收在這裡，避免稀釋與你相關的訊號。")
             }
         }
     }
@@ -284,7 +290,7 @@ struct EventListView: View {
             } header: {
                 Text("全台動態（\(nationwideDynamics.count)）")
             } footer: {
-                Text("顯示官方事件與未驗證新聞線索。未驗證內容不會單獨觸發可見通知。")
+                Text("顯示已驗證事件（官方／主流媒體／多來源）與未驗證新聞線索。未驗證內容不會單獨觸發可見通知。")
             }
         }
     }

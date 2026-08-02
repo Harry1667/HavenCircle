@@ -6,7 +6,27 @@ import SwiftUI
 enum TrustStatus {
     static let officialConfirmed = "官方已確認"
     static let crossVerified = "多來源交叉驗證"
+    /// 一線主流媒體單一報導即可升級到的等級（見 MainstreamMedia）。
+    /// 文案刻意標明「媒體」而非任何暗示官方的字眼——大型新聞台獨家不等於不可信，
+    /// 但絕不能讓使用者誤以為是官方資訊（App Store 審查與產品誠信的雙重底線）。
+    static let mediaConfirmed = "主流媒體報導"
     static let confirming = "持續確認中"
+}
+
+/// 主流媒體分級：決定「單一報導是否足以讓使用者看見」的判斷依據。
+/// 一線媒體（中央社、公視、TVBS、聯合報、自由時報、ETtoday）採即時查證後即播出，
+/// 單一報導即可視為足夠可信，跳過交叉驗證直接升級為「主流媒體報導」；
+/// 二線媒體（Newtalk新聞、記者新聞網）不在名單內，維持原規則——仍需多來源交叉驗證才升級。
+enum MainstreamMedia {
+    static let tier1: [String] = ["中央社", "公視", "TVBS", "聯合報", "自由時報", "ETtoday"]
+
+    /// 比對方式：用「包含比對」而非精確相等。爬蟲跨來源合併同一事件時，
+    /// sourceName 會把多家媒體以「、」串接（見 tools/crawler/fetch_news.py 的
+    /// merge_duplicate，例如「中央社、TVBS」），用 contains 才能在合併字串中
+    /// 命中任一家一線媒體；精確相等在合併情境下永遠比不中。
+    static func isTier1(_ sourceName: String) -> Bool {
+        tier1.contains { sourceName.contains($0) }
+    }
 }
 
 /// 事件生命週期狀態機：進行中 → 已解除（解除時發送解除通知，關閉使用者的焦慮迴圈）
@@ -95,9 +115,21 @@ final class LocalSafetyEvent {
 }
 
 extension LocalSafetyEvent {
-    /// 只有官方來源或多來源交叉驗證的事件才允許推播（產品守則）
+    /// 只有官方來源或多來源交叉驗證的事件才允許推播（產品守則）。
+    /// ⚠️ 語意固定為「官方確認」，別的地方（合規、Widget、每日摘要、地圖統計）靠這個
+    /// 名字判斷「真的是官方／多來源」，不要為了讓主流媒體報導也算進來而改這個屬性——
+    /// 想表達「可信到該讓使用者看見」請改用下面的 isCredible。
     var isOfficiallyConfirmed: Bool {
         trustStatus == TrustStatus.officialConfirmed || trustStatus == TrustStatus.crossVerified
+    }
+
+    /// 「可信到該讓使用者看見」的三級：官方確認／多來源交叉驗證／主流媒體單一報導。
+    /// 語意上比 isOfficiallyConfirmed 寬——用於決定使用者在提醒中心是否該看到這則事件，
+    /// 不代表這則事件就是官方資訊（媒體報導在其他文案仍會誠實標示「非官方確認」）。
+    var isCredible: Bool {
+        trustStatus == TrustStatus.officialConfirmed
+            || trustStatus == TrustStatus.crossVerified
+            || trustStatus == TrustStatus.mediaConfirmed
     }
 
     var isExpired: Bool { expiresAt <= .now }

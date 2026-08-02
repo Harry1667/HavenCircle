@@ -76,23 +76,26 @@ enum AlertPolicy {
             return AlertDecision(shouldPush: false, matches: matches, reason: "通知頻率設為「小」，此類一般提醒僅在 App 內顯示")
         }
         // 設定頁的「公共安全事件僅高可信度提醒」過去只有 UI、沒有接進決策。
-        // 開啟時，公共安全粗類與所有細分類都要求官方或多來源驗證；關閉後仍須使用者
-        // 主動把提醒多寡設成「靈敏」，才會允許單一媒體早期線索。
+        // 開啟時，公共安全粗類與所有細分類都要求高可信度（官方／多來源／一線主流媒體）；
+        // 關閉後仍須使用者主動把提醒多寡設成「靈敏」，才會允許單一媒體早期線索。
+        // 用 isCredible（而非 isOfficiallyConfirmed）判斷，讓 mediaConfirmed 視同高可信度、
+        // 與 crossVerified 一致——開關的語意本身不變（仍是「只推高可信度」），只是「高可信度」
+        // 的定義正確納入一線媒體單一報導。
         let highConfidenceOnly = UserDefaults.standard.object(
             forKey: SettingsKeys.highConfidenceOnly
         ) as? Bool ?? true
         if highConfidenceOnly,
            broadCategory == EventCategory.publicSafety,
-           !event.isOfficiallyConfirmed {
+           !event.isCredible {
             return AlertDecision(
                 shouldPush: false,
                 matches: matches,
-                reason: "公共安全事件設定為僅高可信度提醒；此線索尚未經官方或多來源確認"
+                reason: "公共安全事件設定為僅高可信度提醒；此線索尚未經官方、主流媒體或多來源確認"
             )
         }
-        // 可信度門檻：未經官方／多來源確認的線索一般不推播；
+        // 可信度門檻：未經官方／多來源／一線媒體確認的線索一般不推播；
         // 但通知頻率「大」時放寬，讓更早期的單一來源消息也能通知（代價是可能偶有誤報）
-        guard event.isOfficiallyConfirmed || frequency == .high else {
+        guard event.isCredible || frequency == .high else {
             return AlertDecision(shouldPush: false, matches: matches, reason: "未驗證線索僅在 App 內顯示，不會推播")
         }
         let inSchedule = matches.filter(\.withinSchedule)

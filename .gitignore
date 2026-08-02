@@ -26,6 +26,8 @@ tools/news-crawler/latest.json
 tools/news-crawler/seen.json
 tools/crawler/latest.json
 tools/crawler/seen.json
+tools/crawler/latest_freeway.json
+tools/crawler/seen_freeway.json
 tools/crawler/paid_gemini_keys.txt
 tools/crawler/paid_gemini_usage.json
 tools/crawler/paid_gemini_usage.lock
@@ -49,3 +51,5 @@ tools/crawler/free_gemini_usage.lock
 # Firebase 服務帳戶私鑰（機密），只存伺服器與本機機密夾，絕不進 git
 *firebase-adminsdk*.json
 _fcm_service_account.json
+tools/crawler/latest_city_fire.json
+tools/crawler/seen_city_fire.json

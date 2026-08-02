@@ -68,6 +68,12 @@ enum EventPipeline {
         // 台中市 119 派遣火災：每 2 分鐘更新，比全國消防署初報更細、更快；
         // 只使用行政區概略位置，不把公開頁面的街道資訊帶進 App。
         TaichungFireEventProvider(),
+        // 全台 15 縣市消防局逐案級派遣：補的是 NCDR 與消防署全國災情都拿不到的
+        // 逐案顆粒度，尤其是「車禍」這個現行系統完全漏抓的類別
+        CityFireIncidentProvider(),
+        // 國道即時交通事故：補的是「重大交通事故」這個類別長期只能靠新聞轉述的缺口，
+        // 高速公路局交控中心資料，座標精度比行政區反查高很多
+        FreewayIncidentProvider(),
         // 媒體報導層：多家公開新聞來源的現場事故（isOfficial=false，裝置端依可信度決策）
         NewsEventProvider(),
         // 空品惡化連鎖：圈附近測站 AQI 破門檻→官方事件→推播（門檻與開關走遠端設定）
@@ -226,12 +232,18 @@ enum EventPipeline {
         return "\(report.eventType)@\(String(format: "%.3f", gridLat)),\(String(format: "%.3f", gridLon))#\(sixHourBucket)"
     }
 
-    /// 可信度評分：官方 > 多來源交叉驗證 > 單一未驗證線索
+    /// 可信度評分：官方 > （多來源交叉驗證／主流媒體單一報導）> 持續確認中。
+    /// 主流媒體與交叉驗證同級——都代表「可信到該讓使用者看見」，只是誠實描述的
+    /// 來源性質不同（見 trustRank 給兩者相同 rank）。優先判斷交叉驗證：若剛好
+    /// 同時符合（例如兩家媒體其中一家是一線媒體），交叉驗證的描述更精確，故先比對。
     private static func trustLevel(for group: [RawEventReport]) -> String {
         if group.contains(where: \.isOfficial) { return TrustStatus.officialConfirmed }
         if group.reduce(0, { $0 + max($1.corroborationCount, 1) }) >= 2
             || Set(group.map(\.sourceName)).count >= 2 {
             return TrustStatus.crossVerified
+        }
+        if group.contains(where: { MainstreamMedia.isTier1($0.sourceName) }) {
+            return TrustStatus.mediaConfirmed
         }
         return TrustStatus.confirming
     }
@@ -239,7 +251,7 @@ enum EventPipeline {
     private static func trustRank(_ trust: String) -> Int {
         switch trust {
         case TrustStatus.officialConfirmed: 3
-        case TrustStatus.crossVerified: 2
+        case TrustStatus.crossVerified, TrustStatus.mediaConfirmed: 2
         default: 1
         }
     }

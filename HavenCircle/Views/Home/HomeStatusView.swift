@@ -248,7 +248,9 @@ struct HomeStatusView: View {
                         .font(.title2.weight(.bold))
                         .foregroundStyle(HCColor.danger)
                         .multilineTextAlignment(.center)
-                    Text("官方已確認的事件落在提醒範圍內，點開地圖確認位置與建議。")
+                    // 計數來源 SafetyOverview.attentionCount 已含主流媒體報導，
+                    // 文案不可再只說「官方已確認」——那會把媒體來源冒充成官方。
+                    Text("經官方或主流媒體確認的事件落在提醒範圍內，點開地圖確認位置與建議。")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)

@@ -305,6 +305,54 @@ class NewsCrawlerTests(unittest.TestCase):
         self.assertNotIn(news.stable_id(news.parse_rss(feed_bytes)[0]), seen)
         self.assertIn(news.stable_id(news.parse_rss(feed_bytes)[1]), seen)
 
+    def test_district_from_text_recovers_county_when_city_name_absent(self):
+        # 標題常省略縣市，只寫行政區（如「文山區KTV惡火」），要能反查回台北市
+        self.assertEqual(
+            news.district_from_text("文山區KTV惡火 消防搶救中"),
+            ("文山區", "台北市"),
+        )
+
+    def test_district_from_text_leaves_ambiguous_district_names_unresolved(self):
+        # 中正區／東區等同名行政區故意不建表，寧可查不到也不要猜錯縣市
+        self.assertEqual(news.district_from_text("中正區傳出火警"), (None, None))
+        self.assertEqual(news.district_from_text("東區某大樓驚傳氣爆"), (None, None))
+        self.assertNotIn("中正區", news.DISTRICT_TO_COUNTY)
+        self.assertNotIn("東區", news.DISTRICT_TO_COUNTY)
+        # 「中區」雖只有台中市一個，但因太短容易誤判也故意排除
+        self.assertNotIn("中區", news.DISTRICT_TO_COUNTY)
+
+    def test_district_from_text_prefers_earliest_and_longest_match(self):
+        # 同一句若有多個行政區，取「最靠前」命中的那個
+        district, county = news.district_from_text("板橋區與新店區同步豪雨積淹水")
+        self.assertEqual((district, county), ("板橋區", "新北市"))
+
+    def test_rules_path_recovers_county_via_district_when_title_omits_city(self):
+        now = datetime.now(news.TZ_TAIPEI)
+        feed_bytes = rss(
+            [
+                {
+                    "title": "文山區KTV傳出火警 多人受困",
+                    "description": "消防局獲報後派遣多輛雲梯車搶救",
+                    "link": "https://example.test/ktv-fire",
+                    "guid": "ktv-fire-1",
+                    "pubDate": now.isoformat(),
+                },
+            ]
+        )
+        feeds = [{"name": "測試新聞", "feed": "社會", "url": "memory://feed"}]
+
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(news, "AI_PROXY_TOKEN", ""), \
+                mock.patch.object(news, "fetch_url", return_value=feed_bytes):
+            exit_code = news.main(feeds=feeds, out_dir=directory)
+            output = json.loads(Path(directory, "latest.json").read_text())
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(output["incidentCount"], 1)
+        event = output["events"][0]
+        self.assertEqual(event["county"], "台北市")
+        self.assertEqual(event["district"], "文山區")
+
     def test_new_public_feeds_are_registered(self):
         urls = {feed["url"] for feed in news.FEEDS}
         self.assertIn("https://newtalk.tw/rss/all", urls)

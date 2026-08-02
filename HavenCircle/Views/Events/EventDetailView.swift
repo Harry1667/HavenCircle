@@ -165,7 +165,10 @@ struct EventDetailView: View {
             "概略位置：\(event.approximateLocation)",
             "發生時間：\(localizedDate(event.occurredAt))",
             "嚴重程度：\(event.severity)",
-            "狀態：\(event.isOfficiallyConfirmed ? "官方已確認" : "未驗證線索，仍在確認中")",
+            // 直接用 trustStatus 文字（官方已確認／多來源交叉驗證／主流媒體報導／持續確認中），
+            // 不要用 isOfficiallyConfirmed 二分——那會把主流媒體單一報導誤描述成「未驗證線索」，
+            // 讓 AI 生成的個人化說明失真
+            "狀態：\(event.trustStatus)",
         ]
         if let detail = event.detail?.trimmingCharacters(in: .whitespacesAndNewlines), !detail.isEmpty {
             lines.append("說明：\(detail)")
@@ -206,10 +209,27 @@ struct EventDetailView: View {
         }
     }
 
+    /// 狀態文案：故意用 trustStatus 逐一列出（而非 isOfficiallyConfirmed 二分），
+    /// 避免主流媒體單一報導被誤標成「未驗證線索，不會自動通知家人」——mediaConfirmed
+    /// 事件現在與 crossVerified 同樣可能觸發家人通知（見 AlertPolicy），文案要跟著誠實；
+    /// 但也絕不能把它寫成「官方來源已確認」，那會違反「媒體報導不能偽裝成官方資訊」的產品底線。
+    private func statusMessage(for event: LocalSafetyEvent) -> String {
+        switch event.trustStatus {
+        case TrustStatus.officialConfirmed:
+            return "官方來源已確認。若有立即危險，請直接撥打 110 或 119。"
+        case TrustStatus.crossVerified:
+            return "已有多來源交叉驗證，可信度足以列入警戒圈提醒。若有立即危險，請直接撥打 110 或 119。"
+        case TrustStatus.mediaConfirmed:
+            return "已由主流媒體報導，可信度足以列入警戒圈提醒，惟尚未經官方證實。若有立即危險，請直接撥打 110 或 119。"
+        default:
+            return "這是未驗證線索，資料仍在確認中，不會自動通知家人。"
+        }
+    }
+
     private var statusSection: some View {
         let statusColor = event.isEnded || !event.isOngoing
             ? Color.secondary
-            : (event.isOfficiallyConfirmed ? HCColor.danger : HCColor.attention)
+            : (event.isCredible ? HCColor.danger : HCColor.attention)
         return Section {
             VStack(alignment: .leading, spacing: HCSpacing.x3) {
                 HStack(spacing: HCSpacing.x3) {
@@ -217,7 +237,7 @@ struct EventDetailView: View {
                         systemName: event.isEnded
                             ? "checkmark.circle"
                             : (event.isOngoing
-                                ? (event.isOfficiallyConfirmed ? "checkmark.seal.fill" : "clock.badge.questionmark")
+                                ? (event.isCredible ? "checkmark.seal.fill" : "clock.badge.questionmark")
                                 : "newspaper")
                     )
                     .font(.title3.weight(.medium))
@@ -239,9 +259,7 @@ struct EventDetailView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 } else {
-                    Text(event.isOfficiallyConfirmed
-                         ? "官方來源已確認。若有立即危險，請直接撥打 110 或 119。"
-                         : "這是未驗證線索，資料仍在確認中，不會自動通知家人。")
+                    Text(statusMessage(for: event))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }

@@ -19,7 +19,7 @@ if (!hash_equals(INGEST_KEY, $key)) {
 
 // 多資料集：ncdr（預設，災害示警）與 aqi（環境部空品）各存一份檔案
 $dataset = $_GET['dataset'] ?? 'ncdr';
-if (!in_array($dataset, ['ncdr', 'aqi', 'crime', 'cwa', 'taichung_fire', 'nfa'], true)) {
+if (!in_array($dataset, ['ncdr', 'aqi', 'crime', 'cwa', 'taichung_fire', 'nfa', 'cityfire', 'freeway'], true)) {
     http_response_code(400);
     echo json_encode(['error' => 'unknown dataset']);
     exit;
@@ -47,7 +47,7 @@ $payload = [
     'data'        => $data,
 ];
 
-$basename  = ['ncdr' => 'latest', 'aqi' => 'latest_aqi', 'crime' => 'latest_crime', 'cwa' => 'latest_cwa', 'taichung_fire' => 'latest_taichung_fire', 'nfa' => 'latest_nfa'][$dataset] ?? 'latest';
+$basename  = ['ncdr' => 'latest', 'aqi' => 'latest_aqi', 'crime' => 'latest_crime', 'cwa' => 'latest_cwa', 'taichung_fire' => 'latest_taichung_fire', 'nfa' => 'latest_nfa', 'cityfire' => 'latest_city_fire', 'freeway' => 'latest_freeway'][$dataset] ?? 'latest';
 $tmpFile   = $dataDir . '/' . $basename . '.json.tmp';
 $finalFile = $dataDir . '/' . $basename . '.json';
 
@@ -95,7 +95,7 @@ if ($dataset === 'ncdr' || $dataset === 'cwa') {
 // crime 是週／月統計參考圖層，不屬於即時警報，故不觸發。
 // 部分主機會在 PHP disable_functions 停用 exec（直接呼叫會變 Fatal Error），
 // 這時由 crontab 的每分鐘 cron_check 兜底，不影響正確性。
-if (in_array($dataset, ['ncdr', 'cwa', 'nfa', 'taichung_fire', 'aqi'], true)) {
+if (in_array($dataset, ['ncdr', 'cwa', 'nfa', 'taichung_fire', 'aqi', 'cityfire', 'freeway'], true)) {
     if (function_exists('exec')) {
         @exec('php ' . escapeshellarg(__DIR__ . '/../../apns/cron_check.php') . ' > /dev/null 2>&1 &');
     } else {
