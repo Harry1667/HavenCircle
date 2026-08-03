@@ -58,7 +58,7 @@ private struct SignInPreflightModifier: ViewModifier {
                 )
                 .presentationDetents([.medium])
                 // iPad 會忽略 presentationDetents 而放大成整頁 sheet，這裡收斂成 form 尺寸
-                .presentationSizing(.form)
+                .formPresentationSizing()
             }
     }
 }
@@ -159,7 +159,7 @@ private struct SignInPreflightCard: View {
         .sheet(isPresented: .constant(true)) {
             SignInPreflightCard(onSignedIn: {}, onSkip: {})
                 .presentationDetents([.medium])
-                .presentationSizing(.form)
+                .formPresentationSizing()
         }
 }
 #endif

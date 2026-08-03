@@ -341,7 +341,7 @@ struct SafetyMapView: View {
                         .presentationDetents([.medium, .large])
                         .presentationDragIndicator(.visible)
                         // iPad 會忽略 presentationDetents 而放大成整頁 sheet，這裡收斂成 form 尺寸
-                        .presentationSizing(.form)
+                        .formPresentationSizing()
                 }
                 // 點事件才教拖圈：點開事件詳情、關掉後，第一次跳一張拖圈提示
                 .onChange(of: selected) { oldValue, newValue in
@@ -1677,7 +1677,7 @@ private struct EventClusterListSheet: View {
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
-        .presentationSizing(.form)
+        .formPresentationSizing()
     }
 }
 
@@ -1702,7 +1702,7 @@ private struct MapEventSheet: View {
         .presentationDragIndicator(.visible)
         .presentationBackgroundInteraction(.enabled(upThrough: Self.compactDetent))
         // iPad 會忽略 presentationDetents 而放大成整頁 sheet，這裡收斂成 form 尺寸
-        .presentationSizing(.form)
+        .formPresentationSizing()
     }
 
     private var compactContent: some View {

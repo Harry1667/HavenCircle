@@ -687,7 +687,7 @@ struct OnboardingView: View {
         me.isCurrentUser = true
         context.insert(me)
         // 固定圈與即時圈都必須先確認位置；不可用任意預設座標造成錯誤安心。
-        guard let coordinate = picked ?? found?.location.coordinate else {
+        guard let coordinate = picked ?? found?.placemark.coordinate else {
             context.delete(me)
             locationHint = "請先確認警戒圈位置。"
             withAnimation { step = .circle }

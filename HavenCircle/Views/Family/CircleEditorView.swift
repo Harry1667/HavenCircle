@@ -327,7 +327,7 @@ struct CircleEditorView: View {
     /// 三種輸入管道（地址搜尋、目前位置、地圖點選）任一路更新，小地圖頭針與警戒圈預覽都跟著換。
     private var displayCoordinate: CLLocationCoordinate2D? {
         picked
-            ?? found?.location.coordinate
+            ?? found?.placemark.coordinate
             ?? circle.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
     }
 
@@ -479,7 +479,7 @@ struct CircleEditorView: View {
     private func save() {
         guard canSave else { return }
         let coordinate = picked
-            ?? found?.location.coordinate
+            ?? found?.placemark.coordinate
             ?? circle.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
         guard let coordinate else { return }
         let target = circle ?? LocalLifeCircle(
