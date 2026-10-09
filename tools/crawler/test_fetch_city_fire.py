@@ -226,7 +226,7 @@ class SourceIdKeyTests(unittest.TestCase):
 
     def test_native_id_key_format(self):
         source = {"county": "台南市", "sourceName": "台南市消防局"}
-        occurred = datetime(2026, 8, 2, 10, 59, 46, tzinfo=cf.TZ_TAIPEI)
+        occurred = datetime.now(cf.TZ_TAIPEI).replace(microsecond=0) - timedelta(hours=1)
         raw = {
             "nativeId": "20260802105946008", "caseType": "火災", "caseSub": "",
             "location": "台南市安南區x路", "district": "安南區", "unit": "",
@@ -237,7 +237,7 @@ class SourceIdKeyTests(unittest.TestCase):
 
     def test_synthetic_key_when_no_native_id(self):
         source = {"county": "台中市", "sourceName": "台中市消防局"}
-        occurred = datetime(2026, 8, 2, 10, 41, 0, tzinfo=cf.TZ_TAIPEI)
+        occurred = datetime.now(cf.TZ_TAIPEI).replace(microsecond=0) - timedelta(hours=1)
         raw = {
             "nativeId": None, "caseType": "火災", "caseSub": "",
             "location": "台中市觀音區新富路", "district": "觀音區", "unit": "",
@@ -245,14 +245,14 @@ class SourceIdKeyTests(unittest.TestCase):
         }
         record = cf.build_record(raw, source)
         self.assertEqual(
-            record["sourceId"], "台中市|2026-08-02T10:41:00+08:00|台中市觀音區新富路"
+            record["sourceId"], f"台中市|{occurred.isoformat()}|台中市觀音區新富路"
         )
 
     def test_status_change_does_not_change_key(self):
         # 同一案從「已派遣」變「已返隊」，sourceId 必須不變，
         # 這樣主程式才能用同一個 key 覆蓋更新既有記錄的狀態
         source = {"county": "台南市", "sourceName": "台南市消防局"}
-        occurred = datetime(2026, 8, 2, 10, 59, 46, tzinfo=cf.TZ_TAIPEI)
+        occurred = datetime.now(cf.TZ_TAIPEI).replace(microsecond=0) - timedelta(hours=1)
         base_raw = {
             "nativeId": "20260802105946008", "caseType": "火災", "caseSub": "",
             "location": "台南市安南區x路", "district": "安南區", "unit": "",
@@ -469,6 +469,162 @@ class CoordinateFieldTests(unittest.TestCase):
         record = cf.build_record(raw, source)
         self.assertIsNone(record["latitude"])
         self.assertIsNone(record["longitude"])
+
+
+# ============================================================
+# 2026-10-10 新增：台東／連江（DTS）、嘉義市、新竹縣
+# ============================================================
+
+# 台東縣 dt.ttfd.gov.tw 2026-10-10 實抓回應（3 筆原樣，未改動）
+_TTFD_REAL_XML = (
+    "<Data><case><CS_NO>20261010062151007</CS_NO><CS_KIND>02</CS_KIND><KIND>緊急救護</KIND>"
+    "<CS_CODE>空跑</CS_CODE><IN_TIME>2026/10/10 06:21:51</IN_TIME><COUNTRY_NAME>台東縣</COUNTRY_NAME>"
+    "<TOWN_NAME>台東市</TOWN_NAME><ADDR>台東縣台東市中興路</ADDR><DEPT_NAME>台東分隊</DEPT_NAME>"
+    "<PERSION_COUNT>共1人</PERSION_COUNT><CAR_COUNT>共1車</CAR_COUNT><STATUS>已返隊</STATUS><CS_NO_ID/></case>"
+    "<case><CS_NO>20261010053529009</CS_NO><CS_KIND>02</CS_KIND><KIND>緊急救護</KIND>"
+    "<CS_CODE>急病</CS_CODE><IN_TIME>2026/10/10 05:35:29</IN_TIME><COUNTRY_NAME>台東縣</COUNTRY_NAME>"
+    "<TOWN_NAME>台東市</TOWN_NAME><ADDR>台東縣台東市中興路三段401巷11弄</ADDR><DEPT_NAME>豐田分隊</DEPT_NAME>"
+    "<PERSION_COUNT>共1人</PERSION_COUNT><CAR_COUNT>共1車</CAR_COUNT><STATUS>已返隊</STATUS><CS_NO_ID/></case>"
+    "<case><CS_NO>20261009101327007</CS_NO><CS_KIND>01</CS_KIND><KIND>火災</KIND>"
+    "<CS_CODE>雜草(含廢棄物、墓地)</CS_CODE><IN_TIME>2026/10/09 10:13:27</IN_TIME><COUNTRY_NAME>台東縣</COUNTRY_NAME>"
+    "<TOWN_NAME>綠島鄉</TOWN_NAME><ADDR>台東縣綠島鄉</ADDR><DEPT_NAME>綠島分隊</DEPT_NAME>"
+    "<PERSION_COUNT>共1人</PERSION_COUNT><CAR_COUNT>共1車</CAR_COUNT><STATUS>已出動</STATUS><CS_NO_ID/></case></Data>"
+)
+
+
+class NewDtsCountiesTests(unittest.TestCase):
+    def test_taitung_real_xml_parses_three_cases(self):
+        rows = cf.parse_dts_xml(_TTFD_REAL_XML, "台東縣")
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[2]["caseType"], "火災")
+        self.assertEqual(rows[2]["district"], "綠島鄉")
+
+    def test_taitung_filter_keeps_only_fire(self):
+        source = next(x for x in cf.SOURCES if x["county"] == "台東縣")
+        # 時間窗 24h 會把 10/09 的舊 fixture 擋掉，這裡把時間改成現在只驗過濾規則
+        rows = cf.parse_dts_xml(_TTFD_REAL_XML, "台東縣")
+        for r in rows:
+            r["occurredAt"] = datetime.now(cf.TZ_TAIPEI)
+        kept = [cf.build_record(r, source) for r in rows]
+        kept = [k for k in kept if k]
+        self.assertEqual([k["caseType"] for k in kept], ["火災"])
+        self.assertEqual(kept[0]["sourceId"], "台東縣|20261009101327007")
+
+    def test_lienchiang_empty_data_returns_no_rows(self):
+        # dt.lcfd.gov.tw 實測回應就是自我閉合的 <Data/>
+        self.assertEqual(cf.parse_dts_xml("<Data/>", "連江縣"), [])
+
+    def test_sources_registered_with_dts_host(self):
+        hosts = {x["county"]: x.get("host") for x in cf.SOURCES}
+        self.assertEqual(hosts["台東縣"], "dt.ttfd.gov.tw")
+        self.assertEqual(hosts["連江縣"], "dt.lcfd.gov.tw")
+
+
+# 嘉義市 /Common/Getfdcaselist.ashx 實測空回應（表頭為真實，只有 0 筆）
+_CYCITY_EMPTY = (
+    '<table border="0" cellpadding="1" cellspacing="1" class="disaster_form" style="width:100%; text-align: center;">'
+    "\n\t<tbody>\n\t\t<tr>\n\t\t\t<th scope=\"col\">受理時間</th>\n\t\t\t<th scope=\"col\">案類-細項</th>\n"
+    "\t\t\t<th scope=\"col\">案發地點</th>\n\t\t\t<th scope=\"col\">派遣分隊</th>\n"
+    "\t\t\t<th scope=\"col\">案件狀態</th>\n\t\t</tr>\n\t</tbody>\n</table>"
+)
+# 資料列：站方尚無資料可抓，依嘉義縣同款 CMS 欄位順序合成（非真實資料）
+_CYCITY_ROWS = _CYCITY_EMPTY.replace(
+    "</tbody>",
+    "<tr><td><p>115-10-10 08:15:30</p></td><td><p>火災-建築物</p></td>"
+    "<td><p>東區中山路</p></td><td><p>東區分隊</p></td><td><p>已出動</p></td></tr>"
+    "<tr><td>2026/10/10 08:20:00</td><td>火警</td><td>嘉義市西區民權路</td>"
+    "<td>西區分隊</td><td>已返隊</td></tr></tbody>",
+)
+
+
+class CiayiCityTests(unittest.TestCase):
+    def test_empty_table_yields_no_rows(self):
+        self.assertEqual(cf.parse_cycity_html(_CYCITY_EMPTY), [])
+
+    def test_rows_parsed_roc_and_western_time_and_county_prefix(self):
+        rows = cf.parse_cycity_html(_CYCITY_ROWS)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["caseType"], "火災")
+        self.assertEqual(rows[0]["caseSub"], "建築物")
+        self.assertEqual(rows[0]["location"], "嘉義市東區中山路")
+        self.assertEqual(rows[0]["district"], "東區")
+        self.assertEqual(rows[0]["occurredAt"],
+                         datetime(2026, 10, 10, 8, 15, 30, tzinfo=cf.TZ_TAIPEI))
+        # 「火警」正規化為白名單內的「火災」；西元年時間也吃
+        self.assertEqual(rows[1]["caseType"], "火災")
+        self.assertEqual(rows[1]["district"], "西區")
+        self.assertEqual(rows[1]["occurredAt"].hour, 8)
+
+
+# 新竹縣 fire.hsinchu.gov.tw 即時災情列表（2026-10-10 實抓，取其中 3 則）
+def _hccfd_item(article_id, title, date):
+    return (
+        '<div class="newlist caselist col-md-6">\n'
+        f'<a href="https://fire.hsinchu.gov.tw/cht/index.php?code=list&flag=detail&ids=262&article_id={article_id}" '
+        f'class="d-flex" title="{title}" >\n<div class="newc w-100"><div class="news_date">'
+        f'<span class="mon"><i class="far fa-calendar-alt"></i><span class="sr-only">發佈日期</span>{date}</span>'
+        '<div class="hot"><i class="fas fa-caret-right"></i><span class="sr-only">發佈單位</span>勤務指揮科</div>'
+        f'</div><div class="act_t">{title}</div></div></a></div>\n'
+    )
+
+
+_HCCFD_LIST = (
+    _hccfd_item(60939, "火災－新竹縣新豐鄉忠孝路附近", "2026-10-04")
+    + _hccfd_item(60098, "瓦斯味－新竹縣芎林鄉文衡路周邊", "2026-09-16")
+    + _hccfd_item(1, "\u200b火災－竹北市華興街附近", "2026-10-03")
+    + _hccfd_item(2, "新豐鄉建興路二段附近不明氣體噴出", "2026-10-02")
+    + _hccfd_item(3, "車禍-新竹縣湖口鄉中正路附近", "2026-10-01")
+)
+_HCCFD_DETAIL = (
+    '<div class="col-12 article-content">\n    新竹縣新豐鄉忠孝路附近於22時42分發生住宅火警<br />\n'
+    "新竹縣政府消防局獲報後，派遣山崎、新豐及工業車組前往搶救。</div>"
+)
+
+
+class HsinchuCountyTests(unittest.TestCase):
+    def test_list_parsed_title_split_and_county_prefix(self):
+        rows = cf.parse_hccfd_list(_HCCFD_LIST)
+        self.assertEqual(len(rows), 5)
+        self.assertEqual(rows[0]["nativeId"], "60939")
+        self.assertEqual(rows[0]["caseType"], "火災")
+        self.assertEqual(rows[0]["location"], "新竹縣新豐鄉忠孝路附近")
+        self.assertEqual(rows[0]["district"], "新豐鄉")
+        self.assertEqual(rows[0]["date"], "2026-10-04")
+        self.assertEqual(rows[1]["caseType"], "瓦斯味")
+        # 標題缺縣名會補；零寬空白會清掉
+        self.assertEqual(rows[2]["location"], "新竹縣竹北市華興街附近")
+        self.assertEqual(rows[2]["district"], "竹北市")
+        self.assertEqual(rows[2]["caseType"], "火災")
+        # 無分隔符 → 案類空，會被白名單擋掉
+        self.assertEqual(rows[3]["caseType"], "")
+        # 車禍轉成 緊急救護＋車禍
+        self.assertEqual((rows[4]["caseType"], rows[4]["caseSub"]), ("緊急救護", "車禍"))
+        self.assertTrue(cf.is_relevant(rows[4]["caseType"], rows[4]["caseSub"]))
+        self.assertFalse(cf.is_relevant(rows[1]["caseType"], rows[1]["caseSub"]))
+        self.assertFalse(cf.is_relevant(rows[3]["caseType"], rows[3]["caseSub"]))
+
+    def test_detail_time_combined_with_list_date(self):
+        self.assertEqual(
+            cf.parse_hccfd_detail_time(_HCCFD_DETAIL, "2026-10-04"),
+            datetime(2026, 10, 4, 22, 42, tzinfo=cf.TZ_TAIPEI),
+        )
+
+    def test_detail_without_time_returns_none_not_fabricated(self):
+        self.assertIsNone(cf.parse_hccfd_detail_time("<div>無時間</div>", "2026-10-04"))
+
+    def test_record_without_time_is_dropped_by_build_record(self):
+        source = next(x for x in cf.SOURCES if x["county"] == "新竹縣")
+        raw = cf.parse_hccfd_list(_HCCFD_LIST)[0]
+        self.assertIsNone(cf.build_record(raw, source))  # occurredAt 為 None
+
+    def test_build_record_for_fresh_hsinchu_county_case(self):
+        source = next(x for x in cf.SOURCES if x["county"] == "新竹縣")
+        raw = cf.parse_hccfd_list(_HCCFD_LIST)[0]
+        raw["occurredAt"] = datetime.now(cf.TZ_TAIPEI)
+        rec = cf.build_record(raw, source)
+        self.assertEqual(rec["sourceId"], "新竹縣|60939")
+        self.assertEqual(rec["location"], "新竹縣新豐鄉忠孝路附近")
+        self.assertIsNone(rec["latitude"])
 
 
 if __name__ == "__main__":

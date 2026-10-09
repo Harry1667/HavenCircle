@@ -23,6 +23,14 @@
      消失，視窗是所有來源裡最短的之一，建議獨立跑 60 秒輪詢（現行 cron 是 2 分鐘，
      漏接風險偏高）。難得自帶精確經緯度（lat/lng），優先於行政區推定用於生活圈比對。
 
+  E. 2026-10-10 補上 4 縣（花蓮、金門無公開即時案件頁，見下方「未接上」）：
+     台東縣、連江縣是 DTS 系統（host 分別是 dt.ttfd.gov.tw、dt.lcfd.gov.tw，併入型態 A）；
+     嘉義市是自有 ashx 端點 /Common/Getfdcaselist.ashx?mode=Page，回傳 HTML table，
+     頁面標題是「火警案件即時災情」，只放火警；新竹縣只有「即時災情」文章列表
+     （勤務指揮科人工發布，約每數日 1 則，只有日期，時間要點進內文抓「於HH時MM分」）。
+     未接上：花蓮縣消防局 (www.hlcfd.gov.tw) 與金門縣消防局 (kmfb.kinmen.gov.tw)
+     都只有新聞／公告，沒有任何即時案件頁或 API（連 DTS 慣用 host 猜測都不存在）。
+
 去重／狀態更新：DTS 有原生 CS_NO，用 {縣市}|{CS_NO} 當鍵；沒有原生案號的站用
 {縣市}|{發生時間}|{地點}。同一案的 STATUS 會隨時間變化（已派遣→已出動→已返隊），
 狀態故意不放進鍵——每輪都輸出「本次掃到的完整快照」（比照 fetch_taichung_fire.py／
@@ -108,6 +116,14 @@ SOURCES = [
     {"county": "澎湖縣", "type": "dts", "scheme": "http", "host": "210.241.42.144:8080",
      "sourceName": "澎湖縣消防局", "enabled": True,
      "note": "裸 IP、純 HTTP 非 HTTPS；2026-08-02 實測連線正常（當下案件數為 0）"},
+    {"county": "台東縣", "type": "dts", "scheme": "https", "host": "dt.ttfd.gov.tw",
+     "sourceName": "台東縣消防局", "enabled": True,
+     "note": "官網「臺東縣119案件分享平台」；2026-10-10 實測 XML 有真實資料"},
+    {"county": "連江縣", "type": "dts", "scheme": "https", "host": "dt.lcfd.gov.tw",
+     "sourceName": "連江縣消防局", "enabled": True,
+     "note": "官網未公開連結，host 由 DNS 探測得知；/DTS/caselist/xml 回 <Data/>（0 件，"
+             "離島案量極低屬正常）；html 頁是 2017 年高雄範本假資料，勿用。"
+             "尚未見過真實案件，格式假設與其他 DTS 相同"},
 
     # --- 型態 B：台北市 service119（POST JSON）---
     {"county": "台北市", "type": "taipei",
@@ -140,6 +156,19 @@ SOURCES = [
      "sourceName": "屏東縣消防局", "enabled": True,
      "note": "頁面無案別欄位，只能收到案類在白名單內的（火災／災害搶救），"
              "車禍無法從屏東判斷；內容為 HTML entity 編碼，parser 內已 unescape"},
+    {"county": "嘉義市", "type": "cycity",
+     "url": "https://cyfd.chiayi.gov.tw/Common/Getfdcaselist.ashx?mode=Page",
+     "sourceName": "嘉義市消防局", "enabled": True,
+     "note": "頁面「火警案件即時災情」每 60 秒 ajax 刷新此端點，只放火警；"
+             "2026-10-10 實測當下 0 筆（只有表頭），列格式依嘉義縣同款 CMS 的欄位順序"
+             "（受理時間／案類-細項／案發地點／派遣分隊／案件狀態）寫成寬鬆解析，"
+             "尚未見過真實資料列，首次有火警時請核對"},
+    {"county": "新竹縣", "type": "hccfd",
+     "url": "https://fire.hsinchu.gov.tw/cht/index.php?code=list&ids=262",
+     "sourceName": "新竹縣消防局", "enabled": True,
+     "note": "非逐案系統：勤務指揮科人工發布的「即時災情」文章，量少（約數日 1 則）、"
+             "標題已是模糊地點（…附近）；列表只有日期，時間需再抓內文，"
+             "故只對 2 天內的文章多打詳情頁"},
 
     # --- 型態 D：新北市（獨立端點，雙層 JSON GeoJSON，自帶精確座標）---
     {"county": "新北市", "type": "ntpc",
@@ -621,6 +650,138 @@ def fetch_pthg(source):
 
 
 # ============================================================
+# 型態 C-7：嘉義市（ashx 回傳 HTML table，只放火警）
+# ============================================================
+
+_CYCITY_ROW_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.DOTALL)
+_CYCITY_CELL_RE = re.compile(r"<td\b[^>]*>(.*?)</td>", re.DOTALL)
+_CYCITY_DISTRICT_RE = re.compile(r"嘉義市([東西]區)")
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def parse_cycity_html(page_html, county="嘉義市"):
+    """純解析函式。欄位順序：受理時間／案類-細項／案發地點／派遣分隊／案件狀態。
+
+    寬鬆處理：儲存格內是否包 <p>、是否民國年都吃；表頭列只有 <th> 沒有 <td> 自然跳過。
+    頁面本身是「火警案件即時災情」，案類若寫成「火警」正規化成白名單裡的「火災」。
+    """
+    rows = []
+    for rm in _CYCITY_ROW_RE.finditer(page_html):
+        cells = [
+            html_lib.unescape(_TAG_RE.sub("", c)).strip()
+            for c in _CYCITY_CELL_RE.findall(rm.group(1))
+        ]
+        if len(cells) < 5:
+            continue
+        time_text, type_sub, location, unit, status = cells[:5]
+        if "-" in type_sub:
+            case_type, case_sub = type_sub.split("-", 1)
+        else:
+            case_type, case_sub = type_sub, ""
+        case_type = case_type.strip()
+        if case_type == "火警":
+            case_type = "火災"
+        if location and not location.startswith(county):
+            location = f"{county}{location}"
+        dist_m = _CYCITY_DISTRICT_RE.search(location)
+        rows.append({
+            "nativeId": None,
+            "caseType": case_type,
+            "caseSub": case_sub.strip(),
+            "location": location,
+            "district": dist_m.group(1) if dist_m else "",
+            "unit": unit,
+            "status": status,
+            "occurredAt": parse_roc_datetime(time_text) or parse_datetime(time_text),
+        })
+    return rows
+
+
+def fetch_cycity(source):
+    page_html = http_get(source["url"])
+    return parse_cycity_html(page_html, source["county"])
+
+
+# ============================================================
+# 型態 C-8：新竹縣（人工發布的「即時災情」文章列表，非逐案系統）
+# ============================================================
+
+# 列表每則：title="火災－新竹縣新豐鄉忠孝路附近" ... 發佈日期</span>2026-10-04
+_HCCFD_ITEM_RE = re.compile(
+    r'<a href="([^"]*article_id=(\d+)[^"]*)"[^>]*title="([^"]*)"'
+    r'.*?發佈日期</span>(\d{4}-\d{2}-\d{2})',
+    re.DOTALL,
+)
+_HCCFD_TIME_RE = re.compile(r"於\s*(\d{1,2})\s*時\s*(\d{1,2})\s*分")
+_HCCFD_DISTRICT_RE = re.compile(r"新竹縣([一-鿿]{1,3}(?:鄉|鎮|市))")
+# 標題分隔符站方混用全形「－」與半形「-」
+_HCCFD_TITLE_SPLIT_RE = re.compile(r"[－\-]")
+HCCFD_DETAIL_MAX_AGE_DAYS = 2  # 只對近 2 天的文章打詳情頁（時間窗本來就只有 24 小時）
+
+
+def parse_hccfd_list(page_html, county="新竹縣"):
+    """純解析函式：列表頁 → 尚未帶時間的 rows（occurredAt 先放 None，另有 date/detailUrl）。
+
+    標題沒有「－」分隔的（例：「新豐鄉建興路二段附近不明氣體噴出」）無法判斷案類，
+    caseType 留空，之後被白名單擋掉。「車禍」依 build_record 的規則轉成
+    緊急救護＋車禍子類，才能通過過濾。
+    """
+    rows = []
+    for m in _HCCFD_ITEM_RE.finditer(page_html):
+        url, article_id, title, date_text = m.groups()
+        title = html_lib.unescape(title).replace("\u200b", "").strip()
+        parts = _HCCFD_TITLE_SPLIT_RE.split(title, 1)
+        if len(parts) == 2:
+            case_type, location = parts[0].strip(), parts[1].strip()
+        else:
+            case_type, location = "", title
+        case_sub = ""
+        if case_type in CAR_ACCIDENT_SUBTYPES:
+            case_type, case_sub = "緊急救護", "車禍"
+        if location and not location.startswith(county):
+            location = f"{county}{location}"
+        dist_m = _HCCFD_DISTRICT_RE.search(location)
+        rows.append({
+            "nativeId": article_id,
+            "caseType": case_type,
+            "caseSub": case_sub,
+            "location": location,
+            "district": dist_m.group(1) if dist_m else "",
+            "unit": "勤務指揮科",
+            "status": "",
+            "occurredAt": None,
+            "date": date_text,
+            "detailUrl": html_lib.unescape(url),
+        })
+    return rows
+
+
+def parse_hccfd_detail_time(detail_html, date_text):
+    """內文「於22時42分發生…」+ 列表日期 → aware datetime；抓不到回 None（該筆丟棄，不編造時間）。"""
+    m = _HCCFD_TIME_RE.search(_TAG_RE.sub("", detail_html))
+    if not m:
+        return None
+    return parse_datetime(f"{date_text} {int(m.group(1)):02d}:{int(m.group(2)):02d}")
+
+
+def fetch_hccfd(source):
+    rows = parse_hccfd_list(http_get(source["url"]), source["county"])
+    today = datetime.now(TZ_TAIPEI).date()
+    for raw in rows:
+        # 先用白名單預檢，省掉對瓦斯味／消防栓漏水這類必被丟棄的文章打詳情頁
+        if not is_relevant(raw["caseType"], raw["caseSub"]):
+            continue
+        age = (today - datetime.strptime(raw["date"], "%Y-%m-%d").date()).days
+        if age > HCCFD_DETAIL_MAX_AGE_DAYS:
+            continue
+        try:
+            raw["occurredAt"] = parse_hccfd_detail_time(http_get(raw["detailUrl"]), raw["date"])
+        except (urllib.error.URLError, TimeoutError) as e:
+            log(f"[警告] 新竹縣詳情頁抓取失敗（略過該則）：{e}")
+    return rows
+
+
+# ============================================================
 # 型態 D：新北市（獨立端點，雙層 JSON GeoJSON，自帶座標，無時間欄位）
 # ============================================================
 
@@ -733,6 +894,8 @@ HANDLERS = {
     "chfd": fetch_chfd,
     "cyfd": fetch_cyfd,
     "pthg": fetch_pthg,
+    "cycity": fetch_cycity,
+    "hccfd": fetch_hccfd,
     "ntpc": fetch_ntpc,
 }
 
@@ -772,7 +935,7 @@ def push_to_oracle(output):
         log(f"[警告] 推送 Oracle 失敗（不中斷）：{e}")
 
 
-def main():
+def main(dry_run=False):
     seen = load_seen()
     now_iso = datetime.now(TZ_TAIPEI).isoformat()
 
@@ -833,10 +996,11 @@ def main():
         "sources": sources_report,
         "events": events,
     }
-    OUTPUT_PATH.write_text(
-        json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    save_seen(seen)
+    if not dry_run:
+        OUTPUT_PATH.write_text(
+            json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        save_seen(seen)
 
     ok_counties = [s["county"] for s in sources_report if s["ok"]]
     failed_counties = [s["county"] for s in sources_report if not s["ok"]]
@@ -846,12 +1010,21 @@ def main():
     )
     if failed_counties:
         log(f"[完成] 失敗縣市：{'、'.join(failed_counties)}")
+    if dry_run:
+        # 乾跑：不寫檔、不推 Oracle，只印每縣市筆數與前 2 筆，供上線前驗證
+        for s_ in sources_report:
+            sample = [e for e in events if e["county"] == s_["county"]][:2]
+            log(f"[dry-run] {s_['county']}：ok={s_['ok']} count={s_['count']}"
+                + (f" error={s_['error']}" if s_.get("error") else ""))
+            for e in sample:
+                log(f"[dry-run]   {json.dumps(e, ensure_ascii=False)}")
+        return
     push_to_oracle(output)
 
 
 if __name__ == "__main__":
     try:
-        main()
+        main(dry_run="--dry-run" in sys.argv)
     except Exception as e:  # noqa: BLE001 — cron 守門：任何未預期例外都印出而非讓排程靜默死掉
         log(f"[錯誤] 未預期例外：{e}")
         sys.exit(1)

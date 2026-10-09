@@ -935,6 +935,35 @@ class NewsCrawlerTests(unittest.TestCase):
         self.assertIs(by_title["倉庫火警 濃煙竄出"]["is_ongoing"], True)
         self.assertEqual(output["pipelineHealth"]["staleOngoingCleared"], 1)
 
+    def test_parse_tvbs_local_reads_astro_island_props(self):
+        import html as html_lib
+
+        def island(aid, title, ts, comp="RealTimeArticle.CrZuDnKD.js"):
+            props = json.dumps({"article": [0, {
+                "articleId": [0, aid],
+                "title": [0, title],
+                "articleUrl": [0, f"https://news.tvbs.com.tw/local/{aid}"],
+                "firstParagraph": [0, "內文第一段"],
+                "publishedAt": [0, ts],
+            }], "isShowCategory": [0, False]}, ensure_ascii=False)
+            return (
+                f'<astro-island uid="X" component-url="https://news.tvbs.com.tw/assets/{comp}" '
+                f'props="{html_lib.escape(props)}" ssr client="visible"></astro-island>'
+            )
+
+        page = (
+            island(4034057, "快訊／東大門夜市男持刀追砍遊客", 1791558259)
+            + island(4034057, "快訊／東大門夜市男持刀追砍遊客", 1791558259)  # 重複
+            + island(4034055, "基隆監獄2管理員涉傷害致死", 1791557841)
+            + island(1, "不是即時清單", 1791557841, comp="Topic.BPqc.js")
+        )
+        items = news.parse_tvbs_local(page)
+        self.assertEqual([i["guid"] for i in items], ["4034057", "4034055"])
+        self.assertEqual(items[0]["link"], "https://news.tvbs.com.tw/local/4034057")
+        self.assertEqual(items[0]["description"], "內文第一段")
+        self.assertEqual(items[0]["pubDate"], "2026-10-09T23:04:19+08:00")
+        self.assertEqual(news.parse_tvbs_local("<html>舊版頁面</html>"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

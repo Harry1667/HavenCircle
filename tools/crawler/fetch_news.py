@@ -217,7 +217,7 @@ ONGOING_MAX_AGE_HOURS = max(1, int(os.environ.get("NEWS_ONGOING_MAX_AGE_HOURS", 
 SEEN_MAX = 2000
 
 # 資料來源。RSS 2.0 為預設；format="atom" 走 parse_atom（公視）；format="tvbs_html" 走
-# parse_tvbs_local（TVBS 沒有可用 RSS，改直接爬 /local 分類頁的「即時」清單區塊）。
+# parse_tvbs_local（TVBS 沒有可用 RSS，改直接爬 /local 分類頁 astro-island 的即時清單 props）。
 # 2026-07-26：實測三立官網為前端 JS 動態渲染，簡單 HTML 爬取抓不到內容，暫不支援
 # （需要無頭瀏覽器等級的技術投入，非目前爬蟲架構的量級，故不強做）。
 FEEDS = [
@@ -605,50 +605,56 @@ def parse_atom(data):
     return [i for i in items if i["title"]]
 
 
-TVBS_ARTICLE_SPLIT = '<li><a href="/local/'
+TVBS_ISLAND_RE = re.compile(r'<astro-island\b[^>]*?\bcomponent-url="[^"]*RealTimeArticle[^"]*"[^>]*?\bprops="([^"]*)"')
+
+
+def _astro_unwrap(v):
+    """Astro island props 的序列化格式：純量包成 [0, value]、陣列包成 [1, [...]]。"""
+    if isinstance(v, list) and len(v) == 2 and v[0] in (0, 1):
+        return _astro_unwrap(v[1]) if v[0] == 0 else [_astro_unwrap(x) for x in v[1]]
+    if isinstance(v, dict):
+        return {k: _astro_unwrap(x) for k, x in v.items()}
+    return v
 
 
 def parse_tvbs_local(html):
     """
-    TVBS 沒有可用的公開 RSS（官方/RSSHub 皆無穩定路徑），改直接爬 /local 分類頁
-    的「即時」清單區塊。頁面同時有「頭條圖文」「即時」兩種不同 HTML 結構的清單，
-    這裡只解析「即時」清單（<li><a href="/local/{id}">...<h2>title</h2>...
-    class="time">time），比頭條圖文結構單純、時間新舊排序清楚。
-
-    輸出與 parse_rss 相同形狀的 dict 清單，讓下游分類/去重/LLM 完全共用一套邏輯，
-    不必為 TVBS 另外維護一份關鍵字表。
+    TVBS 沒有可用的公開 RSS，直接爬 /local 分類頁。網站 2026-10 改為 Astro 架構：
+    「社會即時新聞」清單不再是 <li><a href="/local/..."> 純 HTML，而是每則一個
+    <astro-island component-url=".../RealTimeArticle...js" props="{HTML 跳脫的 JSON}">，
+    props 內含 articleId/title/articleUrl/firstParagraph/publishedAt(epoch 秒)。
+    這裡解析這些 island 的 props，輸出與 parse_rss 相同形狀的 dict 清單，
+    讓下游分類/去重/LLM 完全共用一套邏輯。
     """
+    import html as html_lib
     items = []
-    chunks = html.split(TVBS_ARTICLE_SPLIT)
-    for chunk in chunks[1:]:
-        id_m = re.match(r"(\d+)\"", chunk)
-        if not id_m:
+    seen = set()
+    for m in TVBS_ISLAND_RE.finditer(html):
+        try:
+            props = json.loads(html_lib.unescape(m.group(1)))
+            art = _astro_unwrap(props.get("article"))
+        except (ValueError, AttributeError):
             continue
-        article_id = id_m.group(1)
-        boundary = chunk.find("</li>")
-        scope = chunk[:boundary] if boundary != -1 else chunk[:2000]
-        title_m = re.search(r"<h2[^>]*>(?:<p>)?([^<]+?)(?:</p>)?</h2>", scope)
-        if not title_m:
+        if not isinstance(art, dict):
             continue
-        time_m = re.search(
-            r'class="time">\s*([0-9]{4})/([0-9]{2})/([0-9]{2})\s+([0-9]{2}):([0-9]{2})',
-            scope,
-        )
-        if time_m:
-            y, mo, d, hh, mm = time_m.groups()
-            pub_date = f"{y}-{mo}-{d}T{hh}:{mm}:00+08:00"
+        article_id = str(art.get("articleId") or "")
+        title = strip_html(art.get("title") or "").strip()
+        if not article_id or not title or article_id in seen:
+            continue
+        seen.add(article_id)
+        ts = art.get("publishedAt")
+        if isinstance(ts, (int, float)) and ts > 0:
+            pub_date = datetime.fromtimestamp(ts, TZ_TAIPEI).isoformat()
         else:
             pub_date = datetime.now(TZ_TAIPEI).isoformat()
-        title = strip_html(title_m.group(1)).strip()
         items.append({
             "title": title,
-            "description": "",
-            "link": f"https://news.tvbs.com.tw/local/{article_id}",
+            "description": strip_html(art.get("firstParagraph") or "").strip(),
+            "link": art.get("articleUrl") or f"https://news.tvbs.com.tw/local/{article_id}",
             "guid": article_id,
             "pubDate": pub_date,
         })
     return items
-
 
 
 def canonical_media_name(name):
