@@ -14,6 +14,8 @@ fetch_news.py — 「安心圈」新聞重大事故爬蟲
     - 例外：LLM 分類走 ProxyCLI REST API（urllib 呼叫）；
       token 從環境變數 AI_PROXY_TOKEN 讀，沒有 token 自動退回規則式分類，絕不 crash
     - 單一 feed 失敗記 log 後繼續跑其他 feed，不 silent fail
+    - 2026-10 新增兩個來源：Google 新聞關鍵字 RSS（聚合各家媒體，媒體名拆自標題尾巴）、
+      PTT 八卦版［爆卦］／［新聞］（社群爆料，一律「未經證實」，見 PTT 區塊說明）
     - 建議由 cron 每 15 分鐘跑一次（各 feed ttl 皆 <= 15 分鐘，不會過度抓取）
 
 輸出：
@@ -30,6 +32,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -205,6 +208,11 @@ except ValueError:
 NEWS_MAX_AGE_HOURS = max(1, int(os.environ.get("NEWS_MAX_AGE_HOURS", "24")))
 DEFAULT_FEED_ITEM_LIMIT = max(10, int(os.environ.get("NEWS_FEED_ITEM_LIMIT", "80")))
 
+# 事件發布超過幾小時就不得標 is_ongoing=true。選 2 小時：cron 每 5 分鐘、媒體從事發到
+# 上稿通常 <1 小時，LLM 重試與延後最多再差幾輪，2 小時足以涵蓋「還算即時」的報導；
+# 超過就是事後報導，伺服器推播若照發只會變成「晚了半天的警報」。
+ONGOING_MAX_AGE_HOURS = max(1, int(os.environ.get("NEWS_ONGOING_MAX_AGE_HOURS", "2")))
+
 # seen.json 滾動上限
 SEEN_MAX = 2000
 
@@ -229,6 +237,87 @@ FEEDS = [
     {"name": "聯合報", "feed": "社會", "url": "https://udn.com/news/rssfeed/6639", "max_items": 60},
     {"name": "TVBS", "feed": "社會", "url": "https://news.tvbs.com.tw/local", "format": "tvbs_html", "max_items": 60},
 ]
+
+
+# ---------------------------------------------------------------------------
+# 擴充來源 A：Google 新聞關鍵字 RSS
+# ---------------------------------------------------------------------------
+# 用「OR」把關鍵字併成 5 組查詢（每輪 5 個 HTTP 請求，而非 10+ 個），並加 when:1d
+# 只取近 24 小時。Google 的 item 標題格式為「標題 - 媒體名」，媒體名同時放在 <source>。
+# 這些來源排在 FEEDS 最後面：既有 feed 先用掉 LLM 預算，新來源只能吃「額外預算」。
+GOOGLE_NEWS_QUERIES = [
+    ("火災爆炸", "火災 OR 失火 OR 氣爆 OR 爆炸"),
+    ("交通事故", "車禍 OR 追撞 OR 翻車"),
+    ("天災", "地震 OR 淹水 OR 土石流 OR 豪雨"),
+    ("民生", "停電 OR 停水"),
+    ("公共安全", "隨機傷人 OR 槍擊 OR 持刀 OR 砍人"),
+]
+GOOGLE_NEWS_ENABLED = os.environ.get("NEWS_GOOGLE_ENABLED", "1").strip() != "0"
+
+# Google 的媒體名稱 → App 端一線媒體名單（Swift MainstreamMedia.tier1）使用的名稱。
+# App 用 sourceName「包含比對」判斷信任等級，所以正規化後 Google 轉載的一線媒體報導
+# 自動升為「主流媒體報導」；也讓同一家媒體不會因寫法不同（聯合新聞網 vs 聯合報）
+# 被誤算成兩個來源而灌水 corroboration。不在表內的媒體維持原名 → App 視為「持續確認中」。
+GOOGLE_MEDIA_CANONICAL = [
+    ("中央社", "中央社"),
+    ("公視", "公視"),
+    ("公共電視", "公視"),
+    ("TVBS", "TVBS"),
+    ("聯合新聞網", "聯合報"),
+    ("聯合報", "聯合報"),
+    ("自由時報", "自由時報"),
+    ("ETtoday", "ETtoday"),
+    ("Newtalk", "Newtalk新聞"),
+    ("記者新聞網", "記者新聞網"),
+]
+
+# 入口網站／聚合平台只是轉載別家內容（Yahoo 轉中央社、LINE TODAY 轉各家…），
+# 若算成獨立來源會灌水 corroboration、假造「多來源交叉驗證」。這類來源與既有事件
+# 重複時直接丟棄、不合併；沒有重複時照常當作單一未知來源輸出。
+AGGREGATOR_MEDIA = ("Yahoo", "LINE TODAY", "MSN", "新浪", "奇摩", "Google")
+
+# 新來源（Google／PTT）每輪最多額外花幾次 LLM；同時仍受 LLM_MAX_CALLS_PER_RUN 總量限制。
+# 超過的項目不寫 seen、也不輸出（無地點的事件 App 會丟棄），下一輪再補。
+try:
+    EXTRA_LLM_MAX_CALLS_PER_RUN = max(0, int(os.environ.get("NEWS_EXTRA_LLM_MAX_CALLS", "10")))
+except ValueError:
+    EXTRA_LLM_MAX_CALLS_PER_RUN = 10
+
+
+def google_news_url(query):
+    """Google 新聞搜尋 RSS 網址（繁中台灣版，限近 1 天）"""
+    q = urllib.parse.quote(query + " when:1d")
+    return "https://news.google.com/rss/search?q={}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant".format(q)
+
+
+if GOOGLE_NEWS_ENABLED:
+    for _label, _query in GOOGLE_NEWS_QUERIES:
+        FEEDS.append({
+            "name": "Google新聞", "feed": _label, "url": google_news_url(_query),
+            "format": "google_news", "max_items": 40, "extra": True,
+        })
+
+# ---------------------------------------------------------------------------
+# 擴充來源 B：PTT 八卦版（社群爆料，一律未經證實）
+# ---------------------------------------------------------------------------
+# 產品守則：社群資訊視為未經證實。做法（三道鎖，缺一不可）：
+#   1. sourceName 用「PTT八卦版」，不含任何一線媒體字樣 → App 端 trustLevel 只會給
+#      「持續確認中」（詳情頁顯示「這是未驗證線索…不會自動通知家人」）。
+#   2. corroboration 固定 1，且與媒體事件重複時直接丟棄 PTT、不合併 → PTT 不會替任何
+#      事件「灌」交叉驗證。
+#   3. 不呼叫 LLM、severity 固定 low、is_ongoing 固定 False → 伺服器 cron_check.php 的
+#      process_news／news_wake_signature 要求「is_ongoing=true 且 severity 為 high/medium」，
+#      永遠不符，不會觸發推播。
+# 只放八卦版：地方版（Taoyuan、Kaohsiung…）發文量低、事故貼文多為求助或閒聊，
+# 噪音比高且各版 [爆卦] 慣例不一，先不放；日後要加只需在 PTT_BOARDS 補一行。
+PTT_ENABLED = os.environ.get("NEWS_PTT_ENABLED", "1").strip() != "0"
+PTT_BOARDS = [
+    {"board": "Gossiping", "name": "PTT八卦版", "url": "https://www.ptt.cc/atom/Gossiping.xml"},
+]
+PTT_TRUST = "community-unverified"
+PTT_TITLE_RE = re.compile(r"^\s*\[(爆卦|新聞)\]\s*(.+)$")
+PTT_SUMMARY_PREFIX = "網友爆料（未證實）："
+PTT_DETAIL = "PTT 網友發文，未經官方或媒體證實，請勿當作確定消息；有立即危險請撥 110 或 119。"
 
 # ---------------------------------------------------------------------------
 # 分類詞庫（第一段：規則式，永遠執行）
@@ -562,6 +651,63 @@ def parse_tvbs_local(html):
 
 
 
+def canonical_media_name(name):
+    """Google 的媒體名 → App 一線媒體名單用的名稱；不在表內就維持原名（App 視為持續確認中）"""
+    name = (name or "").replace("、", " ").strip()
+    if name.upper() == "UDN":  # 只認完全相等，避免「udn房地產」之類子站被誤升為一線媒體
+        return "聯合報"
+    for key, canonical in GOOGLE_MEDIA_CANONICAL:
+        if key.lower() in name.lower():
+            return canonical
+    return name[:30]
+
+
+def split_google_title(title, source=""):
+    """
+    Google 新聞標題「標題 - 媒體名」→ (乾淨標題, 媒體名)。
+    優先用 <source> 的媒體名去掉尾巴；沒有 <source> 才退回以最後一個「 - 」切開。
+    """
+    title = (title or "").strip()
+    source = (source or "").strip()
+    if source and title.endswith(" - " + source):
+        return title[: -len(source) - 3].strip(), source
+    if not source and " - " in title:
+        head, tail = title.rsplit(" - ", 1)
+        if head.strip() and 0 < len(tail.strip()) <= 30:
+            return head.strip(), tail.strip()
+    return title, source
+
+
+def parse_google_news_rss(data):
+    """
+    解析 Google 新聞 RSS，輸出與 parse_rss 相同形狀，另帶 source_name（已正規化的媒體名）。
+    description 是「相關報導」的 HTML 清單，不是內文，一律清空，避免誤觸規則詞。
+    """
+    root = ET.fromstring(data)
+    items = []
+    for item in root.iter("item"):
+        def text_of(tag):
+            node = item.find(tag)
+            return (node.text or "").strip() if node is not None and node.text else ""
+
+        title, source = split_google_title(strip_html(text_of("title")), text_of("source"))
+        items.append({
+            "title": title,
+            "description": "",
+            "link": text_of("link"),
+            "guid": text_of("guid"),
+            "pubDate": text_of("pubDate"),
+            "source_name": canonical_media_name(source) or "Google新聞",
+        })
+    return [i for i in items if i["title"]]
+
+
+def ptt_clean_title(title):
+    """PTT 標題只收［爆卦］或［新聞］開頭（Re: 回文自然排除）；回傳去掉標籤的標題，否則 None"""
+    m = PTT_TITLE_RE.match(title or "")
+    return m.group(2).strip() if m else None
+
+
 def stable_id(item):
     """以 guid（優先）或 link 產生穩定雜湊 id"""
     key = item.get("guid") or item.get("link") or item.get("title", "")
@@ -667,6 +813,7 @@ def district_from_text(text):
     就是查不到，回傳 (None, None)——寧可讓 App 端因缺縣市丟棄這則，也不要猜錯地圖位置。
     """
     best_pos, best_token = None, None
+    text = scrub_non_place(text or "")
     for token in DISTRICT_TOKENS:
         pos = (text or "").find(token)
         if pos == -1:
@@ -732,6 +879,28 @@ DISTRICT_MATCH_TOKENS = sorted(DISTRICT_MATCH_TABLE.keys(), key=len, reverse=Tru
 #（沒有「萬里區溪」這種地名），所以這條規則不會誤傷正常命中。
 DISTRICT_FALSE_TAIL = set("溪川江河山嶺峰湖潭埤圳港灣島嶼路街道橋隧線")
 
+# 非地名詞表：比對行政區前先整段剝除。這些詞裡藏著行政區名的子字串，會把國外或
+# 無關新聞釘到台灣某區（2026-10 實測的兩個誤判）：
+#   - 「東太平洋／太平洋海嘯」含「太平」→ 台中市太平區
+#   - 「法新社／中新社」含「新社」→ 台中市新社區（標題沒事，是內文的通訊社署名）
+# 通訊社、海洋名都不可能是台灣行政區，剝除不會誤傷正常地名（「太平區」「新社區」
+# 本身不受影響：只剝「太平洋」「法新社」這種完整詞，不剝「太平」「新社」）。
+NON_PLACE_TERMS = sorted([
+    "太平洋", "大西洋", "印度洋", "北冰洋", "南冰洋",
+    "法新社", "中新社", "新華社", "共同社", "美聯社", "路透社", "彭博社", "合眾社",
+    "塔斯社", "俄新社", "安納杜魯", "半島電視台",
+    "中國信託", "中國時報", "中國石油", "中國鋼鐵", "中國醫藥", "中國文化",
+], key=len, reverse=True)
+
+
+_NON_PLACE_RE = re.compile("(?:" + "|".join(map(re.escape, NON_PLACE_TERMS)) + ")(?!區)")
+
+
+def scrub_non_place(text):
+    """剝除非地名詞（見 NON_PLACE_TERMS），供行政區比對使用"""
+    # 後面緊接「區」的不剝：「台中新社區」含「中新社」，那是真的行政區（新社區）
+    return _NON_PLACE_RE.sub(" ", text)
+
 
 def _county_core(county):
     """縣市全名去掉尾字「市」或「縣」，供從文本剝除縣市核心字使用（彰化縣→彰化）"""
@@ -762,7 +931,7 @@ def district_from_text_v2(text, county=None):
     長 token 優先。抓不到、或抓到但與已知 county 衝突，一律回傳 (None, None)，
     呼叫端要自行保留原本已知的 county，不要拿這裡的 None 去覆蓋它。
     """
-    haystack = text or ""
+    haystack = scrub_non_place(text or "")
     core = _county_core(county)
     if core:
         haystack = haystack.replace(core, "")
@@ -802,6 +971,52 @@ def district_from_text_v2(text, county=None):
 # 也不做任何 AI 改寫／二次創作——這是規則路徑（這裡）與 LLM 路徑
 # （build_llm_prompt 已移除 summary/detail 的產出需求）共同遵守的長度上限。
 NEWS_DETAIL_EXCERPT_CHARS = 120
+
+
+# ---------------------------------------------------------------------------
+# 國外事件排除（2026-10 實測：巴拿馬地震、杜拜機師被釘到台中市）
+# ---------------------------------------------------------------------------
+# 規則：標題出現國外國名／大城市，或標題帶「| 國際」頻道標記，
+# 而且標題沒有台灣縣市 token、描述也沒有縣市「全名」（台中市／宜蘭縣…）→ 判定為
+# 非台灣事件，不輸出。有台灣縣市就保留（「日本遊客在台中車禍」）。
+# 描述只認縣市全名，是因為「台北時間」「台灣」這類詞常出現在國外新聞內文。
+FOREIGN_PLACES = [
+    "日本", "東京", "大阪", "京都", "北海道", "沖繩", "福島", "韓國", "南韓", "北韓", "首爾", "釜山",
+    "中國大陸", "中國", "大陸", "北京", "上海", "廣州", "深圳", "重慶", "成都", "香港", "澳門", "新疆", "西藏",
+    "美國", "紐約", "洛杉磯", "舊金山", "加州", "德州", "佛州", "華盛頓", "夏威夷", "阿拉斯加",
+    "加拿大", "墨西哥", "巴拿馬", "哥斯大黎加", "瓜地馬拉", "宏都拉斯", "古巴", "海地", "牙買加",
+    "秘魯", "智利", "巴西", "阿根廷", "哥倫比亞", "委內瑞拉", "厄瓜多", "玻利維亞",
+    "英國", "倫敦", "法國", "巴黎", "德國", "柏林", "義大利", "羅馬", "西班牙", "葡萄牙", "希臘",
+    "荷蘭", "比利時", "瑞士", "瑞典", "挪威", "芬蘭", "丹麥", "波蘭", "奧地利", "捷克", "匈牙利",
+    "俄羅斯", "烏克蘭", "莫斯科", "基輔", "土耳其", "伊朗", "伊拉克", "以色列", "巴勒斯坦", "加薩",
+    "黎巴嫩", "敘利亞", "葉門", "約旦", "沙烏地", "阿聯", "杜拜", "阿布達比", "卡達", "科威特", "特拉維夫",
+    "埃及", "南非", "奈及利亞", "肯亞", "衣索比亞", "摩洛哥", "非洲", "歐洲", "中東", "南美", "中美洲", "北美",
+    "印度", "巴基斯坦", "孟加拉", "尼泊爾", "斯里蘭卡", "阿富汗", "泰國", "曼谷", "越南", "河內", "胡志明",
+    "菲律賓", "馬尼拉", "印尼", "雅加達", "峇里", "馬來西亞", "吉隆坡", "新加坡", "緬甸", "柬埔寨", "寮國",
+    "蒙古", "澳洲", "雪梨", "墨爾本", "紐西蘭", "巴布亞", "斐濟", "東加", "萬那杜",
+]
+# 「國際」頻道標記：只認明確的頻道格式，不認「國際機場」「國際賽事」這類內文用詞
+FOREIGN_CHANNEL_RE = re.compile(r"[|｜]\s*(?:國際|全球|世界)\s*$|^\s*[【\[]?(?:國際|全球)[】\]|｜／:：]")
+_FOREIGN_ADJECTIVE_RE = re.compile(
+    "(?:" + "|".join(map(re.escape, FOREIGN_PLACES)) + ")(?:籍|僑|裔|料理|移工|外勞|看護|配偶|新娘|新住民|留學生)")
+COUNTY_FULL_NAMES = sorted(set(COUNTY_NORMALIZE.values()), key=len, reverse=True)
+
+
+def is_foreign_news(title, description=""):
+    """True＝判定為非台灣事件（見上方規則說明）"""
+    title = title or ""
+    if county_from_text(scrub_non_place(title)):
+        return False
+    desc_full = scrub_non_place(description or "")
+    if any(name in desc_full for name in COUNTY_FULL_NAMES):
+        return False
+    if FOREIGN_CHANNEL_RE.search(title):
+        return True
+    # 國外地名只看標題（描述常提到「越南籍移工」這類台灣事件的當事人國籍）；
+    # 再剝掉「越南籍／日本料理／泰籍移工」這類形容在台人事物的用法
+    head = scrub_non_place(title)
+    head = _FOREIGN_ADJECTIVE_RE.sub(" ", head)
+    return any(place in head for place in FOREIGN_PLACES)
 
 
 def build_detail_excerpt(description):
@@ -1397,7 +1612,11 @@ def _llm_classify_safe(title, description):
 
 def normalize_title(title):
     """標題正規化：去掉標點、空白、全形符號，只留中英數字，供跨來源比對"""
-    return re.sub(r"[^\w一-鿿]+", "", title or "").lower()
+    # NFKC 統一全半形；先剝掉「| 國際」這類頻道後綴與「 - 媒體」尾巴，再去標點空白
+    text = unicodedata.normalize("NFKC", title or "")
+    text = re.sub(r"\s*[|｜]\s*[^|｜]{1,8}$", "", text)
+    text = re.sub(r"\s+-\s+[^-]{1,20}$", "", text)
+    return re.sub(r"[^\w一-鿿]+", "", text).lower()
 
 
 def find_duplicate(event, accepted):
@@ -1431,6 +1650,46 @@ def merge_duplicate(existing, new_event):
         existing["severity"] = new_event["severity"]
     if new_event.get("is_ongoing"):
         existing["is_ongoing"] = True
+
+
+# ---------------------------------------------------------------------------
+# 跨輪去重（recent_titles.json）
+# ---------------------------------------------------------------------------
+# find_duplicate 只比對「本輪」新事件；Google 會在後續輪次再報同一則既有媒體的新聞，
+# 所以另存近 24 小時已輸出事件的正規化標題，僅供新來源（Google）擋重複用。
+RECENT_TITLES_MAX = 600
+
+
+def load_recent_titles(path, now=None):
+    """讀近 24 小時已輸出標題（正規化後）；檔案不存在或壞掉回空清單"""
+    now = now or datetime.now(TZ_TAIPEI)
+    cutoff = now.timestamp() - NEWS_MAX_AGE_HOURS * 3600
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            rows = json.load(f).get("items", [])
+        return [r for r in rows if isinstance(r, dict) and r.get("n") and r.get("t", 0) >= cutoff]
+    except (OSError, ValueError, AttributeError):
+        return []
+
+
+def save_recent_titles(path, rows):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"items": rows[-RECENT_TITLES_MAX:]}, f, ensure_ascii=False)
+
+
+def is_recent_duplicate(title, rows):
+    """與 find_duplicate 同一套門檻（前 12 字相同或 ratio > 0.6），比對跨輪標題紀錄"""
+    norm_new = normalize_title(title)
+    if not norm_new:
+        return False
+    for row in rows:
+        norm_old = row["n"]
+        if norm_new[:12] == norm_old[:12]:
+            return True
+        matcher = difflib.SequenceMatcher(None, norm_new, norm_old)
+        if matcher.real_quick_ratio() > 0.6 and matcher.ratio() > 0.6:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1494,11 +1753,16 @@ def push_to_oracle(output, out_dir):
         log("推送 Oracle 失敗（不中斷）：{}".format(e))
 
 
-def main(feeds=None, out_dir=None):
+def main(feeds=None, out_dir=None, ptt_boards=None):
+    # PTT 只在「正式跑（沒指定 feeds）」時預設啟用；測試或手動指定 feeds 時不會
+    # 偷偷連 PTT，除非明確傳入 ptt_boards。
+    if ptt_boards is None:
+        ptt_boards = PTT_BOARDS if (PTT_ENABLED and feeds is None) else []
     feeds = feeds if feeds is not None else FEEDS
     out_dir = out_dir or os.path.dirname(os.path.abspath(__file__))
     latest_path = os.path.join(out_dir, "latest.json")
     seen_path = os.path.join(out_dir, "seen.json")
+    recent_path = os.path.join(out_dir, "recent_titles.json")
 
     use_llm = bool(AI_PROXY_TOKEN) or (
         FREE_GEMINI_ENABLED and FREE_GEMINI_DAILY_CALL_LIMIT > 0
@@ -1514,6 +1778,7 @@ def main(feeds=None, out_dir=None):
 
     seen_ids = load_seen(seen_path)
     seen_set = set(seen_ids)
+    recent_titles = load_recent_titles(recent_path)
 
     sources_report = []
     events = []
@@ -1528,6 +1793,13 @@ def main(feeds=None, out_dir=None):
     stale_dropped = 0
     future_dropped = 0
     capped_dropped = 0
+    extra_llm_calls = 0      # 新來源（Google）已花掉的額外 LLM 預算
+    extra_deferred = 0       # 新來源因額外預算用完而留待下輪的則數
+    dropped_recent_dup = 0   # 新來源因與近 24 小時已輸出事件重複而丟棄
+    ptt_report = {"items": 0, "candidates": 0, "events": 0}
+    foreign_dropped = 0
+    foreign_titles = []      # 供 dry-run 檢視被排除的國外事件（只留前 20 則標題）
+    stale_ongoing_cleared = 0
 
     def mark_seen(item_id):
         if item_id in seen_set:
@@ -1538,7 +1810,9 @@ def main(feeds=None, out_dir=None):
     def resolve_and_file(event, item_id, title, source_name):
         """收尾共用邏輯：跨來源去重、記錄合併 log、併入 events。"""
         dup = find_duplicate(event, events)
-        if dup is not None:
+        if dup is not None and any(a.lower() in source_name.lower() for a in AGGREGATOR_MEDIA):
+            log("轉載平台重複事件（不合併、不計來源）：「{}」({})".format(title[:20], source_name))
+        elif dup is not None:
             merge_duplicate(dup, event)
             log("合併重複事件：「{}」({}) → 「{}」".format(
                 title[:20], source_name, dup["title"][:20]))
@@ -1558,6 +1832,8 @@ def main(feeds=None, out_dir=None):
             fmt = feed.get("format")
             if fmt == "atom":
                 raw_items = parse_atom(data)
+            elif fmt == "google_news":
+                raw_items = parse_google_news_rss(data)
             elif fmt == "tvbs_html":
                 raw_items = parse_tvbs_local(data.decode("utf-8", errors="replace"))
             else:
@@ -1594,11 +1870,29 @@ def main(feeds=None, out_dir=None):
                 continue
 
             title, description = item["title"], item["description"]
+            # 聚合來源（Google）每則自帶真正的媒體名；一般 feed 用 feed 名稱
+            source_name = item.get("source_name") or feed["name"]
+            is_extra = bool(feed.get("extra"))
 
             # 第一段：規則式（永遠執行）
             is_incident, category, hit_word = rules_classify(title, description)
             if not is_incident:
                 dropped_by_rules += 1
+                mark_seen(item_id)
+                continue
+
+            # 國外事件：沒有台灣縣市卻出現國外地名／國際頻道標記 → 不輸出
+            if is_foreign_news(title, description):
+                foreign_dropped += 1
+                if len(foreign_titles) < 20:
+                    foreign_titles.append(title)
+                mark_seen(item_id)
+                continue
+
+            # 新來源：與近 24 小時（含前幾輪）已輸出事件重複的直接丟棄，
+            # 避免 Google 把既有 5 家媒體早已報過的新聞再輸出一次。
+            if is_extra and is_recent_duplicate(title, recent_titles):
+                dropped_recent_dup += 1
                 mark_seen(item_id)
                 continue
 
@@ -1621,7 +1915,7 @@ def main(feeds=None, out_dir=None):
                 "id": item_id,
                 "title": title,
                 "publishedAt": parse_pubdate(item["pubDate"]),
-                "sourceName": feed["name"],
+                "sourceName": source_name,
                 "sourceURL": item["link"],
                 "county": county,
                 "district": district,
@@ -1642,14 +1936,25 @@ def main(feeds=None, out_dir=None):
             # 的規則地點）。需要補位又還在本輪呼叫預算內的，先收進待補清單，
             # 稍後統一並行處理；預算用完的直接標記待重試，留給下一輪。
             needs_llm = (not county) or (not district)
+            # 新來源超出額外預算：不呼叫、不寫 seen、不輸出（沒縣市的事件 App 會丟棄），
+            # 下一輪再補；已有縣市的照常輸出（只缺行政區，不需要為它花 LLM）。
+            if is_extra and use_llm and needs_llm and extra_llm_calls >= EXTRA_LLM_MAX_CALLS_PER_RUN:
+                extra_deferred += 1
+                if county:
+                    mark_seen(item_id)
+                    resolve_and_file(event, item_id, title, source_name)
+                continue
             if use_llm and needs_llm and llm_calls < LLM_MAX_CALLS_PER_RUN:
                 llm_calls += 1
+                if is_extra:
+                    extra_llm_calls += 1
                 pending.append({
                     "event": event,
                     "item_id": item_id,
                     "title": title,
                     "description": description,
-                    "source_name": feed["name"],
+                    "source_name": source_name,
+                    "extra": is_extra,
                 })
                 continue  # 是否 mark_seen／去重都留到並行階段結束後統一處理
 
@@ -1660,7 +1965,11 @@ def main(feeds=None, out_dir=None):
             else:
                 mark_seen(item_id)
 
-            resolve_and_file(event, item_id, title, feed["name"])
+            if is_extra and not county:
+                # 新來源無縣市（規則抽不到、又沒有 LLM 可補）：輸出也會被 App 丟棄，不收
+                mark_seen(item_id)
+                continue
+            resolve_and_file(event, item_id, title, source_name)
 
     # 並行補位：對待補清單統一用 ThreadPoolExecutor 並行呼叫 LLM。並行區塊只
     # 呼叫純函式 _llm_classify_safe（內部呼叫的用量帳本已用 fcntl.flock 保護），
@@ -1721,7 +2030,96 @@ def main(feeds=None, out_dir=None):
                 })
                 mark_seen(item_id)
 
+            if task.get("extra") and not event.get("county"):
+                continue  # 新來源 LLM 也補不出縣市：App 會丟棄，不輸出（已視情況寫入 seen）
             resolve_and_file(event, item_id, title, task["source_name"])
+
+    # PTT（社群爆料，未經證實）：必須在所有媒體事件都定案後才處理，才能確保
+    # 「與媒體事件重複 → 丟 PTT」的方向；PTT 永遠不呼叫 LLM、不參與 corroboration。
+    for board in ptt_boards:
+        try:
+            ptt_items, ptt_prep = prepare_feed_items(
+                parse_atom(fetch_url(board["url"])), max_items=60)
+        except Exception as e:
+            log("PTT 抓取/解析失敗（跳過）：{} — {}".format(board["name"], e))
+            sources_report.append({
+                "name": board["name"], "feed": "爆卦/新聞", "url": board["url"],
+                "ok": False, "items": 0, "error": str(e),
+            })
+            continue
+        sources_report.append({
+            "name": board["name"], "feed": "爆卦/新聞", "url": board["url"],
+            "ok": True, "items": len(ptt_items), **ptt_prep,
+        })
+        total_fetched += ptt_prep["rawItems"]
+        total_eligible += len(ptt_items)
+        stale_dropped += ptt_prep["staleDropped"]
+        future_dropped += ptt_prep["futureDropped"]
+        capped_dropped += ptt_prep["cappedDropped"]
+        ptt_report["items"] += len(ptt_items)
+        log("PTT OK：{} — 原始 {}／近期可處理 {} 則".format(
+            board["name"], ptt_prep["rawItems"], len(ptt_items)))
+
+        for item in ptt_items:
+            item_id = stable_id(item)
+            if item_id in seen_set:
+                skipped_seen += 1
+                continue
+            clean = ptt_clean_title(item["title"])
+            if clean is None:
+                continue  # 非爆卦/新聞標籤（閒聊、問卦、回文）：不入 seen，免得 seen 被灌爆
+            ptt_report["candidates"] += 1
+            # 只用標題分類與抽地點：PTT 內文含個資與閒聊，不拿來比對、也不輸出
+            is_incident, category, _hit = rules_classify(clean, "")
+            if not is_incident:
+                dropped_by_rules += 1
+                mark_seen(item_id)
+                continue
+            county = county_from_text(clean)
+            district, matched_county = district_from_text_v2(clean, county=county)
+            county = county or matched_county
+            event = {
+                "id": item_id,
+                "title": clean,
+                "publishedAt": parse_pubdate(item["pubDate"]),
+                "sourceName": board["name"],
+                "sourceURL": item["link"],
+                "county": county,
+                "district": district,
+                "place": None,
+                "category": category,
+                "confidence": 0.3,
+                # App 端 summary 會當標題顯示：把「未證實」直接寫進文字，不靠顏色
+                "summary": PTT_SUMMARY_PREFIX + clean,
+                "detail": PTT_DETAIL,
+                "extraction": "rules",
+                "trust": PTT_TRUST,
+                "corroboration": 1,
+                "severity": "low",       # 鎖死 low／False：不符 cron_check 推播條件
+                "is_ongoing": False,
+            }
+            if not county:
+                mark_seen(item_id)  # 無縣市 App 會丟棄，不輸出
+                continue
+            if find_duplicate(event, events) is not None or is_recent_duplicate(clean, recent_titles):
+                dropped_recent_dup += 1  # 已有媒體報導：丟 PTT，不合併、不灌 corroboration
+                mark_seen(item_id)
+                continue
+            mark_seen(item_id)
+            events.append(event)
+            ptt_report["events"] += 1
+
+    # 時效閘門（對所有來源）：發布超過 ONGOING_MAX_AGE_HOURS 的事件，is_ongoing 一律
+    # 壓成 False。cron_check.php 沒有自己的時間窗，只看 is_ongoing；LLM 會把「昨晚的火警」
+    # 判成 is_ongoing=true，首次上線或 Google 回頭撈到舊聞時就會晚 9~14 小時才推播。
+    # 事件仍輸出，App 列表照常顯示，只是不再被當成「正在發生」。
+    gate_now = datetime.now(TZ_TAIPEI)
+    for e in events:
+        published = parse_pubdate_datetime(e.get("publishedAt"))
+        too_old = published is None or (gate_now - published) > timedelta(hours=ONGOING_MAX_AGE_HOURS)
+        if e.get("is_ongoing") and too_old:
+            e["is_ongoing"] = False
+            stale_ongoing_cleared += 1
 
     # 是否「本輪 LLM 大規模失效」的健康指標：待補清單裡確實呼叫過、且全部失敗
     # 才算——單則失敗已經退回規則結果、不影響其他則，不算真正的降級。
@@ -1751,6 +2149,13 @@ def main(feeds=None, out_dir=None):
             # 失效」（見上方 llm_circuit_open 的計算方式）。
             "llmCircuitOpen": llm_circuit_open,
             "pendingLLMRetry": llm_retry_pending,
+            "foreignDropped": foreign_dropped,
+            "foreignTitles": foreign_titles,
+            "staleOngoingCleared": stale_ongoing_cleared,
+            "extraLLMMaxCalls": EXTRA_LLM_MAX_CALLS_PER_RUN,
+            "extraSourceDeferred": extra_deferred,
+            "droppedRecentDuplicate": dropped_recent_dup,
+            "ptt": ptt_report,
             "freeGemini": free_gemini_status(),
             "paidGemini": paid_gemini_status(),
         },
@@ -1759,6 +2164,12 @@ def main(feeds=None, out_dir=None):
     with open(latest_path, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
     save_seen(seen_path, seen_ids)
+    # 跨輪標題紀錄只收「非社群」事件，PTT 標題不入帳，否則會反過來擋掉日後的媒體報導
+    now_ts = datetime.now(TZ_TAIPEI).timestamp()
+    save_recent_titles(recent_path, recent_titles + [
+        {"t": now_ts, "n": normalize_title(e["title"])}
+        for e in events if e.get("trust") != PTT_TRUST and normalize_title(e["title"])
+    ])
 
     log("完成：原始 {}／近期 {} 則（略過已見 {}）→ 事故 {} 則｜規則排除 {}｜"
         "LLM 呼叫 {}（失敗 {}）｜LLM 排除 {}｜待重試 {}".format(

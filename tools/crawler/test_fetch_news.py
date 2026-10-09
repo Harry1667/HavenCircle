@@ -645,5 +645,296 @@ class NewsCrawlerTests(unittest.TestCase):
         self.assertIn("https://news.ltn.com.tw/rss/local.xml", urls)
 
 
+    # ------------------------------------------------------------------
+    # 2026-10 新增來源：Google 新聞關鍵字 RSS、PTT 八卦版
+    # ------------------------------------------------------------------
+
+    def google_rss(self, rows):
+        """組 Google 新聞 RSS：rows = [(標題含媒體尾巴, 媒體名, guid, pubDate)]"""
+        body = "".join(
+            f"<item><title>{t}</title><link>https://news.google.com/rss/articles/{g}</link>"
+            f"<guid isPermaLink=\"false\">{g}</guid><pubDate>{d}</pubDate>"
+            f"<description>&lt;a href=\"x\"&gt;{t}&lt;/a&gt;</description>"
+            f"<source url=\"https://example.test\">{src}</source></item>"
+            for t, src, g, d in rows
+        )
+        return ("<rss><channel>" + body + "</channel></rss>").encode()
+
+    def ptt_atom(self, rows):
+        entries = "".join(
+            f"<entry><title>{t}</title><id>{g}</id>"
+            f"<link rel=\"alternate\" href=\"https://www.ptt.cc/bbs/Gossiping/{g}.html\"/>"
+            f"<updated>{d}</updated><summary>內文</summary></entry>"
+            for t, g, d in rows
+        )
+        return ("<feed xmlns=\"http://www.w3.org/2005/Atom\">" + entries + "</feed>").encode()
+
+    def test_google_title_split_extracts_media_and_normalizes_tier1_names(self):
+        now = datetime.now(news.TZ_TAIPEI)
+        data = self.google_rss([
+            ("台中市北屯區工廠火警 - 聯合新聞網", "聯合新聞網", "g1", now.strftime("%a, %d %b %Y %H:%M:%S +0800")),
+            ("桃園市中壢區車禍 - 某某地方報", "某某地方報", "g2", now.strftime("%a, %d %b %Y %H:%M:%S +0800")),
+        ])
+        items = news.parse_google_news_rss(data)
+        self.assertEqual(items[0]["title"], "台中市北屯區工廠火警")
+        self.assertEqual(items[0]["source_name"], "聯合報")  # 對齊 App 一線媒體名單
+        self.assertEqual(items[0]["description"], "")
+        self.assertEqual(items[1]["source_name"], "某某地方報")  # 未知媒體維持原名
+        # 沒有 <source> 時退回以最後一個「 - 」切
+        self.assertEqual(news.split_google_title("標題 - 自由時報"), ("標題", "自由時報"))
+        # 標題本身含「 - 」且有 <source>：只拿掉尾巴那一段
+        self.assertEqual(news.split_google_title("A - B事件 - 公視", "公視"), ("A - B事件", "公視"))
+        self.assertEqual(news.canonical_media_name("ETtoday新聞雲"), "ETtoday")
+
+    def test_google_item_dedupes_against_regular_feed_without_fake_corroboration(self):
+        now = datetime.now(news.TZ_TAIPEI)
+        pub = now.strftime("%a, %d %b %Y %H:%M:%S +0800")
+        regular = rss([{
+            "title": "台中市北屯區工廠火警 多人受困", "link": "https://udn.test/1",
+            "guid": "u1", "pubDate": pub,
+        }])
+        google = self.google_rss([
+            # 同一家媒體（聯合新聞網 → 聯合報）：合併但 corroboration 不增加
+            ("台中市北屯區工廠火警 多人受困 - 聯合新聞網", "聯合新聞網", "g1", pub),
+            # 另一家媒體報同一事件：合併且 corroboration +1
+            ("台中市北屯區工廠火警 多人受困 - 民視新聞網", "民視新聞網", "g2", pub),
+        ])
+        feeds = [
+            {"name": "聯合報", "feed": "社會", "url": "memory://regular"},
+            {"name": "Google新聞", "feed": "火災", "url": "memory://google", "format": "google_news", "extra": True},
+        ]
+        fetch = lambda url, *a, **k: regular if "regular" in url else google
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(news, "AI_PROXY_TOKEN", ""), \
+                mock.patch.object(news, "FREE_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "fetch_url", side_effect=fetch):
+            news.main(feeds=feeds, out_dir=directory)
+            output = json.loads(Path(directory, "latest.json").read_text())
+        self.assertEqual(output["incidentCount"], 1)
+        event = output["events"][0]
+        self.assertEqual(event["sourceName"], "聯合報、民視新聞網")
+        self.assertEqual(event["corroboration"], 2)
+
+    def test_google_item_matching_earlier_run_is_dropped_via_recent_titles(self):
+        now = datetime.now(news.TZ_TAIPEI)
+        pub = now.strftime("%a, %d %b %Y %H:%M:%S +0800")
+        feeds = [{"name": "Google新聞", "feed": "火災", "url": "memory://google",
+                  "format": "google_news", "extra": True}]
+        google = self.google_rss([("高雄市左營區民宅火警 - 某某報", "某某報", "g9", pub)])
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(news, "AI_PROXY_TOKEN", ""), \
+                mock.patch.object(news, "FREE_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "fetch_url", return_value=google):
+            Path(directory, "recent_titles.json").write_text(json.dumps({"items": [
+                {"t": now.timestamp(), "n": news.normalize_title("高雄市左營區民宅火警")}
+            ]}))
+            news.main(feeds=feeds, out_dir=directory)
+            output = json.loads(Path(directory, "latest.json").read_text())
+        self.assertEqual(output["incidentCount"], 0)
+        self.assertEqual(output["pipelineHealth"]["droppedRecentDuplicate"], 1)
+
+    def test_extra_source_llm_budget_is_capped_and_deferred_without_seen(self):
+        now = datetime.now(news.TZ_TAIPEI)
+        pub = now.strftime("%a, %d %b %Y %H:%M:%S +0800")
+        rows = [(f"工廠火警第{i}號 - 某報", "某報", f"gx{i}", pub) for i in range(5)]
+        feeds = [{"name": "Google新聞", "feed": "火災", "url": "memory://google",
+                  "format": "google_news", "extra": True}]
+        llm = {"is_incident": True, "county": "台北市", "district": "大安區", "place": None,
+               "category": "火災", "confidence": 0.9, "severity": "low", "is_ongoing": False}
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(news, "AI_PROXY_TOKEN", "t"), \
+                mock.patch.object(news, "FREE_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "EXTRA_LLM_MAX_CALLS_PER_RUN", 2), \
+                mock.patch.object(news, "fetch_url", return_value=self.google_rss(rows)), \
+                mock.patch.object(news, "_llm_classify_safe", return_value=(llm, False, False, None)):
+            news.main(feeds=feeds, out_dir=directory)
+            output = json.loads(Path(directory, "latest.json").read_text())
+            seen = json.loads(Path(directory, "seen.json").read_text())["ids"]
+        health = output["pipelineHealth"]
+        self.assertEqual(health["llmCalls"], 2)
+        self.assertEqual(health["extraSourceDeferred"], 3)
+        self.assertEqual(len(seen), 2)  # 被延後的 3 則沒寫 seen，下輪可再補
+
+    def test_aggregator_reposts_do_not_inflate_corroboration(self):
+        now = datetime.now(news.TZ_TAIPEI)
+        pub = now.strftime("%a, %d %b %Y %H:%M:%S +0800")
+        regular = rss([{"title": "台中市大雅區工廠火警 多人受困", "link": "https://cna.test/1",
+                        "guid": "c1", "pubDate": pub}])
+        google = self.google_rss([("台中市大雅區工廠火警 多人受困 - Yahoo新聞", "Yahoo新聞", "g1", pub)])
+        feeds = [{"name": "中央社", "feed": "社會", "url": "memory://regular"},
+                 {"name": "Google新聞", "feed": "火災", "url": "memory://google",
+                  "format": "google_news", "extra": True}]
+        fetch = lambda url, *a, **k: regular if "regular" in url else google
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(news, "AI_PROXY_TOKEN", ""), \
+                mock.patch.object(news, "FREE_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "fetch_url", side_effect=fetch):
+            news.main(feeds=feeds, out_dir=directory)
+            output = json.loads(Path(directory, "latest.json").read_text())
+        self.assertEqual(output["events"][0]["sourceName"], "中央社")
+        self.assertEqual(output["events"][0]["corroboration"], 1)
+        self.assertEqual(news.canonical_media_name("你的公共電視"), "公視")
+        self.assertEqual(news.canonical_media_name("UDN"), "聯合報")
+
+    def test_ptt_title_filter_only_accepts_baogua_and_news_tags(self):
+        self.assertEqual(news.ptt_clean_title("[爆卦] 台中大雅火警"), "台中大雅火警")
+        self.assertEqual(news.ptt_clean_title("[新聞] 高雄車禍"), "高雄車禍")
+        self.assertIsNone(news.ptt_clean_title("[問卦] 為什麼火災這麼多"))
+        self.assertIsNone(news.ptt_clean_title("Re: [爆卦] 台中大雅火警"))
+        self.assertIsNone(news.ptt_clean_title("[閒聊] 今天車禍"))
+
+    def test_ptt_events_are_unverified_never_llm_never_pushable_and_dedupe_to_media(self):
+        now = datetime.now(news.TZ_TAIPEI)
+        pub = now.strftime("%a, %d %b %Y %H:%M:%S +0800")
+        iso = now.isoformat()
+        regular = rss([{"title": "台中市大雅區工廠火警", "link": "https://udn.test/1",
+                        "guid": "u1", "pubDate": pub}])
+        ptt = self.ptt_atom([
+            ("[爆卦] 台中市大雅區工廠火警 濃煙", "p1", iso),        # 與媒體重複 → 丟 PTT
+            ("[爆卦] 高雄市左營區氣爆 多人受傷", "p2", iso),         # 保留，未證實
+            ("[爆卦] 今天股市大漲", "p3", iso),                       # 非事故
+            ("[問卦] 台北市車禍好多", "p4", iso),                     # 非爆卦/新聞標籤
+            ("[爆卦] 某處發生火警", "p5", iso),                       # 無縣市 → 不輸出
+        ])
+        feeds = [{"name": "聯合報", "feed": "社會", "url": "memory://regular"}]
+        boards = [{"board": "Gossiping", "name": "PTT八卦版", "url": "memory://ptt"}]
+        fetch = lambda url, *a, **k: regular if "regular" in url else ptt
+        llm = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(news, "AI_PROXY_TOKEN", "t"), \
+                mock.patch.object(news, "FREE_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "fetch_url", side_effect=fetch), \
+                mock.patch.object(news, "_llm_classify_safe", llm):
+            news.main(feeds=feeds, out_dir=directory, ptt_boards=boards)
+            output = json.loads(Path(directory, "latest.json").read_text())
+            recent = json.loads(Path(directory, "recent_titles.json").read_text())["items"]
+        ptt_events = [e for e in output["events"] if e["trust"] == news.PTT_TRUST]
+        self.assertEqual(len(ptt_events), 1)
+        event = ptt_events[0]
+        self.assertEqual(event["sourceName"], "PTT八卦版")
+        for tier1 in ("中央社", "公視", "TVBS", "聯合報", "自由時報", "ETtoday"):
+            self.assertNotIn(tier1, event["sourceName"])     # App 不會升為主流媒體
+        self.assertEqual(event["corroboration"], 1)
+        self.assertEqual(event["severity"], "low")           # cron_check 要 high/medium
+        self.assertIs(event["is_ongoing"], False)            # cron_check 要 true
+        self.assertTrue(event["summary"].startswith("網友爆料（未證實）"))
+        self.assertEqual(event["county"], "高雄市")
+        self.assertEqual(llm.call_count, 0)                  # PTT 與其他規則完整的事件都不呼叫 LLM
+        media = [e for e in output["events"] if e["trust"] != news.PTT_TRUST]
+        self.assertEqual(len(media), 1)
+        self.assertEqual(media[0]["corroboration"], 1)       # PTT 沒有替媒體事件灌 corroboration
+        self.assertNotIn("PTT", media[0]["sourceName"])
+        # PTT 標題不寫入跨輪紀錄，避免擋掉日後的媒體報導
+        self.assertTrue(all("氣爆" not in r["n"] for r in recent))
+
+    def test_ptt_failure_does_not_break_other_sources(self):
+        now = datetime.now(news.TZ_TAIPEI)
+        regular = rss([{"title": "台中市大雅區工廠火警", "link": "https://udn.test/1",
+                        "guid": "u1", "pubDate": now.strftime("%a, %d %b %Y %H:%M:%S +0800")}])
+
+        def fetch(url, *a, **k):
+            if "ptt" in url:
+                raise TimeoutError("boom")
+            return regular
+
+        feeds = [{"name": "聯合報", "feed": "社會", "url": "memory://regular"}]
+        boards = [{"board": "Gossiping", "name": "PTT八卦版", "url": "memory://ptt"}]
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(news, "AI_PROXY_TOKEN", ""), \
+                mock.patch.object(news, "FREE_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "fetch_url", side_effect=fetch):
+            code = news.main(feeds=feeds, out_dir=directory, ptt_boards=boards)
+            output = json.loads(Path(directory, "latest.json").read_text())
+        self.assertEqual(code, 0)
+        self.assertEqual(output["incidentCount"], 1)
+        self.assertFalse(output["sources"][-1]["ok"])
+
+    def test_google_queries_registered_and_bounded(self):
+        google = [f for f in news.FEEDS if f.get("format") == "google_news"]
+        self.assertEqual(len(google), len(news.GOOGLE_NEWS_QUERIES))
+        self.assertLessEqual(len(google), 6)
+        self.assertTrue(all("news.google.com/rss/search" in f["url"] and f.get("extra") for f in google))
+
+
+    # ------------------------------------------------------------------
+    # 2026-10 上線後修正：國外新聞誤判、區名子字串、標題去重、is_ongoing 時效
+    # ------------------------------------------------------------------
+
+    def test_real_foreign_samples_are_excluded_and_not_pinned_to_taiwan_districts(self):
+        panama = "巴拿馬7.7淺層強震！東太平洋沿岸拉海嘯警報 建築受損民眾急撤"
+        pacific = "太平洋海嘯預警中心發佈巴拿馬地震海嘯預警"
+        dubai = "阿聯檢方：杜拜航空副機師企圖自殺式撞機 目標特拉維夫機場"
+        dubai_desc = "阿拉伯聯合大公國檢察長今天表示，這名副機師原本計劃撞向以色列特拉維夫的機場。 法新社報導，根據阿聯官方媒體公布的調查結果"
+        for title, desc in ((panama, ""), (pacific, ""), (dubai, dubai_desc)):
+            self.assertTrue(news.is_foreign_news(title, desc), title)
+        # 根因：「東太平洋」含「太平」、「法新社」含「新社」；剝除非地名詞後不再命中
+        self.assertEqual(news.district_from_text_v2(panama), (None, None))
+        self.assertEqual(news.district_from_text_v2(pacific), (None, None))
+        self.assertEqual(news.district_from_text_v2(dubai_desc), (None, None))
+        self.assertEqual(news.district_from_text(panama), (None, None))
+        # 真正的太平區／新社區不受影響
+        self.assertEqual(news.district_from_text_v2("台中太平區民宅火警")[0], "太平區")
+        self.assertEqual(news.district_from_text_v2("台中新社區車禍")[0], "新社區")
+        # 頻道標記
+        self.assertTrue(news.is_foreign_news("某地發生意外 | 國際", ""))
+        # 國際機場不是頻道標記
+        self.assertFalse(news.is_foreign_news("桃園國際機場停車場火警", ""))
+
+    def test_foreign_visitor_accident_in_taiwan_is_kept(self):
+        self.assertFalse(news.is_foreign_news("日本遊客在台中車禍 送醫", ""))
+        self.assertEqual(news.county_from_text("日本遊客在台中車禍"), "台中市")
+        self.assertFalse(news.is_foreign_news("日本旅客車禍 送醫", "事故發生在宜蘭縣蘇澳鎮"))
+
+    def test_foreign_news_is_dropped_by_main_but_taiwan_event_survives(self):
+        now = datetime.now(news.TZ_TAIPEI)
+        pub = now.strftime("%a, %d %b %Y %H:%M:%S +0800")
+        feed = rss([
+            {"title": "巴拿馬7.7淺層強震！東太平洋沿岸拉海嘯警報", "link": "l1", "guid": "a", "pubDate": pub},
+            {"title": "日本遊客在台中車禍 送醫", "link": "l2", "guid": "b", "pubDate": pub},
+        ])
+        feeds = [{"name": "測試新聞", "feed": "社會", "url": "memory://f"}]
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(news, "AI_PROXY_TOKEN", ""), \
+                mock.patch.object(news, "FREE_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "fetch_url", return_value=feed):
+            news.main(feeds=feeds, out_dir=directory)
+            output = json.loads(Path(directory, "latest.json").read_text())
+        self.assertEqual(output["pipelineHealth"]["foreignDropped"], 1)
+        self.assertEqual([e["county"] for e in output["events"]], ["台中市"])
+
+    def test_normalize_title_ignores_spacing_channel_suffix_and_width(self):
+        a = "巴拿馬7.7淺層強震！東太平洋沿岸拉海嘯警報 | 國際"
+        b = "巴拿馬７．７淺層強震！東太平洋沿岸拉海嘯警報"
+        c = "巴拿馬7.7淺層強震！ 東太平洋沿岸拉海嘯警報 - 新聞媒體"
+        self.assertEqual(news.normalize_title(a), news.normalize_title(b))
+        self.assertEqual(news.normalize_title(a), news.normalize_title(c))
+        self.assertIsNotNone(news.find_duplicate({"title": a}, [{"title": b}]))
+
+    def test_old_fire_is_never_ongoing_even_when_llm_says_so(self):
+        """9 小時前的火警：LLM 判 is_ongoing=true 也必須被壓成 false（cron_check 只看這欄）"""
+        now = datetime.now(news.TZ_TAIPEI)
+        fmt = "%a, %d %b %Y %H:%M:%S +0800"
+        feed = rss([
+            {"title": "工廠火警 多人受困", "link": "l1", "guid": "old",
+             "pubDate": (now - timedelta(hours=9)).strftime(fmt)},
+            {"title": "倉庫火警 濃煙竄出", "link": "l2", "guid": "new",
+             "pubDate": (now - timedelta(minutes=30)).strftime(fmt)},
+        ])
+        llm = {"is_incident": True, "county": "台北市", "district": "大安區", "place": None,
+               "category": "火災", "confidence": 0.9, "severity": "high", "is_ongoing": True}
+        feeds = [{"name": "測試新聞", "feed": "社會", "url": "memory://f"}]
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(news, "AI_PROXY_TOKEN", "t"), \
+                mock.patch.object(news, "FREE_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "fetch_url", return_value=feed), \
+                mock.patch.object(news, "_llm_classify_safe", return_value=(llm, False, False, None)):
+            news.main(feeds=feeds, out_dir=directory)
+            output = json.loads(Path(directory, "latest.json").read_text())
+        by_title = {e["title"]: e for e in output["events"]}
+        self.assertIs(by_title["工廠火警 多人受困"]["is_ongoing"], False)
+        self.assertIs(by_title["倉庫火警 濃煙竄出"]["is_ongoing"], True)
+        self.assertEqual(output["pipelineHealth"]["staleOngoingCleared"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

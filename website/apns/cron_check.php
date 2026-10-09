@@ -310,6 +310,8 @@ function news_wake_signature(array $event): ?string {
     $category = (string)($event['category'] ?? '');
     if (!in_array($category, $dangerCategories, true)) { return null; }
     if (($event['is_ongoing'] ?? false) !== true) { return null; }
+    // 只推「發布 2 小時內」的新聞：防止舊聞（例如首次抓到前一天的報導）被當即時事件推播
+    if (!is_recent_timestamp((string)($event['publishedAt'] ?? ''), 2 * 3600)) { return null; }
     $severity = strtolower(trim((string)($event['severity'] ?? '')));
     if (!in_array($severity, ['high', 'medium'], true)) { return null; }
     if ((float)($event['confidence'] ?? 0) < 0.6) { return null; }
