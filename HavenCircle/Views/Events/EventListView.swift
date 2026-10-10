@@ -34,58 +34,54 @@ struct EventListView: View {
         Binding(get: { feedScope }, set: { feedScopeOverride = $0 })
     }
 
-    private var visibleEvents: [LocalSafetyEvent] {
-        events.filter { !$0.isArchived && !EventVisibility.isSuppressed($0) }
-    }
-    /// 需要注意＝可信（官方確認／多來源交叉驗證／主流媒體單一報導）「且真的落在某個
-    /// 生活圈的提醒範圍」（分類標籤與邏輯必須一致）。改用 isCredible 而非 isOfficiallyConfirmed，
-    /// 讓中央社、TVBS 這類一線媒體的獨家報導不再被誤收進「未驗證線索」摺疊區看不到
-    /// （產品判斷：大型新聞台一報導就會立刻播出，獨家不等於不可信）。
-    private var attention: [LocalSafetyEvent] {
-        visibleEvents
-            .filter { $0.isActiveForAwareness && $0.isCredible && isInAnyCircle($0) }
-            .sorted { nearestCircleDistance($0, members) < nearestCircleDistance($1, members) }
-    }
-    /// 可信、但離所有生活圈較遠的事件另立分類，不冒充「需要注意」。
-    /// 加距離上限：超過 NearbyScope 的全國事件再拆到「全台其他」摺疊清單，避免灌成雜訊。
-    private var elsewhere: [LocalSafetyEvent] {
-        visibleEvents
-            .filter {
-                $0.isActiveForAwareness && $0.isCredible && !isInAnyCircle($0)
-                    && nearestCircleDistance($0, members) <= NearbyScope.maxMeters
-            }
-            .sorted { nearestCircleDistance($0, members) < nearestCircleDistance($1, members) }
-    }
+    /// 一次 body 計算只分類一次：以前 visibleEvents／attention／elsewhere／nationwide／confirming
+    /// 各自是計算屬性，body 內被讀到十幾次，每次都對全部事件重跑 AlertPolicy.evaluate 與排序
+    /// （Time Profiler 實測是主執行緒大宗）。現在每個事件的「是否落在圈內」「最近圈距離」只算一次。
+    private struct Feed {
+        let visibleEvents: [LocalSafetyEvent]
+        /// 需要注意＝可信（官方確認／多來源交叉驗證／主流媒體單一報導）「且真的落在某個
+        /// 生活圈的提醒範圍內」（分類標籤與邏輯必須一致）。改用 isCredible 而非 isOfficiallyConfirmed，
+        /// 讓中央社、TVBS 這類一線媒體的獨家報導不再被誤收進「未驗證線索」摺疊區看不到
+        let attention: [LocalSafetyEvent]
+        /// 可信、但離所有生活圈較遠的事件另立分類，不冒充「需要注意」（距離上限 NearbyScope）
+        let elsewhere: [LocalSafetyEvent]
+        /// 離所有生活圈超過上限的全國可信事件（預設摺疊）
+        let nationwide: [LocalSafetyEvent]
+        /// 與上面三類互斥且互補：非可信（!isCredible）的事件才落在「未驗證線索」
+        let confirming: [LocalSafetyEvent]
+        /// 全台動態是「看見資訊密度」的獨立層，不改變首頁與通知的生活圈優先原則；
+        /// 未驗證新聞也可在這裡閱讀，但每一列都保留明確的驗證文字。
+        let nationwideDynamics: [LocalSafetyEvent]
 
-    /// 離所有生活圈超過上限的全國可信事件（預設摺疊）
-    private var nationwide: [LocalSafetyEvent] {
-        visibleEvents
-            .filter {
-                $0.isActiveForAwareness && $0.isCredible && !isInAnyCircle($0)
-                    && nearestCircleDistance($0, members) > NearbyScope.maxMeters
-            }
-            .sorted { $0.occurredAt > $1.occurredAt }
-    }
-    /// 與上面三類互斥且互補：非可信（!isCredible）的事件才落在「未驗證線索」——
-    /// 四個集合合起來剛好涵蓋 visibleEvents 中所有 isActiveForAwareness 的事件，
-    /// 且彼此不重疊（先按 isCredible 二分，可信的一半再按 isInAnyCircle／距離三分）。
-    private var confirming: [LocalSafetyEvent] {
-        visibleEvents.filter { $0.isActiveForAwareness && !$0.isCredible }
-    }
-    /// 全台動態是「看見資訊密度」的獨立層，不改變首頁與通知的生活圈優先原則。
-    /// 未驗證新聞也可在這裡閱讀，但每一列都保留明確的驗證文字，絕不偽裝成官方訊息。
-    private var nationwideDynamics: [LocalSafetyEvent] {
-        visibleEvents
-            .filter(\.isActiveForAwareness)
-            .sorted { lhs, rhs in
-                if lhs.isCredible != rhs.isCredible {
-                    return lhs.isCredible
+        @MainActor
+        init(events: [LocalSafetyEvent], members: [LocalFamilyMember]) {
+            let visible = events.filter { !$0.isArchived && !EventVisibility.isSuppressed($0) }
+            visibleEvents = visible
+            let active = visible.filter(\.isActiveForAwareness)
+            var attention: [(LocalSafetyEvent, Double)] = []
+            var elsewhere: [(LocalSafetyEvent, Double)] = []
+            var nationwide: [LocalSafetyEvent] = []
+            var confirming: [LocalSafetyEvent] = []
+            for event in active {
+                guard event.isCredible else { confirming.append(event); continue }
+                let nearest = nearestCircleDistance(event, members)
+                if !AlertPolicy.evaluate(event: event, members: members).matches.isEmpty {
+                    attention.append((event, nearest))
+                } else if nearest <= NearbyScope.maxMeters {
+                    elsewhere.append((event, nearest))
+                } else {
+                    nationwide.append(event)
                 }
+            }
+            self.attention = attention.sorted { $0.1 < $1.1 }.map(\.0)
+            self.elsewhere = elsewhere.sorted { $0.1 < $1.1 }.map(\.0)
+            self.nationwide = nationwide.sorted { $0.occurredAt > $1.occurredAt }
+            self.confirming = confirming
+            nationwideDynamics = active.sorted { lhs, rhs in
+                if lhs.isCredible != rhs.isCredible { return lhs.isCredible }
                 return lhs.occurredAt > rhs.occurredAt
             }
-    }
-    private func isInAnyCircle(_ event: LocalSafetyEvent) -> Bool {
-        !AlertPolicy.evaluate(event: event, members: members).matches.isEmpty
+        }
     }
 
     /// 進行中的區域警報，依 kind＋title 去重取最新——NCDR 同一場警報常拆成多筆
@@ -103,6 +99,7 @@ struct EventListView: View {
     // 本頁是「動態」分頁的根內容，導航堆疊由 EventsTabView 提供，
     // 自己不再包 NavigationStack（巢狀堆疊會讓 push/pop 行為錯亂）
     var body: some View {
+        let feed = Feed(events: events, members: members)
         List {
             // 零導覽引導：定位／通知／邀請碼三張情境卡（最多同時兩張）
             FeedOnboardingCards(hasCircle: !circles.isEmpty)
@@ -110,7 +107,7 @@ struct EventListView: View {
             // 沒有任何守護範圍時不能說「一切平安」——那是假性安心；改給空狀態與出路
             if feedScope == .related && circles.isEmpty {
                 Section { NoCircleEmptyState() }
-            } else if visibleEvents.isEmpty && activeRegionAlerts.isEmpty && feedScope == .related {
+            } else if feed.visibleEvents.isEmpty && activeRegionAlerts.isEmpty && feedScope == .related {
                 Section {
                     safeStateHero
                         .listRowBackground(Color.clear)
@@ -120,12 +117,12 @@ struct EventListView: View {
                 regionAlertSection
                 // 顯示面積跟「可信度／急迫性」成正比：需要注意永遠攤開；
                 // 未驗證的確認中、離圈遠的附近動態、已結束——預設收合，點標題展開
-                section(title: "需要注意", subtitle: "已充分驗證（官方／主流媒體／多來源）且位於有效警戒圈內", items: attention)
-                section(title: "未驗證線索", subtitle: "資料尚未充分驗證，不會推播", items: confirming, collapsible: true)
-                section(title: "附近動態", subtitle: "已驗證事件，離警戒圈 10 公里內", items: elsewhere, collapsible: true)
-                nationwideSection
+                section(title: "需要注意", subtitle: "已充分驗證（官方／主流媒體／多來源）且位於有效警戒圈內", items: feed.attention)
+                section(title: "未驗證線索", subtitle: "資料尚未充分驗證，不會推播", items: feed.confirming, collapsible: true)
+                section(title: "附近動態", subtitle: "已驗證事件，離警戒圈 10 公里內", items: feed.elsewhere, collapsible: true)
+                nationwideSection(feed.nationwide)
             } else {
-                nationwideDynamicsSection
+                nationwideDynamicsSection(feed.nationwideDynamics)
             }
             // #B：不再顯示「已結束」區塊——使用者不需要看已解除／已過期的事件（地圖也早已排除）
             footerLinksSection
@@ -140,7 +137,7 @@ struct EventListView: View {
         .task(id: router.pendingEventKey) {
             guard let key = router.pendingEventKey else { return }
             router.pendingEventKey = nil
-            guard let match = visibleEvents.first(where: { $0.eventKey == key }) else { return }
+            guard let match = Feed(events: events, members: members).visibleEvents.first(where: { $0.eventKey == key }) else { return }
             // 等 push 導航動畫完成再出 sheet，避免兩種轉場互相打斷（同 DEBUG 自動開啟的考量）
             try? await Task.sleep(for: .milliseconds(450))
             selected = match
@@ -155,10 +152,11 @@ struct EventListView: View {
         .task(id: events.count) {
             guard !didOpenDebugDetail,
                   ProcessInfo.processInfo.arguments.contains("--open-first-event-detail") else { return }
-            let target = attention.first { $0.eventKey.contains("NFA_Fire") }
-                ?? attention.first
-                ?? visibleEvents.first { $0.eventKey.contains("NFA_Fire") }
-                ?? visibleEvents.first
+            let debugFeed = Feed(events: events, members: members)
+            let target = debugFeed.attention.first { $0.eventKey.contains("NFA_Fire") }
+                ?? debugFeed.attention.first
+                ?? debugFeed.visibleEvents.first { $0.eventKey.contains("NFA_Fire") }
+                ?? debugFeed.visibleEvents.first
             guard let target else { return }
             didOpenDebugDetail = true
             // 等 push 導航動畫完成再出 sheet，避免兩種轉場互相打斷。
@@ -271,7 +269,7 @@ struct EventListView: View {
 
     /// 全台其他官方示警：預設摺疊——它們是真資料，但不該與「附近」搶注意力
     @ViewBuilder
-    private var nationwideSection: some View {
+    private func nationwideSection(_ nationwide: [LocalSafetyEvent]) -> some View {
         if !nationwide.isEmpty {
             Section {
                 DisclosureGroup("全台其他已驗證事件（\(nationwide.count)）") {
@@ -291,7 +289,7 @@ struct EventListView: View {
     }
 
     @ViewBuilder
-    private var nationwideDynamicsSection: some View {
+    private func nationwideDynamicsSection(_ nationwideDynamics: [LocalSafetyEvent]) -> some View {
         if nationwideDynamics.isEmpty {
             Section {
                 ContentUnavailableView {
