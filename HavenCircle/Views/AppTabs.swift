@@ -21,8 +21,6 @@ struct AppTabs: View {
     // DEBUG：--show-paywall 啟動即開付費牆（IAP 審查截圖用），發佈版不編入
     @State private var debugShowPaywall = ProcessInfo.processInfo.arguments.contains("--show-paywall")
     #endif
-    // 第一次進地圖的帶領是「目標自己動」的動畫，由 SafetyMapView 消耗 firstRunCoachingPending 播放。
-
     private static func initialTab() -> Int {
         #if DEBUG
         let args = ProcessInfo.processInfo.arguments
@@ -32,11 +30,7 @@ struct AppTabs: View {
             return min(max(tab, 0), 2)
         }
         #endif
-        // 第一次開 App 完成著陸後（帶領進行中）：直接落在地圖頁，展開親切帶領（看見自己的警戒圈）
-        if UserDefaults.standard.bool(forKey: SettingsKeys.firstRunCoachingPending) {
-            return TabRouter.mapTab
-        }
-        return TabRouter.eventsTab  // 打開就是動態首頁
+        return TabRouter.eventsTab  // 第一次與之後的冷啟動都落在動態首頁（零導覽）
     }
 
     var body: some View {
@@ -71,6 +65,10 @@ struct AppTabs: View {
         // Widget deep link 路由（經 scene delegate 轉交，.onOpenURL 在自訂 delegate 下收不到）
         .onReceive(NotificationCenter.default.publisher(for: .didReceiveDeepLink)) { note in
             if let url = note.object as? URL { route(url) }
+        }
+        // 授權定位後才建跟隨圈（沒授權就沒有圈，不放任何預設座標）；進場時已授權者也補建
+        .task(id: LocationService.shared.authorization) {
+            await FirstRunSetup.ensureFollowCircleIfAuthorized(context: context)
         }
         .onAppear {
             // 冷啟動由 URL 拉起的情況

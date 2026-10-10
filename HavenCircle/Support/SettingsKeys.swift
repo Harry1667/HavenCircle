@@ -33,12 +33,20 @@ enum SettingsKeys {
     static let onboardingCompleted = "onboardingCompleted"
     /// App 冷啟動累計次數（HavenCircleApp.init 每次 +1）；用來判定「第二次開 App」的時機
     static let launchCount = "launchCount"
-    /// 尚未選家庭身分的待辦旗標：新手第一次開 App 只走地圖著陸就種下，
-    /// 待「第二次開 App 或點家人分頁」時跳出身分選擇；選完清除（仿 guardianIntroPending 消耗式旗標）
-    static let roleSelectionPending = "roleSelectionPending"
-    /// 第一次進主畫面的地圖親切帶領待播旗標：第一次開 App 完成著陸就種下，
-    /// 讓首次落在地圖頁並播放「這是安全地圖／你的警戒圈」等教學卡，播完消耗。
-    static let firstRunCoachingPending = "firstRunCoachingPending"
+    // MARK: - 零導覽引導卡（動態頂端的情境卡，取代舊著陸頁與地圖帶領）
+
+    /// 使用者按掉動態頂端的定位邀請卡（✕）；拒絕態卡片顯示過一次後也會寫入
+    static let feedLocationCardDismissed = "feedLocationCardDismissed"
+    /// 動態列表第一次渲染完成的時間（timeIntervalSince1970；0＝尚未渲染過），通知卡 3 秒後才出現
+    static let notificationCardEligibleAt = "notificationCardEligibleAt"
+    /// 使用者按掉「家人傳了邀請碼給你？」列
+    static let inviteRowDismissed = "inviteRowDismissed"
+    /// 首次進地圖的「你的守護範圍」膠囊是否已演過（消耗式）
+    static let mapRangePillShown = "mapRangePillShown"
+    /// 動態頂端的定位邀請卡是否已經歷過「被拒絕」的提示（拒絕態只顯示一次）
+    static let feedLocationDeniedShown = "feedLocationDeniedShown"
+    /// 使用者是否已點開過任一事件詳情（通知卡的另一個出現條件）
+    static let hasOpenedEventDetail = "hasOpenedEventDetail"
     /// 是否已看過「警戒圈可拖動調整」的提示（第一次點開事件、關掉詳情後顯示一次）
     static let seenCircleAdjustHint = "seenCircleAdjustHint"
     /// Sign in with Apple 授權後存下的帳號 email（僅本機顯示用；CloudKit 拿不到 email）
