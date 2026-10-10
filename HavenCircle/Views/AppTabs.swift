@@ -53,8 +53,6 @@ struct AppTabs: View {
             }
             .tint(HCColor.brand)
             .environment(router)
-            // 設定改為全域 sheet：任何頁面（含家人頁的「查看 Apple 帳號狀態」）都能打開
-            .sheet(isPresented: Bindable(router).showSettings) { SettingsView().hcSheet() }
             // 下滑關閉等同「稍後」：不問系統，次數已在顯示時記下，不需要額外處理
             .sheet(item: Bindable(primer).presenting) { trigger in
                 NotificationPrimerSheet(
@@ -74,7 +72,8 @@ struct AppTabs: View {
         }
         .tint((AppAppearance(rawValue: appAppearance) ?? .default).palette.brand)
         // 設定改為全域 sheet：任何頁面（含家人頁的「查看 Apple 帳號狀態」）都能打開
-        .sheet(isPresented: Bindable(router).showSettings) { SettingsView().hcSheet() }
+        // 外層 sheet 不在 TabView 的 .environment(router) 範圍內，要自己補注入（缺了會在讀 TabRouter 時閃退）
+        .sheet(isPresented: Bindable(router).showSettings) { SettingsView().hcSheet().environment(router) }
         // App 每次回到前景重跑資料管線（含每日摘要重算）。
         // 原型限制：沒有背景更新，用前景時機讓資料與摘要盡量新鮮。
         .onChange(of: scenePhase) { _, phase in

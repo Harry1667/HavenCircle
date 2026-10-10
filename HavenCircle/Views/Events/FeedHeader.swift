@@ -13,12 +13,23 @@ import UIKit
 @Observable
 final class FeedHeaderFade {
     private(set) var progress: Double = 0
-    /// 頁首列靜止時的 minY（取歷史最大值，下拉回彈也不會把基準拉歪）
-    private var restY: CGFloat = 0
+    /// 頁首列靜止（列表在最頂端）時的 minY。
+    /// 2026-10-11 模擬器：原本取歷史最大值，冷啟動版面還沒定位時的暫時位置偏低，基準被拉歪，
+    /// 回到頂端後天空已淡出九成。改為「捲回頂端後校準一次」，校準前不淡出；下拉回彈不改基準
+    private var restY: CGFloat?
+    private var lastMinY: CGFloat = .nan
+
+    /// 列表剛捲到最頂端時呼叫：以當下位置為靜止基準
+    func calibrate() {
+        guard lastMinY.isFinite else { return }
+        restY = lastMinY
+        if progress != 0 { progress = 0 }
+    }
 
     func update(minY: CGFloat) {
         guard minY.isFinite else { return }
-        restY = max(restY, minY)
+        lastMinY = minY
+        guard let restY else { return }
         // 捲過約 140pt 完全淡出；量化到 0.02 一格，避免每個像素都觸發重繪
         let raw = min(max(Double((restY - minY) / 140), 0), 1)
         let quantized = (raw * 50).rounded() / 50
@@ -47,10 +58,22 @@ struct FeedHeaderRow: View {
     let hasAttention: Bool
     let fade: FeedHeaderFade
 
+    /// 自繪大標題：系統大標題在 iOS 17 不吃 toolbarColorScheme，夜晚深靛天空上會是黑字看不清，
+    /// 所以改由頁首列自己畫；深色天空用白字，其餘跟系統主文字色
+    private var titleColor: Color {
+        AppAppearance.current == .skyLagoon && SkyPhase.current().isDarkSky ? .white : .primary
+    }
+
     var body: some View {
-        HStack {
-            if hasAttention { AttentionPill() }
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: HCSpacing.x2) {
+            Text("動態")
+                .font(.largeTitle.bold())
+                .foregroundStyle(titleColor)
+                .accessibilityAddTraits(.isHeader)
+            HStack {
+                if hasAttention { AttentionPill() }
+                Spacer(minLength: 0)
+            }
         }
         .frame(minHeight: hasAttention ? 40 : 8)
         .background(
@@ -62,6 +85,18 @@ struct FeedHeaderRow: View {
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
         .listRowInsets(EdgeInsets(top: 0, leading: HCSpacing.x4, bottom: 0, trailing: HCSpacing.x4))
+    }
+}
+
+/// 導覽列的小標題：頁首大標題捲走（天空淡出）時才淡入，任何時候都知道自己在哪一頁。
+/// 獨立成小 view：只有它讀捲動進度，捲動時不會重算整個 EventListView
+struct FeedInlineTitle: View {
+    let fade: FeedHeaderFade
+    var body: some View {
+        Text("動態")
+            .font(.headline)
+            .opacity(fade.progress)
+            .accessibilityHidden(true)
     }
 }
 

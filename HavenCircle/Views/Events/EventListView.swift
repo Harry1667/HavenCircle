@@ -203,6 +203,9 @@ struct EventListView: View {
             didInitialScrollToTop = true
             try? await Task.sleep(for: .milliseconds(300))
             scrollProxy.scrollTo(Self.headerRowID, anchor: .top)
+            // 捲回頂端、版面穩定後，以此位置作為頁首淡出的基準
+            try? await Task.sleep(for: .milliseconds(250))
+            headerFade.calibrate()
         }
         }
         // 層次風格：大標題＋頁首背景（地圖快照／天空）；夜晚的深靛天空上標題改白字
@@ -220,11 +223,18 @@ struct EventListView: View {
             .ignoresSafeArea()
         }
         .navigationTitle("動態")
-        .navigationBarTitleDisplayMode(.large)
+        // 大標題改由頁首列自繪（見 FeedHeaderRow）；導覽列只放捲動後才淡入的小標題
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) { FeedInlineTitle(fade: headerFade) }
+        }
         .toolbarColorScheme(
             AppAppearance.current == .skyLagoon && SkyPhase.current().isDarkSky ? .dark : nil,
             for: .navigationBar
         )
+        // toolbarColorScheme 要搭配明確的 toolbarBackground 設定才會套到大標題（否則夜晚深靛天空上標題仍是黑字）；
+        // 背景本來就透明（頁首天空／地圖快照要透出來），明確宣告 hidden 不改變外觀
+        .toolbarBackground(.hidden, for: .navigationBar)
         .analyticsScreen("alert_center")
         // 手動下拉刷新：重跑一次資料管線
         .refreshable { await EventPipeline.refresh(context: context) }
