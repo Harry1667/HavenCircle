@@ -1290,21 +1290,58 @@ final class FamilySyncService {
             defaults.set(Array(pending), forKey: key)
 
             let remote = try await FirestoreFamilyBackend.fetchPlaces(familyId: familyID)
-            let circles = (try? context.fetch(FetchDescriptor<LocalLifeCircle>())) ?? []
+            var circles = (try? context.fetch(FetchDescriptor<LocalLifeCircle>())) ?? []
             var changed = false
             var knownRemoteIDs = Set(remote.map(\.id))
 
-            // ② 遷移／補傳：本機守護地點（地點成員下的固定圈）尚未上雲者上傳
+            // 雲端去重：兩台裝置各自建了同名（< 150 公尺）的地點時，每組只保留 id 最小的一筆顯示
+            let collapsed = PlaceDedup.collapse(remote.map {
+                PlaceCandidate(id: $0.id, name: $0.name, latitude: $0.latitude, longitude: $0.longitude)
+            })
+            let visibleRemote = remote.filter { collapsed.mapping[$0.id] == nil }
+
+            // 本機若綁在被收掉的重複筆上：改綁保留的那筆；本機已有圈綁在保留筆上就直接刪掉多的這個。
+            // 被收掉的雲端文件若是自己建的，順手刪除，讓雲端也收斂成一筆（別人建的留給他自己的裝置處理）。
+            for circle in circles {
+                guard let id = circle.remotePlaceId, let keeperID = collapsed.mapping[id] else { continue }
+                if circles.contains(where: { $0 !== circle && $0.remotePlaceId == keeperID }) {
+                    deleteProjectedPlace(circle, context: context)
+                    circles.removeAll { $0 === circle }
+                } else {
+                    circle.remotePlaceId = keeperID
+                    if let keeper = remote.first(where: { $0.id == keeperID }) { circle.createdByUid = keeper.createdBy }
+                }
+                changed = true
+                if remote.first(where: { $0.id == id })?.createdBy == selfUID {
+                    try? await FirestoreFamilyBackend.deletePlace(familyId: familyID, placeId: id)
+                    knownRemoteIDs.remove(id)
+                }
+            }
+
+            // ② 遷移／補傳：本機守護地點（地點成員下的固定圈）尚未上雲者上傳——
+            // 但雲端已有同名且 < 150 公尺的地點時，改為綁定那筆而不新建
+            var cloudCandidates = visibleRemote.map {
+                PlaceCandidate(id: $0.id, name: $0.name, latitude: $0.latitude, longitude: $0.longitude)
+            }
             for circle in circles
             where circle.kind == .fixed && circle.member?.isPlace == true && circle.remotePlaceId == nil
                 && !(circle.latitude == 0 && circle.longitude == 0) {
                 let doc = placeDoc(from: circle, createdBy: selfUID)
+                let mine = PlaceCandidate(id: doc.id, name: doc.name, latitude: doc.latitude, longitude: doc.longitude)
+                let boundIDs = Set(circles.compactMap(\.remotePlaceId))
+                if let existing = PlaceDedup.match(mine, in: cloudCandidates.filter { !boundIDs.contains($0.id) }) {
+                    circle.remotePlaceId = existing.id
+                    circle.createdByUid = remote.first { $0.id == existing.id }?.createdBy ?? circle.createdByUid
+                    changed = true
+                    continue
+                }
                 do {
                     try await FirestoreFamilyBackend.upsertPlace(familyId: familyID, place: doc, isCreate: true)
                     circle.remotePlaceId = doc.id
                     circle.createdByUid = selfUID
                     recentPlaceWrites[doc.id] = .now
                     knownRemoteIDs.insert(doc.id)
+                    cloudCandidates.append(mine)
                     changed = true
                 } catch {
                     AppLog.cloud.error("上傳本機守護地點失敗：\(error.localizedDescription)")
@@ -1313,7 +1350,7 @@ final class FamilySyncService {
 
             // ③ 投影：雲端 → 本機
             let now = Date.now
-            for place in remote where !pending.contains(place.id) {
+            for place in visibleRemote where !pending.contains(place.id) {
                 if let circle = circles.first(where: { $0.remotePlaceId == place.id }) {
                     if let wrote = recentPlaceWrites[place.id], now.timeIntervalSince(wrote) < Self.placeWriteGrace { continue }
                     if circle.name != place.name { circle.name = place.name; changed = true }

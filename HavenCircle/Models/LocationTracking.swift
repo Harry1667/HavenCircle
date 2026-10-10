@@ -265,6 +265,50 @@ enum GeofencePlanner {
     }
 }
 
+// MARK: - 共用守護地點去重
+
+/// 去重用的最小地點資料
+struct PlaceCandidate: Equatable {
+    let id: String
+    let name: String
+    let latitude: Double
+    let longitude: Double
+}
+
+/// 兩台裝置各自建了同名地點時，雲端會出現兩筆：同名（忽略空白與大小寫）且相距 < 150 公尺視為同一個地點。
+enum PlaceDedup {
+    static let radiusMeters: Double = 150
+
+    static func normalized(_ name: String) -> String {
+        name.filter { !$0.isWhitespace }.lowercased()
+    }
+
+    static func isSame(_ a: PlaceCandidate, _ b: PlaceCandidate) -> Bool {
+        guard normalized(a.name) == normalized(b.name) else { return false }
+        return CLLocation(latitude: a.latitude, longitude: a.longitude)
+            .distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude)) < radiusMeters
+    }
+
+    static func match(_ place: PlaceCandidate, in list: [PlaceCandidate]) -> PlaceCandidate? {
+        list.first { $0.id != place.id && isSame($0, place) }
+    }
+
+    /// 把重複的歸成一組：每組保留 id 最小的（所有裝置算出同一個結果，不會各自挑不同的而互相打架）。
+    /// mapping：被收掉的 id → 保留的 id
+    static func collapse(_ list: [PlaceCandidate]) -> (kept: [PlaceCandidate], mapping: [String: String]) {
+        var kept: [PlaceCandidate] = []
+        var mapping: [String: String] = [:]
+        for place in list.sorted(by: { $0.id < $1.id }) {
+            if let keeper = kept.first(where: { isSame($0, place) }) {
+                mapping[place.id] = keeper.id
+            } else {
+                kept.append(place)
+            }
+        }
+        return (kept, mapping)
+    }
+}
+
 // MARK: - 到達／離開事件
 
 /// CLVisit 轉成的事件（系統判斷「在某處停留一段時間」）

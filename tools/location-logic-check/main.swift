@@ -53,6 +53,17 @@ check(d4.state == .stationary, "位移 < 精度 150m 連續也不算移動")
 check(LiveLocationPresence.stationarySince(previousStationarySince: t0, moved: false, now: t0.addingTimeInterval(600)) == t0, "沒移動沿用舊停留時間")
 check(LiveLocationPresence.stationarySince(previousStationarySince: t0, moved: true, now: t0.addingTimeInterval(600)) == t0.addingTimeInterval(600), "確認移動重新起算")
 check(LiveLocationPresence.stationarySince(previousStationarySince: t0, moved: nil, now: t0.addingTimeInterval(600)) == t0.addingTimeInterval(600), "無上次紀錄從現在起算")
+// --- 共用地點去重 ---
+let pa = PlaceCandidate(id: "a", name: "家", latitude: 24.1800, longitude: 120.6000)
+let pb = PlaceCandidate(id: "b", name: " 家 ", latitude: 24.1805, longitude: 120.6000)   // ~55m
+let pc = PlaceCandidate(id: "c", name: "家", latitude: 24.1900, longitude: 120.6000)     // ~1.1km
+let pd = PlaceCandidate(id: "d", name: "公司", latitude: 24.1800, longitude: 120.6000)
+check(PlaceDedup.isSame(pa, pb), "同名（忽略空白）且 55m → 同一地點")
+check(!PlaceDedup.isSame(pa, pc), "同名但 1.1km → 不同地點")
+check(!PlaceDedup.isSame(pa, pd), "不同名 → 不同地點")
+check(PlaceDedup.match(pb, in: [pa, pc, pd])?.id == "a", "遷移比對找到雲端既有那筆")
+let col = PlaceDedup.collapse([pc, pb, pa, pd])
+check(col.kept.map(\.id) == ["a", "c", "d"] && col.mapping == ["b": "a"], "去重：保留 id 最小，被收掉 b→a")
 let tz = TimeZone(identifier: "Asia/Taipei")!
 let now = t0.addingTimeInterval(120)
 let since = t0 // 
