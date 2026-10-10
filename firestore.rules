@@ -93,6 +93,20 @@ service cloud.firestore {
           && (request.auth.uid == targetUid || resource.data.requesterUid == request.auth.uid || isOwner(familyId));
       }
 
+      // 全家共用的守護地點（families/{fid}/places/{placeId}）：只存「地點」本身（名稱、座標、半徑、
+      // 地址文字、行政區），不含任何人的即時位置。
+      // 讀：家庭成員。建立：成員且 createdBy 必須是自己（不能冒名新增）。
+      // 更新／刪除：刻意開放「全家任一成員」——產品決定守護地點是全家共用資產（爸媽家、老家等），
+      // 任何人搬家、改名、發現錯誤都該能直接修，不必找建立者或圈主；更新時 createdBy 不可被改，
+      // 保留「由誰新增」的紀錄。圈主解散家庭圈時也是以成員身分清掉。
+      match /places/{placeId} {
+        allow read: if isMember(familyId);
+        allow create: if isMember(familyId) && request.resource.data.createdBy == request.auth.uid;
+        allow update: if isMember(familyId)
+          && request.resource.data.createdBy == resource.data.createdBy;
+        allow delete: if isMember(familyId);
+      }
+
       // 安否回報：家庭成員可讀、可發、可標記已讀（更新）；一般情況下不開放刪除，
       // 只有圈主解散家庭圈時能刪（避免解散後留下永久孤兒資料）。
       match /pings/{pingId} {
