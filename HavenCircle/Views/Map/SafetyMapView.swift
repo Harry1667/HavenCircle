@@ -534,7 +534,7 @@ struct SafetyMapView: View {
                             if circle.kind == .live {
                                 Text(circle.locationFreshnessText)
                                     .font(.caption2.weight(.medium))
-                                    .foregroundStyle(circle.isActiveForAlerts ? .secondary : HCColor.attention)
+                                    .foregroundStyle(circle.isActiveForAlerts || circle.member?.isCurrentUser == true ? .secondary : HCColor.attention)
                                     .padding(.horizontal, 4)
                                     .padding(.vertical, 1)
                                     .background(.thinMaterial, in: Capsule())

@@ -48,8 +48,11 @@ struct HomeStatusView: View {
         sync.isSolo(localMembers: members)
     }
 
+    /// 只計「家人」的即時圈：自己這支手機的圈不算（人在自己手上，不存在「沒有回報」），
+    /// 單人使用者因此永遠不會看到這個警告。
     private var staleLiveCircleCount: Int {
-        members.flatMap(\.lifeCircles).filter {
+        guard !isSoloUser else { return 0 }
+        return members.filter { !$0.isCurrentUser }.flatMap(\.lifeCircles).filter {
             $0.kind == .live && !$0.isActiveForAlerts
         }.count
     }
@@ -271,7 +274,7 @@ struct HomeStatusView: View {
     private func memberRow(_ member: LocalFamilyMember) -> some View {
         let nearbyEvent = nearestNearbyEvent(for: member)
         let hasNearbyEvent = nearbyEvent != nil
-        let hasStaleLiveCircle = member.lifeCircles.contains {
+        let hasStaleLiveCircle = !member.isCurrentUser && member.lifeCircles.contains {
             $0.kind == .live && !$0.isActiveForAlerts
         }
         let ping = latestPing(for: member)
@@ -615,6 +618,9 @@ struct HomeStatusView: View {
                         )
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: HCSpacing.x1) {
+                        Text("最近避難所")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(HCColor.brand)
                         Text(nearest.resource.name)
                             .font(.subheadline.weight(.medium))
                             .lineLimit(1)

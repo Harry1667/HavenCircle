@@ -96,6 +96,11 @@ extension LocalLifeCircle {
     /// 狀態文案（純文字、不靠顏色）：在同一地點多久・多久前確認／多久沒有回報
     var locationFreshnessText: String {
         guard kind == .live else { return "固定位置" }
+        // 自己的圈在自己手機上：位置來自這支手機本身，「沒有回報」是對家人說的話，
+        // 對本人顯示成「X 小時沒有回報」只會嚇到自己；誠實標示來源即可。
+        if member?.isCurrentUser == true && !isActiveForAlerts {
+            return "這支手機的位置（尚未回報給家人）"
+        }
         return LiveLocationPresence.statusText(
             lastReportedAt: locationUpdatedAt,
             stationarySince: locationStationarySince
