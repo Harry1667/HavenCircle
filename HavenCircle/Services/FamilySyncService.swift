@@ -749,12 +749,18 @@ final class FamilySyncService {
         do {
             let locations = try await FirestoreFamilyBackend.fetchLocations(familyId: familyID)
             // 先記下 uid 清單再解析名字（fallbackName 在 memberUids 未載入時要靠它）
-            liveLocations = locations
-            liveLocations = resolvedLocations(locations)
-            let changed = applyLiveLocationSnapshots(liveLocations, context: context)
+            // 先暫存 uid 清單再解析名字（fallbackName 在 memberUids 未載入時要靠它）；
+            // 效能：@Observable 屬性每次賦值都會通知觀察者（即使值相同），所以只在真的有變時才寫入，
+            // 也不再先寫一次原始值再寫一次解析後的值（以前每 20 秒輪詢最少觸發兩次整頁重繪）
+            if liveLocations.isEmpty { liveLocations = locations }
+            let resolved = resolvedLocations(locations)
+            if resolved != liveLocations { liveLocations = resolved }
+            let changed = applyLiveLocationSnapshots(resolved, context: context)
             if changed {
                 context.saveReporting()
-                await EventPipeline.refresh(context: context)
+                // 家人位置變了不代表事件資料變了：管線刷新要打 7 個網路來源，
+                // 這裡限流（距上次刷新 90 秒內不重跑），事件資料本身另有 5 分鐘定時與回前景刷新
+                await EventPipeline.refresh(context: context, minInterval: 90)
             }
         } catch {
             AppLog.cloud.error("讀取即時位置失敗：\(error.localizedDescription)")
@@ -853,11 +859,12 @@ final class FamilySyncService {
                 || circle.member !== member {
                 changed = true
             }
-            circle.kind = .live
-            circle.isFollowMe = isOwnLocation
-            circle.sharedLocationID = location.id
-            circle.encryptedAddress = "位置由家人手機共享"
-            circle.member = member
+            // 值相同就不寫：SwiftData 模型的 setter 即使賦同值也會標記為已變更並通知 @Query／觀察者
+            if circle.kind != .live { circle.kind = .live }
+            if circle.isFollowMe != isOwnLocation { circle.isFollowMe = isOwnLocation }
+            if circle.sharedLocationID != location.id { circle.sharedLocationID = location.id }
+            if circle.encryptedAddress != "位置由家人手機共享" { circle.encryptedAddress = "位置由家人手機共享" }
+            if circle.member !== member { circle.member = member }
         }
         return changed
     }

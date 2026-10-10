@@ -154,11 +154,17 @@ struct HavenCircleApp: App {
                 // 舊版輪詢排在資料管線、遠端設定、定位等一長串 await 之後，任何一步卡住就永遠不輪詢。
                 .task(id: scenePhase) {
                     guard scenePhase == .active else { return }
+                    // 效能：四件事合併在同一個排程依序做（不再各自搶主執行緒）；
+                    // 守護地點變動頻率低，每 3 輪（約 60 秒）才同步一次，其餘每 20 秒
+                    var tick = 0
                     while !Task.isCancelled {
                         await familySync.fetchLiveLocations(context: modelContainer.mainContext)
                         await familySync.pollArrivals()
-                        await familySync.syncPlaces(context: modelContainer.mainContext)
+                        if tick % 3 == 0 {
+                            await familySync.syncPlaces(context: modelContainer.mainContext)
+                        }
                         await familySync.checkLocationRequest(context: modelContainer.mainContext)
+                        tick += 1
                         do {
                             try await Task.sleep(for: .seconds(20))
                         } catch {

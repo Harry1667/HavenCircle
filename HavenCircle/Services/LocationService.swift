@@ -102,6 +102,7 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
     /// 顯著位置變更不需要 UIBackgroundModes location，系統會在必要時自行重啟 App
     func syncFollowMonitoring(hasFollowCircle: Bool) {
         self.hasFollowCircle = hasFollowCircle
+        lastFollowDispatchLocation = nil // 圈剛建立或變更：下一筆定位要能立刻校正圈心
         reconcileMonitoring()
     }
 
@@ -285,14 +286,33 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
         reconcileMonitoring()
     }
 
+    /// 回呼端節流：靜止模式 distanceFilter 為 none，系統可能每秒回呼一次。
+    /// 這個回呼在主執行緒，每筆都派 Task、做動作偵測、更新 @Observable，會讓打字與捲動延遲。
+    /// 做法：靜止時同一個 10 秒窗內只處理第一筆（動作偵測要連續 2 筆才確認移動，延後 10 秒無妨），
+    /// 其餘在第一行直接 return。一次性取位／心跳取位等待中不節流。
+    private var lastProcessedFixAt: Date?
+    private static let stationaryMinProcessInterval: TimeInterval = 10
+    /// 跟隨圈上次派發的位置：位移不到 300 公尺（FollowCircleService 的門檻）就不派 Task、不查 SwiftData
+    private var lastFollowDispatchLocation: CLLocation?
+
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let latest = locations.last else { return }
+        let arrivedAt = Date.now
+        if liveSharingEnabled, motionDetector.state == .stationary, oneShot == nil, !heartbeatAwaitingFix,
+           let lastProcessedFixAt,
+           arrivedAt.timeIntervalSince(lastProcessedFixAt) < Self.stationaryMinProcessInterval {
+            return
+        }
+        lastProcessedFixAt = arrivedAt
         oneShotTimeout?.cancel()
         oneShotTimeout = nil
         // 一次性取位與跟隨圈共用這個回呼：兩邊都要餵到
         oneShot?.resume(returning: latest)
         oneShot = nil
-        onFollowLocationUpdate?(latest)
+        if lastFollowDispatchLocation.map({ latest.distance(from: $0) >= 300 }) ?? true {
+            lastFollowDispatchLocation = latest
+            onFollowLocationUpdate?(latest)
+        }
         let wasHeartbeatFix = heartbeatAwaitingFix
         if heartbeatAwaitingFix {
             finishHeartbeatFix()

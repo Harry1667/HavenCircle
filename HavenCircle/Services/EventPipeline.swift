@@ -87,7 +87,30 @@ enum EventPipeline {
         CWARegionAlertProvider(),
     ]
 
-    static func refresh(context: ModelContext) async {
+    /// 重入保護與限流：多個入口（啟動、回前景、5 分鐘定時、家人位置變動、跟隨圈移動）會各自呼叫 refresh，
+    /// 以前同時跑好幾份，每份都打 7 個網路來源並重寫全部事件。現在同時間只跑一份，
+    /// 呼叫端可帶 minInterval 表示「距上次完成不到這麼久就略過」。
+    private static var isRefreshing = false
+    private static var lastRefreshFinishedAt: Date?
+
+    static func refresh(context: ModelContext, minInterval: TimeInterval = 0) async {
+        if isRefreshing {
+            // 刷新途中又有人要求（例如跟隨圈剛移動）：不丟掉，跑完這輪後補跑一次，比對才不會用到舊圈位置
+            if minInterval == 0 { rerunRequested = true }
+            return
+        }
+        if minInterval > 0, let last = lastRefreshFinishedAt, Date.now.timeIntervalSince(last) < minInterval { return }
+        isRefreshing = true
+        defer { isRefreshing = false; lastRefreshFinishedAt = .now }
+        repeat {
+            rerunRequested = false
+            await performRefresh(context: context)
+        } while rerunRequested
+    }
+
+    private static var rerunRequested = false
+
+    private static func performRefresh(context: ModelContext) async {
         let members = (try? context.fetch(FetchDescriptor<LocalFamilyMember>())) ?? []
         await ingestPointEvents(context: context, members: members)
         await ingestRegionAlerts(context: context, members: members)
@@ -141,29 +164,36 @@ enum EventPipeline {
         let grouped = Dictionary(grouping: reports, by: signature(of:))
         // 事件通報進 Xcode console：管線每輪的輸入量與去重結果，一眼看出資料有沒有進來
         AppLog.pipeline.info("📥 點狀事件：收到 \(reports.count) 筆回報 → 去重後 \(grouped.count) 組")
+        // 一次取出全部既有事件建字典，取代「每組一次帶 predicate 的 fetch」（約 200 次查詢）
+        let existingByKey = Dictionary(
+            ((try? context.fetch(FetchDescriptor<LocalSafetyEvent>())) ?? []).map { ($0.eventKey, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
         for (sig, group) in grouped {
             let trust = trustLevel(for: group)
             let key = "evt-\(sig)"
-            let descriptor = FetchDescriptor<LocalSafetyEvent>(
-                predicate: #Predicate { $0.eventKey == key }
-            )
-            if let existing = ((try? context.fetch(descriptor)) ?? []).first {
+            if let existing = existingByKey[key] {
                 // 明確解除的事件不再喚醒；單純 TTL 到期但來源又回報仍在進行時可重新啟用。
                 guard !existing.isResolved else { continue }
-                existing.updatedAt = .now
-                existing.expiresAt = .now.addingTimeInterval(
-                    group.map(\.ttlSeconds).max() ?? 86_400
-                )
-                existing.isArchived = false
-                existing.isOngoing = group.contains(where: \.isOngoing)
+                // 值沒變就不寫（SwiftData 賦同值也會觸發 @Query 重算）；updatedAt／expiresAt 是「最後確認時間」，
+                // 1 分鐘內重複確認不必再刷新，避免每輪對全部事件做無意義寫入
+                if abs(existing.updatedAt.timeIntervalSinceNow) > 60 {
+                    existing.updatedAt = .now
+                    existing.expiresAt = .now.addingTimeInterval(
+                        group.map(\.ttlSeconds).max() ?? 86_400
+                    )
+                }
+                if existing.isArchived { existing.isArchived = false }
+                let ongoing = group.contains(where: \.isOngoing)
+                if existing.isOngoing != ongoing { existing.isOngoing = ongoing }
                 // 來源端的標題與地點可能改善（例：媒體事件改用 LLM 短摘要重推），同步最新版
                 if let primary = group.first(where: \.isOfficial) ?? group.first {
-                    existing.title = primary.title
-                    existing.approximateLocation = primary.approximateLocation
-                    existing.sourceName = primary.sourceName
-                    existing.sourceURL = primary.sourceURL
+                    if existing.title != primary.title { existing.title = primary.title }
+                    if existing.approximateLocation != primary.approximateLocation { existing.approximateLocation = primary.approximateLocation }
+                    if existing.sourceName != primary.sourceName { existing.sourceName = primary.sourceName }
+                    if existing.sourceURL != primary.sourceURL { existing.sourceURL = primary.sourceURL }
                     // 詳細描述可能是後來才由 LLM 補上；有新的就更新，沒有就保留舊值
-                    if let detail = primary.detail, !detail.isEmpty { existing.detail = detail }
+                    if let detail = primary.detail, !detail.isEmpty, existing.detail != detail { existing.detail = detail }
                 }
                 if trustRank(trust) > trustRank(existing.trustStatus) {
                     existing.trustStatus = trust
