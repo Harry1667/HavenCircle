@@ -119,6 +119,16 @@ enum NotificationScheduler {
         }
     }
 
+    /// 家人到達／離開守護地點的本機通知（App 不在前景時由事件輪詢／推播喚醒觸發）。
+    /// 一般層級、不突破專注模式：這是生活資訊，不是災害警報。
+    static func notifyArrival(_ event: ArrivalEvent) async {
+        await scheduleAlert(
+            title: event.message,
+            body: "\(event.timeText)・家人守護地點通知",
+            id: "arrival-\(event.id)"
+        )
+    }
+
     /// 吵醒門檻的單一收斂點：所有 scheduleAlert 呼叫都經這裡決定能不能用時效性通知
     /// 突破靜音／專注模式。降級只影響 interruptionLevel，**不擋通知本身**——
     /// 通知一律照常送達，只是降級後不亮屏、不出聲、不震動。

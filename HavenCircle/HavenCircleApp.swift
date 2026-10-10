@@ -92,6 +92,7 @@ struct HavenCircleApp: App {
                 .modifier(AppTextSizeOverride(rawValue: appTextSize))
                 .environment(familySync)
                 .environment(entitlementStore)
+                .overlay(alignment: .top) { ArrivalBannerOverlay().environment(familySync) }
                 .task {
                     // 以環境實際使用的實例為準（AppDelegate 回呼與定位回呼都經由 AppRuntime 找它）
                     AppRuntime.familySync = familySync
@@ -149,6 +150,7 @@ struct HavenCircleApp: App {
                     guard scenePhase == .active else { return }
                     while !Task.isCancelled {
                         await familySync.fetchLiveLocations(context: modelContainer.mainContext)
+                        await familySync.pollArrivals()
                         do {
                             try await Task.sleep(for: .seconds(20))
                         } catch {
@@ -179,7 +181,10 @@ struct HavenCircleApp: App {
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
                 BackgroundRefresh.schedule()
+                // 守護地點圍欄：離開前台時依最新的固定圈同步（編輯過守護地點後下次切換就生效）
+                GeofenceSync.sync(context: modelContainer.mainContext)
             } else if phase == .active {
+                GeofenceSync.sync(context: modelContainer.mainContext)
                 // 分享中回到前景：心跳若已到期，立刻補一筆最新位置
                 if liveLocationSharingEnabled { LocationService.shared.kickHeartbeat() }
                 Task {

@@ -213,6 +213,18 @@ enum FirestoreFamilyBackend {
             try await doc.reference.delete()
         }
 
+        // 到達／離開事件（同樣靠 isOwner；每批 400 筆）
+        while true {
+            let batchSnapshot = try await familyRef.collection(FirestoreConfig.Path.arrivals)
+                .limit(to: 400)
+                .getDocuments()
+            if batchSnapshot.documents.isEmpty { break }
+            let batch = db.batch()
+            batchSnapshot.documents.forEach { batch.deleteDocument($0.reference) }
+            try await batch.commit()
+            if batchSnapshot.documents.count < 400 { break }
+        }
+
         // ②pings：分頁批次刪，每批最多 400 筆（Firestore WriteBatch 上限），
         // 反覆抓下一批直到抓不到為止，避免安否回報量大時一次性操作逾時。
         while true {
@@ -375,12 +387,14 @@ enum FirestoreFamilyBackend {
         longitude: Double,
         radiusMeters: Int,
         district: String,
-        stationarySince: Date
+        stationarySince: Date,
+        placeName: String?,
+        placeSince: Date?
     ) async throws {
         let db = FirestoreConfig.store()
         let ref = db.collection(FirestoreConfig.Path.families).document(familyId)
             .collection(FirestoreConfig.Path.locations).document(uid)
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "displayName": displayName,
             "latitude": latitude,
             "longitude": longitude,
@@ -390,6 +404,14 @@ enum FirestoreFamilyBackend {
             "stationarySince": Timestamp(date: stationarySince),
             "isSharing": true
         ]
+        // 目前所在守護地點（沒在任何守護地點內就清掉欄位，家人端才不會顯示過期的「在家」）
+        if let placeName, !placeName.isEmpty {
+            payload["placeName"] = placeName
+            payload["placeSince"] = Timestamp(date: placeSince ?? Date())
+        } else {
+            payload["placeName"] = FieldValue.delete()
+            payload["placeSince"] = FieldValue.delete()
+        }
         // 與逾時計時器賽跑：10 秒沒收到伺服器確認就丟出逾時（寫入仍在 Firestore 離線佇列，連線後會補送）
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask { try await ref.setData(payload, merge: true) }
@@ -418,6 +440,101 @@ enum FirestoreFamilyBackend {
         let snap = try await db.collection(FirestoreConfig.Path.families).document(familyId)
             .collection(FirestoreConfig.Path.locations).getDocuments()
         return snap.documents.compactMap(liveLocation(from:))
+    }
+
+    // MARK: - 守護地點到達／離開事件
+
+    /// 寫一筆到達／離開事件。createdAt 用伺服器時間（各手機時鐘不一致時，家人端用它判斷「新事件」才可靠），
+    /// clientAt 是事件實際發生時間，expireAt 供 Firestore TTL 政策使用（24 小時，寫入時就帶上）。
+    /// 不存座標：只記「誰、到達／離開、哪個守護地點、何時」。
+    static func postArrival(
+        familyId: String,
+        uid: String,
+        name: String,
+        kind: ArrivalEvent.Kind,
+        source: ArrivalEvent.Source,
+        placeName: String,
+        at date: Date
+    ) async throws {
+        let db = FirestoreConfig.store()
+        let ref = db.collection(FirestoreConfig.Path.families).document(familyId)
+            .collection(FirestoreConfig.Path.arrivals).document()
+        let data: [String: Any] = [
+            "uid": uid,
+            "name": name,
+            "kind": kind.rawValue,
+            "source": source.rawValue,
+            "placeName": placeName,
+            "createdAt": FieldValue.serverTimestamp(),
+            "clientAt": Timestamp(date: date),
+            "expireAt": Timestamp(date: TrailPolicy.expireAt(for: date))
+        ]
+        try await withWriteDeadline(seconds: 10) { try await ref.setData(data) }
+    }
+
+    /// 讀 since 之後的事件（單欄位範圍查詢，不需複合索引；篩人與來源在用戶端做）
+    static func fetchArrivals(familyId: String, since: Date) async throws -> [ArrivalEvent] {
+        let db = FirestoreConfig.store()
+        let snap = try await db.collection(FirestoreConfig.Path.families).document(familyId)
+            .collection(FirestoreConfig.Path.arrivals)
+            .whereField("createdAt", isGreaterThan: Timestamp(date: since))
+            .order(by: "createdAt")
+            .limit(to: 300)
+            .getDocuments()
+        return snap.documents.compactMap { doc -> ArrivalEvent? in
+            let data = doc.data()
+            guard let uid = data["uid"] as? String,
+                  let name = data["name"] as? String,
+                  let kindRaw = data["kind"] as? String, let kind = ArrivalEvent.Kind(rawValue: kindRaw),
+                  let createdAt = (data["createdAt"] as? Timestamp)?.dateValue()
+                    ?? (data["clientAt"] as? Timestamp)?.dateValue()
+            else { return nil }
+            return ArrivalEvent(
+                id: doc.documentID,
+                uid: uid,
+                name: name,
+                kind: kind,
+                source: (data["source"] as? String).flatMap(ArrivalEvent.Source.init(rawValue:)) ?? .region,
+                placeName: data["placeName"] as? String ?? "",
+                createdAt: createdAt
+            )
+        }
+    }
+
+    /// 刪除自己超過 24 小時的事件，以及（stopAll）全部事件；回傳刪除筆數。
+    /// 用 uid 等值查詢（單欄位、不需複合索引），過期篩選在用戶端做。
+    @discardableResult
+    static func pruneOwnArrivals(familyId: String, uid: String, olderThan cutoff: Date?) async throws -> Int {
+        let db = FirestoreConfig.store()
+        let snap = try await db.collection(FirestoreConfig.Path.families).document(familyId)
+            .collection(FirestoreConfig.Path.arrivals)
+            .whereField("uid", isEqualTo: uid)
+            .limit(to: 400)
+            .getDocuments()
+        let doomed = snap.documents.filter { doc in
+            guard let cutoff else { return true }
+            let at = (doc.data()["clientAt"] as? Timestamp)?.dateValue() ?? .distantPast
+            return at < cutoff
+        }
+        guard !doomed.isEmpty else { return 0 }
+        let batch = db.batch()
+        doomed.forEach { batch.deleteDocument($0.reference) }
+        try await batch.commit()
+        return doomed.count
+    }
+
+    /// 與逾時計時器賽跑：離線時 Firestore 寫入會無限期等伺服器 ack，這裡 N 秒沒確認就丟逾時
+    /// （寫入仍在離線佇列，連線後會補送）。
+    static func withWriteDeadline(seconds: UInt64, _ operation: @escaping @Sendable () async throws -> Void) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                throw LiveLocationTimeoutError()
+            }
+            _ = try await group.next()
+            group.cancelAll()
+        }
     }
 
     // MARK: - 安否回報
@@ -546,6 +663,8 @@ enum FirestoreFamilyBackend {
             updatedAt: updatedAt,
             // 舊版 App 寫的文件沒有這欄：nil 時文案退回「N 分鐘前更新位置」
             stationarySince: (data["stationarySince"] as? Timestamp)?.dateValue(),
+            placeName: (data["placeName"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+            placeSince: (data["placeSince"] as? Timestamp)?.dateValue(),
             isSharing: data["isSharing"] as? Bool ?? false
         )
     }

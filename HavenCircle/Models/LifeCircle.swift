@@ -52,6 +52,10 @@ final class LocalLifeCircle {
     /// 與 locationUpdatedAt（最後回報時間）分開：人沒動但手機持續回報，不算過期。
     /// 新增的可選欄位，SwiftData 輕量遷移即可；本機跟隨圈與舊資料為 nil。
     var locationStationarySince: Date?
+    /// 即時圈目前所在的守護地點名稱與進入時間（家人端「在家・從 08:30 起」用）。
+    /// 新增的可選欄位，SwiftData 輕量遷移即可。
+    var locationPlaceName: String?
+    var locationPlaceSince: Date?
     var sharedLocationID: String?
     var member: LocalFamilyMember?
 
@@ -103,7 +107,10 @@ extension LocalLifeCircle {
         }
         return LiveLocationPresence.statusText(
             lastReportedAt: locationUpdatedAt,
-            stationarySince: locationStationarySince
+            stationarySince: locationStationarySince,
+            placeName: locationPlaceName,
+            placeSince: locationPlaceSince,
+            district: district
         )
     }
 

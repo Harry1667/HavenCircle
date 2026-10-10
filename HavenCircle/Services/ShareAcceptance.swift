@@ -59,11 +59,27 @@ final class AppDelegate: NSObject, UIApplicationDelegate, MessagingDelegate {
                     )
                 }
             }
+            // 被系統因「顯著位置變更／拜訪／地理圍欄」在背景重新啟動時（launchOptions 有 .location），
+            // 走到這裡就已經重建 LocationService 並掛好回呼；定位資料會緊接著送進上面的 onLiveLocationUpdate。
+            if launchOptions?[.location] != nil {
+                AppLog.data.info("App 因位置事件在背景啟動，已重建定位服務")
+            }
+            LocationService.shared.onVisit = { visit in
+                Task { @MainActor in
+                    await AppRuntime.familySync?.handleVisit(visit, context: container.mainContext)
+                }
+            }
+            LocationService.shared.onRegionTransition = { transition in
+                Task { @MainActor in
+                    await AppRuntime.familySync?.handleRegionTransition(transition, context: container.mainContext)
+                }
+            }
             let hasFollow = FollowCircleService.hasFollowCircle(context: container.mainContext)
             LocationService.shared.syncFollowMonitoring(hasFollowCircle: hasFollow)
             LocationService.shared.syncLiveLocationSharing(
                 isEnabled: UserDefaults.standard.bool(forKey: SettingsKeys.liveLocationSharingEnabled)
             )
+            GeofenceSync.sync(context: container.mainContext)
             // 前景啟動即校正一次跟隨圈：顯著位置變更（SLC）要走約 500 公尺才觸發，
             // 只靠它的話「出遠門後第一次開 App」圈還停在舊位置，警報比對用錯地點。
             // 開 App 當下主動取一次位（已授權才會有結果），把圈先搬到人所在的地方。

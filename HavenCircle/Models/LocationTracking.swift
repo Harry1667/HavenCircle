@@ -196,6 +196,44 @@ enum GeofencePlanner {
 
 // MARK: - 到達／離開事件
 
+/// CLVisit 轉成的事件（系統判斷「在某處停留一段時間」）
+struct VisitTransition: Equatable {
+    let kind: ArrivalEvent.Kind
+    let date: Date
+    let latitude: Double
+    let longitude: Double
+}
+
+/// 進出守護地點（CLCircularRegion）
+struct RegionTransition: Equatable {
+    let kind: ArrivalEvent.Kind
+    let placeID: String
+    let placeName: String
+    let date: Date
+}
+
+/// 目前人在哪個守護地點內（持久化在 UserDefaults，App 被系統終止後重啟仍知道）
+struct CurrentPlace: Codable, Equatable {
+    let id: String
+    let name: String
+    let since: Date
+}
+
+enum VisitMapper {
+    /// CLVisit 的 arrivalDate 可能是 .distantPast（系統不知道何時到）、departureDate 為 .distantFuture 表示還沒離開
+    static func transition(
+        arrival: Date, departure: Date, latitude: Double, longitude: Double, now: Date = .now
+    ) -> VisitTransition {
+        if departure == .distantFuture {
+            return VisitTransition(
+                kind: .arrive, date: arrival == .distantPast ? now : arrival,
+                latitude: latitude, longitude: longitude
+            )
+        }
+        return VisitTransition(kind: .depart, date: departure, latitude: latitude, longitude: longitude)
+    }
+}
+
 struct ArrivalEvent: Identifiable, Equatable {
     enum Kind: String { case arrive, depart }
     enum Source: String { case region, visit }

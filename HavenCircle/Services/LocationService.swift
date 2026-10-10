@@ -30,6 +30,12 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
     var onFollowLocationUpdate: ((CLLocation) -> Void)?
     /// 家庭即時位置分享回呼；只有使用者明確開啟分享時才呼叫。
     var onLiveLocationUpdate: ((CLLocation) -> Void)?
+    /// 拜訪偵測（CLVisit）回呼：到達／離開某處
+    var onVisit: ((VisitTransition) -> Void)?
+    /// 守護地點進出回呼（地理圍欄）
+    var onRegionTransition: ((RegionTransition) -> Void)?
+    /// 目前所在的守護地點（地理圍欄判斷；持久化，背景重啟後仍有效）
+    private(set) var currentPlace: CurrentPlace? = LocationService.loadCurrentPlace()
     private var hasFollowCircle = false
     private var liveSharingEnabled = false
     /// 心跳排程：分享期間每 15 秒醒來檢查一次是否該補一筆「仍在此處」（到期才真的取位，平常不耗電；15 秒是為了上傳失敗時能快速重試）
@@ -103,6 +109,8 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
     func syncLiveLocationSharing(isEnabled: Bool) {
         liveSharingEnabled = isEnabled
         reconcileMonitoring()
+        // 關閉分享就移除所有守護地點圍欄；開啟時由呼叫端用最新的守護地點清單呼叫 syncGeofences
+        if !isEnabled { syncGeofences([]) }
     }
 
     /// 安否回報用：一次性取得目前位置；未授權或取不到一律回 nil，不擋回報流程
@@ -151,6 +159,125 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
         heartbeatTickIfDue()
     }
 
+    // MARK: - 守護地點地理圍欄
+
+    private static let currentPlaceKey = "hc.currentPlace"
+    private static let geofenceNamesKey = "hc.geofenceNames"
+
+    private static func loadCurrentPlace() -> CurrentPlace? {
+        guard let data = UserDefaults.standard.data(forKey: currentPlaceKey) else { return nil }
+        return try? JSONDecoder().decode(CurrentPlace.self, from: data)
+    }
+
+    private func setCurrentPlace(_ place: CurrentPlace?) {
+        currentPlace = place
+        if let place, let data = try? JSONEncoder().encode(place) {
+            UserDefaults.standard.set(data, forKey: Self.currentPlaceKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.currentPlaceKey)
+        }
+    }
+
+    /// regionID → 地點名稱（App 被系統終止後由圍欄喚醒時，不必讀資料庫也知道叫什麼）
+    private func storedGeofenceNames() -> [String: String] {
+        (UserDefaults.standard.dictionary(forKey: Self.geofenceNamesKey) as? [String: String]) ?? [:]
+    }
+
+    /// 對守護地點（固定圈）建立地理圍欄；iOS 最多 20 個，超過取離目前位置最近的 20 個。
+    /// 只在使用者開啟位置分享且已授權時運作；否則清掉所有圍欄。
+    /// 呼叫時機：App 啟動、回前景／進背景、分享開關變更（守護地點增刪改後下一次切換就會同步）。
+    func syncGeofences(_ places: [GeofencePlace]) {
+        let existing = manager.monitoredRegions.compactMap { $0 as? CLCircularRegion }
+            .filter { $0.identifier.hasPrefix(GeofencePlanner.identifierPrefix) }
+        guard liveSharingEnabled, isAuthorized,
+              CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else {
+            for region in existing { manager.stopMonitoring(for: region) }
+            UserDefaults.standard.removeObject(forKey: Self.geofenceNamesKey)
+            if currentPlace != nil { setCurrentPlace(nil) }
+            return
+        }
+        let center = manager.location.map { ($0.coordinate.latitude, $0.coordinate.longitude) }
+        let desired = GeofencePlanner.select(places, near: center)
+        let desiredIDs = Set(desired.map { GeofencePlanner.identifier(forCircleKey: $0.id) })
+
+        for region in existing where !desiredIDs.contains(region.identifier) {
+            manager.stopMonitoring(for: region)
+        }
+        let radius = min(GeofencePlanner.regionRadiusMeters, manager.maximumRegionMonitoringDistance)
+        var names: [String: String] = [:]
+        for place in desired {
+            let identifier = GeofencePlanner.identifier(forCircleKey: place.id)
+            names[identifier] = place.name
+            if let current = existing.first(where: { $0.identifier == identifier }),
+               abs(current.center.latitude - place.latitude) < 0.000_01,
+               abs(current.center.longitude - place.longitude) < 0.000_01,
+               current.radius == radius {
+                continue // 沒變就不重建，避免重設系統的進出判斷
+            }
+            let region = CLCircularRegion(
+                center: CLLocationCoordinate2D(latitude: place.latitude, longitude: place.longitude),
+                radius: radius,
+                identifier: identifier
+            )
+            region.notifyOnEntry = true
+            region.notifyOnExit = true
+            manager.startMonitoring(for: region)
+            manager.requestState(for: region) // 立刻問「現在在不在裡面」，補上已經在家的情況
+        }
+        UserDefaults.standard.set(names, forKey: Self.geofenceNamesKey)
+        if let current = currentPlace, !desiredIDs.contains(current.id) {
+            setCurrentPlace(nil)
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
+        guard region.identifier.hasPrefix(GeofencePlanner.identifierPrefix) else { return }
+        let name = storedGeofenceNames()[region.identifier] ?? "守護地點"
+        let now = Date.now
+        setCurrentPlace(CurrentPlace(id: region.identifier, name: name, since: now))
+        onRegionTransition?(RegionTransition(kind: .arrive, placeID: region.identifier, placeName: name, date: now))
+    }
+
+    func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
+        guard region.identifier.hasPrefix(GeofencePlanner.identifierPrefix) else { return }
+        let name = storedGeofenceNames()[region.identifier] ?? currentPlace?.name ?? "守護地點"
+        if currentPlace?.id == region.identifier { setCurrentPlace(nil) }
+        onRegionTransition?(RegionTransition(kind: .depart, placeID: region.identifier, placeName: name, date: .now))
+    }
+
+    /// 啟動圍欄後 requestState 的回答：只校正「目前在哪」，不當成進出事件（避免重啟 App 就誤報到達）
+    func locationManager(_ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
+        guard region.identifier.hasPrefix(GeofencePlanner.identifierPrefix) else { return }
+        switch state {
+        case .inside:
+            if currentPlace?.id != region.identifier {
+                let name = storedGeofenceNames()[region.identifier] ?? "守護地點"
+                setCurrentPlace(CurrentPlace(id: region.identifier, name: name, since: .now))
+            }
+        case .outside:
+            if currentPlace?.id == region.identifier { setCurrentPlace(nil) }
+        case .unknown:
+            break
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
+        AppLog.data.error("地理圍欄監控失敗：\(error.localizedDescription)")
+    }
+
+    // MARK: - 拜訪偵測
+
+    func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
+        let transition = VisitMapper.transition(
+            arrival: visit.arrivalDate,
+            departure: visit.departureDate,
+            latitude: visit.coordinate.latitude,
+            longitude: visit.coordinate.longitude
+        )
+        guard liveSharingEnabled else { return }
+        onVisit?(transition)
+    }
+
     // MARK: - CLLocationManagerDelegate（manager 建立在主執行緒，回呼也在主執行緒）
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
@@ -195,6 +322,7 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
             stopHeartbeat()
             manager.stopUpdatingLocation()
             manager.stopMonitoringSignificantLocationChanges()
+            manager.stopMonitoringVisits()
             manager.allowsBackgroundLocationUpdates = false
             return
         }
@@ -218,10 +346,18 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
             applyProfile()
         }
 
+        // 顯著位置變更＋拜訪偵測：App 被系統終止（或使用者滑掉）後，系統仍會在人移動／到達時
+        // 重新啟動 App 並送來定位，是「App 關掉也要回報」的保底路徑。只在分享開啟時啟動拜訪偵測。
         if hasFollowCircle || liveSharingEnabled {
             manager.startMonitoringSignificantLocationChanges()
         } else {
             manager.stopMonitoringSignificantLocationChanges()
+        }
+        if liveSharingEnabled {
+            manager.startMonitoringVisits()
+        } else {
+            manager.stopMonitoringVisits()
+            if currentPlace != nil { setCurrentPlace(nil) }
         }
     }
 

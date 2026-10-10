@@ -15,6 +15,9 @@ struct FamilyLiveLocation: Identifiable, Equatable {
     let updatedAt: Date
     /// 開始停留時間：座標最後一次移動超過 100 公尺的時間；舊版文件沒有此欄為 nil
     var stationarySince: Date? = nil
+    /// 目前所在的守護地點名稱與進入時間（不在任何守護地點內為 nil）
+    var placeName: String? = nil
+    var placeSince: Date? = nil
     let isSharing: Bool
 
     /// 過時判斷只看「最後回報時間」：人沒移動但心跳正常，仍是新鮮的
@@ -24,7 +27,13 @@ struct FamilyLiveLocation: Identifiable, Equatable {
 
     var freshnessText: String {
         guard isSharing else { return "已停止分享" }
-        return LiveLocationPresence.statusText(lastReportedAt: updatedAt, stationarySince: stationarySince)
+        return LiveLocationPresence.statusText(
+            lastReportedAt: updatedAt,
+            stationarySince: stationarySince,
+            placeName: placeName,
+            placeSince: placeSince,
+            district: district
+        )
     }
 
     enum Field {
@@ -37,6 +46,8 @@ struct FamilyLiveLocation: Identifiable, Equatable {
         static let district = "district"
         static let updatedAt = "updatedAt"
         static let stationarySince = "stationarySince"
+        static let placeName = "placeName"
+        static let placeSince = "placeSince"
         static let isSharing = "isSharing"
     }
 }

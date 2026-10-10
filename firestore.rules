@@ -61,6 +61,17 @@ service cloud.firestore {
         allow delete: if request.auth != null && (request.auth.uid == uid || isOwner(familyId));
       }
 
+      // 守護地點到達／離開事件：家庭成員可讀；只能以自己的 uid 新增；不可改；
+      // 刪除限本人（關閉分享時清掉自己的、過期清理）或圈主（解散家庭圈）。
+      // 文件帶 expireAt（建立後 24 小時），建議另設 Firestore TTL policy 自動清除。
+      match /arrivals/{eventId} {
+        allow read: if isMember(familyId);
+        allow create: if isMember(familyId) && request.resource.data.uid == request.auth.uid;
+        allow update: if false;
+        allow delete: if request.auth != null
+          && (resource.data.uid == request.auth.uid || isOwner(familyId));
+      }
+
       // 安否回報：家庭成員可讀、可發、可標記已讀（更新）；一般情況下不開放刪除，
       // 只有圈主解散家庭圈時能刪（避免解散後留下永久孤兒資料）。
       match /pings/{pingId} {

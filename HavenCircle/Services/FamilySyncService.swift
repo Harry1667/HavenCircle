@@ -1,6 +1,7 @@
 import Foundation
 import CoreLocation
 import SwiftData
+import UIKit
 import os
 
 /// 登入 / 家庭圈狀態，供 UI 呈現對應提示
@@ -417,6 +418,8 @@ final class FamilySyncService {
             let isStationary = movedMeters.map { $0 < LiveLocationPresence.stationaryRadiusMeters } ?? false
             let anchor = (isStationary ? previousAnchor : nil) ?? location
 
+            // 目前所在的守護地點（地理圍欄判斷；不在任何守護地點內為 nil）
+            let place = LocationService.shared.currentPlace
             // 隱私與救援的取捨：寫入原始座標，不加雜訊模糊化——這是家人要據以趕去救人的位置。
             // 降低暴露改用其他手段：擷取端 ~100m 精度、預設關閉且可隨時停止、Security Rules 限同家庭可讀。
             try await FirestoreFamilyBackend.publishLocation(
@@ -427,7 +430,9 @@ final class FamilySyncService {
                 longitude: anchor.coordinate.longitude,
                 radiusMeters: max(300, min(radiusMeters, 5_000)),
                 district: district,
-                stationarySince: stationarySince
+                stationarySince: stationarySince,
+                placeName: place?.name,
+                placeSince: place?.since
             )
             lastPublishedLocation = anchor
             lastStationarySince = stationarySince
@@ -441,7 +446,8 @@ final class FamilySyncService {
             // 不必等下面這次完整讀取往返；讀取失敗也不會讓畫面卡在「等待」。
             projectOwnPublishedLocation(
                 uid: uid, name: trimmedName, anchor: anchor, radiusMeters: radiusMeters,
-                district: district, stationarySince: stationarySince, context: context
+                district: district, stationarySince: stationarySince,
+                placeName: place?.name, placeSince: place?.since, context: context
             )
             await fetchLiveLocations(context: context)
             return true
@@ -455,7 +461,8 @@ final class FamilySyncService {
     /// 上傳成功後立刻把本人那筆放進 liveLocations 並投影成本機即時圈（樂觀更新，之後由讀取校正）。
     private func projectOwnPublishedLocation(
         uid: String, name: String, anchor: CLLocation, radiusMeters: Int,
-        district: String, stationarySince: Date, context: ModelContext
+        district: String, stationarySince: Date,
+        placeName: String?, placeSince: Date?, context: ModelContext
     ) {
         let own = FamilyLiveLocation(
             id: uid,
@@ -467,6 +474,8 @@ final class FamilySyncService {
             district: district,
             updatedAt: .now,
             stationarySince: stationarySince,
+            placeName: placeName,
+            placeSince: placeSince,
             isSharing: true
         )
         var updated = liveLocations.filter { $0.id != uid }
@@ -494,6 +503,7 @@ final class FamilySyncService {
             liveLocationError = "沒有定位權限：請到 iOS 設定 > 隱私權 > 定位服務 > 安心圈，允許「使用 App 期間」或「永遠」"
             return
         }
+        GeofenceSync.sync(context: context)
         // 最多嘗試 3 次（取位逾時 8 秒＋短暫間隔），整體約 10 秒內完成第一次上傳
         for attempt in 0..<3 {
             if let location = await LocationService.shared.currentLocation(),
@@ -647,7 +657,11 @@ final class FamilySyncService {
                 || circle.radiusMeters != location.radiusMeters
                 || circle.locationUpdatedAt != location.updatedAt
                 || circle.locationStationarySince != location.stationarySince
+                || circle.locationPlaceName != location.placeName
+                || circle.locationPlaceSince != location.placeSince
                 || circle.district != location.district {
+                circle.locationPlaceName = location.placeName
+                circle.locationPlaceSince = location.placeSince
                 circle.latitude = location.latitude
                 circle.longitude = location.longitude
                 circle.radiusMeters = location.radiusMeters
@@ -671,6 +685,114 @@ final class FamilySyncService {
             circle.member = member
         }
         return changed
+    }
+
+    // MARK: - 守護地點到達／離開、拜訪
+
+    /// 家人 App 在前景時讀到的新到達／離開事件，UI 顯示成頂端橫幅（橫幅自己 5 秒後淡出）
+    private(set) var arrivalBanners: [ArrivalEvent] = []
+    /// 事件列表（成員詳情的「到達／離開」用）會自己查，這裡只負責橫幅
+
+    func dismissArrivalBanner(_ id: String) {
+        arrivalBanners.removeAll { $0.id == id }
+    }
+
+    private var arrivalLastSeenKey: String { "hc.arrivals.lastSeen.\(currentFamilyID ?? "")" }
+
+    /// 自己手機進出守護地點：立刻補傳位置（force，帶上最新所在地點）並寫一筆事件。
+    /// 位置分享沒開就什麼都不做（事件本身就是位置資訊，必須同樣 opt-in）。
+    func handleRegionTransition(_ transition: RegionTransition, context: ModelContext) async {
+        guard UserDefaults.standard.bool(forKey: SettingsKeys.liveLocationSharingEnabled) else { return }
+        await withBackgroundTask(name: "region-transition") {
+            await self.uploadLocationNow(context: context)
+            await self.recordArrival(
+                kind: transition.kind, source: .region, placeName: transition.placeName,
+                at: transition.date
+            )
+        }
+    }
+
+    /// CLVisit：到達／離開某處。有對應守護地點就用它的名字，否則寫「某處」（不存座標、不反查地址）
+    func handleVisit(_ visit: VisitTransition, context: ModelContext) async {
+        guard UserDefaults.standard.bool(forKey: SettingsKeys.liveLocationSharingEnabled) else { return }
+        await withBackgroundTask(name: "visit") {
+            await self.uploadLocationNow(context: context)
+            await self.recordArrival(
+                kind: visit.kind, source: .visit,
+                placeName: LocationService.shared.currentPlace?.name ?? "",
+                at: visit.date
+            )
+        }
+    }
+
+    /// 取一筆新定位並立即上傳（不受節流限制）。回傳是否上傳成功
+    @discardableResult
+    func uploadLocationNow(context: ModelContext) async -> Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: SettingsKeys.liveLocationSharingEnabled),
+              let location = await LocationService.shared.currentLocation() else { return false }
+        let storedRadius = defaults.integer(forKey: SettingsKeys.liveCircleRadiusMeters)
+        return await publishLiveLocation(
+            location,
+            displayName: defaults.string(forKey: SettingsKeys.profileDisplayName) ?? "",
+            radiusMeters: storedRadius > 0 ? storedRadius : 1_000,
+            context: context,
+            force: true
+        )
+    }
+
+    private func recordArrival(
+        kind: ArrivalEvent.Kind, source: ArrivalEvent.Source, placeName: String, at date: Date
+    ) async {
+        guard AuthService.shared.isSignedIn, let uid, let familyID = currentFamilyID else { return }
+        let name = UserDefaults.standard.string(forKey: SettingsKeys.profileDisplayName)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        do {
+            try await FirestoreFamilyBackend.postArrival(
+                familyId: familyID, uid: uid, name: name.isEmpty ? "家人" : name,
+                kind: kind, source: source, placeName: placeName, at: date
+            )
+        } catch {
+            AppLog.cloud.error("寫入到達/離開事件失敗：\(error.localizedDescription)")
+        }
+    }
+
+    /// 讀取家人新的到達／離開事件。前景時變成頂端橫幅；非前景（例如被推播喚醒）改發本機通知。
+    /// 第一次讀（沒有 lastSeen）只記時間、不補發，避免剛加入就收到一堆舊事件。
+    func pollArrivals() async {
+        guard let familyID = currentFamilyID else { return }
+        let defaults = UserDefaults.standard
+        let key = arrivalLastSeenKey
+        let now = Date.now
+        guard let lastSeen = defaults.object(forKey: key) as? Date else {
+            defaults.set(now, forKey: key)
+            return
+        }
+        do {
+            let events = try await FirestoreFamilyBackend.fetchArrivals(familyId: familyID, since: lastSeen)
+            guard let newest = events.map(\.createdAt).max() else { return }
+            defaults.set(max(newest, lastSeen), forKey: key)
+            let candidates = ArrivalPolicy.bannerCandidates(events, selfUID: uid, lastSeen: lastSeen, now: now)
+            guard !candidates.isEmpty else { return }
+            if UIApplication.shared.applicationState == .active {
+                arrivalBanners.append(contentsOf: candidates)
+            } else {
+                for event in candidates { await NotificationScheduler.notifyArrival(event) }
+            }
+        } catch {
+            AppLog.cloud.error("讀取到達/離開事件失敗：\(error.localizedDescription)")
+        }
+    }
+
+    /// 背景短任務：區域／拜訪喚醒只有約 10 秒，向系統多要時間讓上傳與寫事件做完
+    private func withBackgroundTask(name: String, _ work: @escaping () async -> Void) async {
+        var taskID = UIBackgroundTaskIdentifier.invalid
+        taskID = UIApplication.shared.beginBackgroundTask(withName: name) {
+            UIApplication.shared.endBackgroundTask(taskID)
+            taskID = .invalid
+        }
+        await work()
+        if taskID != .invalid { UIApplication.shared.endBackgroundTask(taskID) }
     }
 
     // MARK: - 安否回報
