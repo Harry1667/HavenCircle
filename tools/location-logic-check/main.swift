@@ -64,6 +64,18 @@ check(!PlaceDedup.isSame(pa, pd), "不同名 → 不同地點")
 check(PlaceDedup.match(pb, in: [pa, pc, pd])?.id == "a", "遷移比對找到雲端既有那筆")
 let col = PlaceDedup.collapse([pc, pb, pa, pd])
 check(col.kept.map(\.id) == ["a", "c", "d"] && col.mapping == ["b": "a"], "去重：保留 id 最小，被收掉 b→a")
+// --- 事件命中規則 ---
+check(AlertMatchRule.precisionBuffer(precisionMeters: 15_000, radiusMeters: 1_000) == 1_000, "誤差加成上限 = 半徑 1000m（15km 誤差不再撐大）")
+check(AlertMatchRule.precisionBuffer(precisionMeters: 3_000, radiusMeters: 500) == 500, "半徑 500m → 加成上限 500m")
+check(AlertMatchRule.precisionBuffer(precisionMeters: 300, radiusMeters: 2_000) == 300, "誤差 300m 小於上限 → 取 300m")
+check(AlertMatchRule.precisionBuffer(precisionMeters: 5_000, radiusMeters: 5_000) == 1_000, "加成絕對上限 1000m")
+check(5_500 > 1_000 + AlertMatchRule.precisionBuffer(precisionMeters: 15_000, radiusMeters: 1_000), "5.5km 火警不命中 1km 守護地點")
+check(AlertMatchRule.isDistrictLevel(precisionMeters: 3_000) && AlertMatchRule.isDistrictLevel(precisionMeters: 15_000), "3km／15km 為行政區級")
+check(!AlertMatchRule.isDistrictLevel(precisionMeters: 500), "500m 不是行政區級")
+check(AlertMatchRule.isSameDistrict(circleDistrict: "西屯區", eventDistrict: "西屯區", unspecified: "未指定"), "同區命中")
+check(!AlertMatchRule.isSameDistrict(circleDistrict: "西屯區", eventDistrict: "北屯區", unspecified: "未指定"), "不同區不命中")
+check(!AlertMatchRule.isSameDistrict(circleDistrict: "未指定", eventDistrict: "未指定", unspecified: "未指定"), "雙方未指定不命中")
+check(!AlertMatchRule.isSameDistrict(circleDistrict: "西屯區", eventDistrict: nil, unspecified: "未指定"), "事件不知道行政區不命中")
 let tz = TimeZone(identifier: "Asia/Taipei")!
 let now = t0.addingTimeInterval(120)
 let since = t0 // 

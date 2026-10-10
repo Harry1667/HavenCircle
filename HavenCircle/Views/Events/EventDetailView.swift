@@ -184,7 +184,7 @@ struct EventDetailView: View {
             for match in decision.matches {
                 let who = match.isCurrentUser ? "我" : "一位家人"
                 let schedule = match.withinSchedule ? "提醒時段內" : "提醒時段外"
-                lines.append("- \(who)的警戒範圍約 \(match.distanceMeters) 公尺（\(schedule)）")
+                lines.append("- \(who)的警戒範圍\(match.rangeText)（\(schedule)）")
             }
         }
         return lines.joined(separator: "\n")
@@ -354,7 +354,7 @@ struct EventDetailView: View {
                 .font(.subheadline)
             ForEach(decision.matches, id: \.circleName) { match in
                 LabeledContent("\(match.isCurrentUser ? "我" : match.memberName)・\(match.circleName)") {
-                    Text("約 \(match.distanceMeters) 公尺\(match.withinSchedule ? "" : "（時段外）")")
+                    Text("\(match.rangeText)\(match.withinSchedule ? "" : "（時段外）")")
                 }
                 .font(.caption)
             }

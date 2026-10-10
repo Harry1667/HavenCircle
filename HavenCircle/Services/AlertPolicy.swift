@@ -11,6 +11,14 @@ struct CircleMatch {
     let isCurrentUser: Bool
     /// 地點類成員（倉庫等）不會回報平安，不掛互動按鈕
     let isPlace: Bool
+    /// 以「同一行政區」命中（行政區級事件對守護地點）時為該行政區名稱；此時 distanceMeters 只供排序，不對使用者顯示
+    var sameDistrict: String? = nil
+
+    /// 詳情頁／AI 上下文用的範圍文字
+    var rangeText: String {
+        if let sameDistrict { return "同在\(sameDistrict)" }
+        return "約 \(distanceMeters) 公尺"
+    }
 }
 
 /// 提醒決策結果。reason 直接顯示給使用者——「每則通知都能看見為何收到」
@@ -39,6 +47,9 @@ enum AlertPolicy {
         let point = CLLocation(latitude: event.latitude, longitude: event.longitude)
         var matches: [CircleMatch] = []
         let broadCategory = EventCategory.broadCategory(for: event.eventType)
+        // 事件定位只到行政區：座標是行政區中心，誤差達數公里，守護地點改用同一行政區判斷
+        let districtLevel = AlertMatchRule.isDistrictLevel(precisionMeters: event.precisionMeters)
+        let eventDistrict: String? = districtLevel ? Self.district(of: event) : nil
 
         for member in members {
             for circle in member.lifeCircles {
@@ -56,14 +67,27 @@ enum AlertPolicy {
                 // 只看「事件是否落在警戒圈半徑內」（＋位置精度緩衝——新聞事件常只精確到行政區，
                 // 沒這個緩衝會漏掉行政區中心稍遠、但其實就在你附近的事件）。
                 // 使用者要求：只有圈內的事件才叫，不再額外疊加「災型影響半徑」把命中範圍往圈外擴張。
-                guard distance <= Double(circle.radiusMeters + event.precisionMeters) else { continue }
+                // 誤差加成上限 min(誤差, 半徑, 1000m)，大範圍不確定事件不再把命中範圍撐到數公里外。
+                var sameDistrict: String?
+                if districtLevel && member.isPlace {
+                    guard AlertMatchRule.isSameDistrict(
+                        circleDistrict: circle.district, eventDistrict: eventDistrict, unspecified: Districts.unspecified
+                    ) else { continue }
+                    sameDistrict = circle.district
+                } else {
+                    let buffer = AlertMatchRule.precisionBuffer(
+                        precisionMeters: event.precisionMeters, radiusMeters: circle.radiusMeters
+                    )
+                    guard distance <= Double(circle.radiusMeters) + buffer else { continue }
+                }
                 matches.append(CircleMatch(
                     memberName: member.name,
                     circleName: circle.name,
                     distanceMeters: max(Int(distance / 100) * 100, 100),
                     withinSchedule: circle.isWithinSchedule(at: date),
                     isCurrentUser: member.isCurrentUser,
-                    isPlace: member.isPlace
+                    isPlace: member.isPlace,
+                    sameDistrict: sameDistrict
                 ))
             }
         }
@@ -108,6 +132,9 @@ enum AlertPolicy {
         let phrase: String
         if best.isCurrentUser {
             phrase = "距離你約 \(distanceText)"
+        } else if best.isPlace, let district = best.sameDistrict {
+            // 行政區級事件沒有可信的距離，不顯示假的公里數
+            phrase = "在你的守護地點「\(best.memberName)」所在的\(district)"
         } else if best.isPlace {
             phrase = "距離你的守護地點「\(best.memberName)」約 \(distanceText)"
         } else {
@@ -118,6 +145,17 @@ enum AlertPolicy {
             matches: matches,
             reason: "\(phrase)，\(event.trustStatus)"
         )
+    }
+
+    /// 事件所在行政區：先從地點文字取最長的行政區名稱（避免「中西區」被「西區」誤配），
+    /// 取不到再用座標做邊界內判
+    static func district(of event: LocalSafetyEvent) -> String? {
+        let text = event.approximateLocation + event.title
+        if let name = Districts.all.dropFirst().filter({ text.contains($0) }).max(by: { $0.count < $1.count }) {
+            return name
+        }
+        return DistrictBoundaries.shared
+            .district(at: CLLocationCoordinate2D(latitude: event.latitude, longitude: event.longitude))?.town
     }
 
     /// 1 公里以下用公尺，以上用公里並保留一位小數（5500 公尺 -> 5.5 公里）

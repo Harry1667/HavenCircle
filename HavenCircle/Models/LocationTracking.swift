@@ -309,6 +309,33 @@ enum PlaceDedup {
     }
 }
 
+// MARK: - 事件命中規則（不確定度處理）
+
+/// 事件定位只到行政區時（precisionMeters 3 公里以上，座標是行政區中心），誤差可達數公里。
+/// 若直接把誤差整個加進命中距離，半徑 1 公里的守護地點會被 5 公里外的火災觸發。規則：
+/// - 誤差加成上限 min(誤差, 圈半徑, 1000 公尺)；
+/// - 行政區級事件對「守護地點」改用「同一行政區」判斷，不用（不可靠的）距離。
+enum AlertMatchRule {
+    /// 事件定位精度達此值以上＝只定位到行政區（或更大範圍）
+    static let districtLevelPrecision = 3_000
+    static let maxPrecisionBuffer: Double = 1_000
+
+    static func precisionBuffer(precisionMeters: Int, radiusMeters: Int) -> Double {
+        Double(max(0, min(precisionMeters, radiusMeters, Int(maxPrecisionBuffer))))
+    }
+
+    static func isDistrictLevel(precisionMeters: Int) -> Bool {
+        precisionMeters >= districtLevelPrecision
+    }
+
+    /// 圈的行政區與事件行政區相同（任一邊未指定／未知都不算）
+    static func isSameDistrict(circleDistrict: String, eventDistrict: String?, unspecified: String) -> Bool {
+        guard let eventDistrict, !eventDistrict.isEmpty, eventDistrict != unspecified,
+              !circleDistrict.isEmpty, circleDistrict != unspecified else { return false }
+        return circleDistrict == eventDistrict
+    }
+}
+
 // MARK: - 到達／離開事件
 
 /// CLVisit 轉成的事件（系統判斷「在某處停留一段時間」）
