@@ -615,11 +615,18 @@ struct SafetyMapView: View {
         }
         // 具名座標空間：
         .coordinateSpace(.named(Self.mapSpace))
-        // 圖例展開時，點地圖其他處＝收合圖例（不影響平移／縮放，也不吃標註本身的點擊）
+        // 點地圖空白處＝關閉所有浮出的卡片：圖例、摘要卡、事件摘要卡（compact sheet，
+        // 它開了 presentationBackgroundInteraction，點地圖不會自動關，要在這裡收）、守護範圍膠囊。
+        // 不影響平移／縮放，也不吃標註（圖釘按鈕）本身的點擊；點另一個圖釘走 selectEvent 直接換卡。
+        // 區域警報與叢集清單是一般 modal sheet，點外側本來就會關閉。
         .onTapGesture {
-            if isLegendExpanded {
-                withAnimation(.easeInOut(duration: 0.2)) { isLegendExpanded = false }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isLegendExpanded = false
+                isSummaryExpanded = false
+                showRangePill = false
             }
+            if selected != nil { selected = nil }
+            if selectedCluster != nil { selectedCluster = nil }
         }
         }
     }
