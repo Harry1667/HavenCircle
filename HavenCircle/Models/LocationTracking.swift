@@ -96,7 +96,9 @@ struct LocationProfile: Equatable {
     let distanceFilter: CLLocationDistance
 
     static let moving = LocationProfile(desiredAccuracy: kCLLocationAccuracyHundredMeters, distanceFilter: 50)
-    static let stationary = LocationProfile(desiredAccuracy: kCLLocationAccuracyKilometer, distanceFilter: 300)
+    /// 靜止：精度維持 100 公尺（1 公里精度的定位很少回呼、上傳端還會因精度 > 1000 公尺拒收），
+    /// 且不設距離門檻——讓系統持續有定位回呼喚醒 App，回呼端（LocationService）再節流成每 5 分鐘一筆心跳
+    static let stationary = LocationProfile(desiredAccuracy: kCLLocationAccuracyHundredMeters, distanceFilter: kCLDistanceFilterNone)
 
     static func profile(for state: MotionState) -> LocationProfile {
         state == .moving ? .moving : .stationary

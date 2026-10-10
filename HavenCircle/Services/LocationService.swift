@@ -7,7 +7,7 @@ import os // Swift 6.2 MemberImportVisibility：用 os.Logger 插值的檔案必
 /// (1) 地圖藍點與一次性取位；(2) 本機即時圈更新；(3) 使用者主動開啟的家庭位置分享。
 /// 家庭分享開啟時（像「尋找」App 一樣）持續背景定位：
 /// - 移動中：100 公尺精度、distanceFilter 50 公尺；「永遠」授權時允許背景更新並顯示系統的藍色定位指示。
-/// - 偵測到靜止（約 4 分鐘位移 < 50 公尺，見 MotionDetector）：降為 1 公里精度＋300 公尺門檻省電，
+/// - 偵測到靜止（約 4 分鐘位移 < 50 公尺，見 MotionDetector）：維持 100 公尺精度、不設距離門檻（持續有回呼喚醒 App），回呼端節流成 5 分鐘一筆心跳；
 ///   離開錨點 100 公尺後恢復移動參數。
 /// - 顯著位置變更保留作為 App 被系統終止後的喚醒路徑；關閉分享後立即停止標準定位。
 ///
@@ -293,6 +293,7 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
         oneShot?.resume(returning: latest)
         oneShot = nil
         onFollowLocationUpdate?(latest)
+        let wasHeartbeatFix = heartbeatAwaitingFix
         if heartbeatAwaitingFix {
             finishHeartbeatFix()
         }
@@ -304,6 +305,14 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
             if motionDetector.state != previousState {
                 AppLog.data.info("定位模式切換：\(self.motionDetector.state.rawValue)")
                 applyProfile()
+            }
+            // 靜止模式 distanceFilter 為 none，回呼可能很密：每筆都餵給動作偵測（才能即時發現開始移動），
+            // 但上傳節流成心跳頻率（5 分鐘一筆，位置沒變只刷新 updatedAt）。
+            // 心跳取位、剛切回移動、上次上傳失敗（lastLiveDeliveryAt 沒更新）都不受節流限制。
+            if motionDetector.state == .stationary, !wasHeartbeatFix,
+               let lastLiveDeliveryAt,
+               Date.now.timeIntervalSince(lastLiveDeliveryAt) < Self.heartbeatDueInterval {
+                return
             }
             onLiveLocationUpdate?(latest)
         }

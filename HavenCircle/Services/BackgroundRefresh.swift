@@ -44,12 +44,39 @@ enum BackgroundRefresh {
     private static func handle(_ task: BGAppRefreshTask, container: ModelContainer) async {
         schedule() // 先排下一次，確保這次失敗也不會斷鏈
 
-        let work = Task { await EventPipeline.refresh(context: container.mainContext) }
+        let work = Task {
+            // 位置心跳優先（時間額度有限）：靜止時前景計時器與定位回呼都可能停擺，
+            // 這裡是分享中補一筆「仍在此處」的保底路徑，讓家人端的「最後更新」不會一路落後
+            await uploadHeartbeatIfSharing(container: container)
+            await EventPipeline.refresh(context: container.mainContext)
+        }
         task.expirationHandler = { work.cancel() }
         await work.value
         // refresh 內部沒有逐步檢查取消旗標，被 cancel 時仍會跑完當前批次；
         // 這裡以取消狀態回報 success，讓系統據實調整之後給我們的背景額度
         task.setTaskCompleted(success: !work.isCancelled)
         AppLog.pipeline.info("背景刷新完成（cancelled=\(work.isCancelled)）")
+    }
+
+    /// 分享中才取一次位置並上傳（沿用 publishLiveLocation：沒移動只更新 updatedAt、不加軌跡點）；
+    /// 沒開分享、沒定位授權、取不到位置都安靜略過，不 fabricate 舊座標
+    @MainActor
+    private static func uploadHeartbeatIfSharing(container: ModelContainer) async {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: SettingsKeys.liveLocationSharingEnabled),
+              LocationService.shared.isAuthorized,
+              let sync = AppRuntime.familySync else { return }
+        guard let location = await LocationService.shared.currentLocation() else {
+            AppLog.data.error("背景刷新取不到位置，這一輪不上傳心跳")
+            return
+        }
+        let storedRadius = defaults.integer(forKey: SettingsKeys.liveCircleRadiusMeters)
+        let ok = await sync.publishLiveLocation(
+            location,
+            displayName: defaults.string(forKey: SettingsKeys.profileDisplayName) ?? "",
+            radiusMeters: storedRadius > 0 ? storedRadius : 1_000,
+            context: container.mainContext
+        )
+        AppLog.data.info("背景刷新位置心跳：\(ok ? "已上傳" : "未上傳")")
     }
 }
