@@ -329,12 +329,13 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
 
         if liveSharingEnabled {
             startHeartbeatIfNeeded()
-            // 「永遠」授權才能在背景持續更新；showsBackgroundLocationIndicator = true 讓系統在
-            // 狀態列顯示藍色定位指示（AGENTS 紅線：分享必須「看得見正在運作」）。
-            // 「使用期間」授權只有前景定位；App 進背景後靠顯著位置變更喚醒（見下方）。
+            // 「永遠」授權才能在背景持續更新。不顯示時間旁的藍色膠囊（使用者反映一直掛著很干擾，
+            // Life360 也不顯示）；「正在分享」改由 App 內「分享中・X 分鐘前更新」與
+            // iOS 狀態列的定位箭頭呈現，仍符合 AGENTS「看得見正在運作」。
+            // 注意：「使用期間」授權下 iOS 一律強制顯示藍色膠囊，所以背景更新只在「永遠」時開。
             let always = authorization == .authorizedAlways
             manager.allowsBackgroundLocationUpdates = always
-            manager.showsBackgroundLocationIndicator = always
+            manager.showsBackgroundLocationIndicator = false
             applyProfile()
             manager.startUpdatingLocation()
         } else {
