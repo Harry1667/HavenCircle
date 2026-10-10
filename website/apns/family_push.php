@@ -2,6 +2,9 @@
 // 家庭推播：由 cron 每分鐘執行（Firebase 未開付費方案，不能用 Cloud Functions，所以改由這裡輪詢 Firestore）
 //  1) arrivals：家人到達／離開守護地點（source=region、最近 10 分鐘）→ 推播給同家庭「其他成員」
 //  2) locationRequests：家人按「更新位置」→ 對被請求者發靜默 data message {type:locationRequest}
+//  3) 自動喚醒：分享中（isSharing）的成員位置超過 20 分鐘沒更新，就對他發同一種靜默喚醒，
+//     補上「App 更新／重裝後背景定位停擺，直到使用者打開 App」的缺口。每人最多每 30 分鐘一次，
+//     狀態記在 data/family_wake_state.json。沒開分享的人不會被喚醒（尊重 opt-in）。
 // 收件裝置的 FCM 權杖來自 families/{fid}/members/{uid}.fcmToken（App 端自行登記）。
 // 已處理的事件記在 data/family_push_seen.json（保留 48 小時），同一事件不重送。
 // 用法：php family_push.php [--dry-run]（只列出會發什麼，不真的發、也不寫 seen）
@@ -15,6 +18,10 @@ const FP_ARRIVAL_WINDOW = 600;      // 只看最近 10 分鐘的到達事件
 const FP_REQUEST_WINDOW = 600;      // 更新位置請求超過 10 分鐘就不再喚醒（App 端也會視為過期）
 const FP_SEEN_KEEP      = 48 * 3600;
 const FP_SEEN_FILE      = __DIR__ . '/data/family_push_seen.json';
+const FP_WAKE_STALE     = 20 * 60;      // 位置超過 20 分鐘沒更新才自動喚醒
+const FP_WAKE_COOLDOWN  = 30 * 60;      // 同一人兩次自動喚醒至少間隔 30 分鐘
+const FP_WAKE_GIVEUP    = 7 * 86400;    // 超過 7 天沒更新視為已不使用（解除安裝／棄用），不再喚醒
+const FP_WAKE_FILE      = __DIR__ . '/data/family_wake_state.json';
 
 $dryRun = in_array('--dry-run', $argv, true);
 
@@ -29,6 +36,20 @@ function fp_save_seen(array $seen): void {
     $seen = array_filter($seen, fn($t) => $t >= $cut);
     if (file_put_contents(FP_SEEN_FILE, json_encode($seen), LOCK_EX) === false) {
         throw new RuntimeException('寫入 seen 檔失敗：' . FP_SEEN_FILE);
+    }
+}
+
+function fp_load_wake(): array {
+    if (!is_file(FP_WAKE_FILE)) return [];
+    $j = json_decode((string)file_get_contents(FP_WAKE_FILE), true);
+    return is_array($j) ? $j : [];
+}
+
+function fp_save_wake(array $wake): void {
+    $cut = time() - 7 * 86400;
+    $wake = array_filter($wake, fn($t) => $t >= $cut);
+    if (file_put_contents(FP_WAKE_FILE, json_encode($wake), LOCK_EX) === false) {
+        throw new RuntimeException('寫入自動喚醒狀態檔失敗：' . FP_WAKE_FILE);
     }
 }
 
@@ -50,7 +71,7 @@ function fp_transient(array $r): bool {
     return $r['status'] === 0 || $r['status'] === 429 || $r['status'] >= 500;
 }
 
-$stat = ['arr' => 0, 'arrSent' => 0, 'req' => 0, 'reqSent' => 0, 'skipNoToken' => 0, 'fail' => 0];
+$stat = ['arr' => 0, 'arrSent' => 0, 'req' => 0, 'reqSent' => 0, 'skipNoToken' => 0, 'fail' => 0, 'wake' => 0, 'wakeSent' => 0];
 $exit = 0;
 
 try {
@@ -135,6 +156,40 @@ try {
         }
     }
 
+    // ---- 3) 自動喚醒：分享中卻太久沒更新位置 ----
+    $wake = fp_load_wake();
+    $wakeChanged = false;
+    foreach (fs_group_query($token, 'locations') as $loc) {
+        $fid = $loc['_family'];
+        $uid = $loc['_id'];
+        if ($fid === null || ($loc['isSharing'] ?? false) !== true) continue;
+        $updated = $loc['updatedAt'] ?? 0;
+        if ($updated <= 0 || $updated > $now - FP_WAKE_STALE) continue;   // 還算新鮮
+        if ($updated < $now - FP_WAKE_GIVEUP) continue;                   // 太久沒動，視為已棄用
+        $wkey = "$fid/$uid";
+        if (isset($wake[$wkey]) && $wake[$wkey] > $now - FP_WAKE_COOLDOWN) continue;
+        $m = fp_members($token, $fid)[$uid] ?? null;
+        if ($m === null || $m['token'] === '') { $stat['skipNoToken']++; continue; }
+        $stat['wake']++;
+        $idle = intdiv($now - $updated, 60);
+        if ($dryRun) {
+            fs_log("[試跑] 會自動喚醒：family={$fid} → uid={$uid}｜位置已 {$idle} 分鐘沒更新｜{type:locationRequest}");
+            continue;
+        }
+        $r = fcm_send_wake(['token' => $m['token']], ['type' => 'locationRequest']);
+        if ($r['ok']) {
+            $stat['wakeSent']++;
+            $wake[$wkey] = $now; $wakeChanged = true;
+            fs_log("自動喚醒：family={$fid} uid={$uid}｜位置已 {$idle} 分鐘沒更新");
+        } else {
+            $stat['fail']++;
+            fs_log("自動喚醒失敗：family={$fid} uid={$uid} status={$r['status']} 原因={$r['error']}");
+            // 暫時性錯誤下一輪重試；永久錯誤（權杖失效）也記冷卻，避免每分鐘重打
+            if (!fp_transient($r)) { $wake[$wkey] = $now; $wakeChanged = true; }
+        }
+    }
+    if (!$dryRun && $wakeChanged) fp_save_wake($wake);
+
     if (!$dryRun && $changed) fp_save_seen($seen);
     if ($stat['fail'] > 0) $exit = 1;
 } catch (Throwable $e) {
@@ -142,7 +197,7 @@ try {
     exit(1);
 }
 
-fs_log(sprintf('到達事件 %d（已推 %d）｜更新位置請求 %d（已喚醒 %d）｜無權杖略過 %d｜失敗 %d%s',
-    $stat['arr'], $stat['arrSent'], $stat['req'], $stat['reqSent'], $stat['skipNoToken'], $stat['fail'],
+fs_log(sprintf('到達事件 %d（已推 %d）｜更新位置請求 %d（已喚醒 %d）｜自動喚醒 %d（已發 %d）｜無權杖略過 %d｜失敗 %d%s',
+    $stat['arr'], $stat['arrSent'], $stat['req'], $stat['reqSent'], $stat['wake'], $stat['wakeSent'], $stat['skipNoToken'], $stat['fail'],
     $dryRun ? '｜試跑，未發送' : ''));
 exit($exit);
