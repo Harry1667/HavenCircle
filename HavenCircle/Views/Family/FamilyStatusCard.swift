@@ -164,13 +164,14 @@ struct FamilyStatusCard: View {
     }
 
     /// 全空狀態退而求其次：給一個「就算沒事，這附近有這個避難所」的實用資訊。
-    /// 座標取本人成員的圈心；本人還沒設圈就不顯示。超過 50 公里（人在境外）也不顯示。
+    /// 座標取本人的圈心：優先用「跟著我」的即時圈（位置有回報才可信），否則用守護地點（固定圈）；
+    /// 本人還沒設圈就不顯示。最近的避難所超過 20 公里（資料未涵蓋、或人在境外）也不顯示，避免誤導。
     @ViewBuilder
     private var nearestShelterRow: some View {
-        if let circle = members.first(where: \.isCurrentUser)?.lifeCircles.first,
+        if let circle = shelterAnchorCircle,
            let nearest = EmergencyResourceStore.nearest(
                kind: ResourceKind.shelter, latitude: circle.latitude, longitude: circle.longitude),
-           nearest.distanceMeters <= 50_000 {
+           nearest.distanceMeters <= Self.maxShelterDistanceMeters {
             Button {
                 router.selection = TabRouter.mapTab
             } label: {
@@ -202,6 +203,15 @@ struct FamilyStatusCard: View {
             .buttonStyle(.plain)
             .frame(minHeight: 44)
         }
+    }
+
+    private static let maxShelterDistanceMeters = 20_000
+
+    /// 最近避難所的計算基準：本人即時圈（有近期回報）優先，否則本人的固定圈
+    private var shelterAnchorCircle: LocalLifeCircle? {
+        let circles = members.first(where: \.isCurrentUser)?.lifeCircles ?? []
+        if let live = circles.first(where: { $0.kind == .live && $0.isActiveForAlerts }) { return live }
+        return circles.first(where: { $0.kind == .fixed }) ?? circles.first
     }
 
     private func shelterDistanceText(_ meters: Int) -> String {
