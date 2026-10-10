@@ -35,12 +35,15 @@ private func lastPingText(_ member: LocalFamilyMember, pings: [SafetyPing]) -> S
 }
 
 /// 位置狀態（分項標示「位置：」，不只靠顏色）：
-/// 未分享（對方沒開即時位置）／分享中（15 分鐘內有更新，含沒移動時的心跳）／超過 15 分鐘未更新（視為過時）。
+/// 沒分享是中性文字，分享中才依最後上傳時間判斷新鮮度（規則見 LiveLocationPresence.memberLocationLine）。
 private func locationStatusText(_ member: LocalFamilyMember) -> String {
-    guard let live = member.lifeCircles.first(where: { $0.kind == .live }) else {
-        return "位置：未分享"
-    }
-    return live.isActiveForAlerts ? "位置：分享中" : "位置：超過 15 分鐘未更新"
+    let live = member.lifeCircles.first(where: { $0.kind == .live })
+    return LiveLocationPresence.memberLocationLine(
+        isCurrentUser: member.isCurrentUser,
+        sharingEnabled: UserDefaults.standard.bool(forKey: SettingsKeys.liveLocationSharingEnabled),
+        hasLiveCircle: live != nil,
+        lastReportedAt: live?.locationUpdatedAt
+    )
 }
 
 /// 成員列的兩行狀態文字（平安回報／位置各一行），FamilyHomeView 使用

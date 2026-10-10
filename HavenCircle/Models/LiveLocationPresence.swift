@@ -25,6 +25,27 @@ enum LiveLocationPresence {
         return lastReportedAt > now.addingTimeInterval(-staleInterval)
     }
 
+    /// 家人列表「位置：」那一行的文字（純函式）。
+    /// 「沒分享」與「分享了但過期」是兩回事，不能都說成過期：
+    /// - 本人沒開分享：「未分享給家人」（中性，不是警告）；本人有開分享才依最後上傳時間判斷
+    /// - 家人沒有即時圈：「未分享位置」
+    /// - 有分享、15 分鐘內有回報：「分享中」；超過 15 分鐘：「超過 15 分鐘未更新」
+    static func memberLocationLine(
+        isCurrentUser: Bool,
+        sharingEnabled: Bool,
+        hasLiveCircle: Bool,
+        lastReportedAt: Date?,
+        now: Date = .now
+    ) -> String {
+        if isCurrentUser {
+            guard sharingEnabled else { return "位置：未分享給家人" }
+        } else {
+            guard hasLiveCircle else { return "位置：未分享位置" }
+        }
+        return isReporting(lastReportedAt: lastReportedAt, now: now)
+            ? "位置：分享中" : "位置：超過 15 分鐘未更新"
+    }
+
     /// 這次寫入時的「開始停留時間」。
     /// - movedMeters：與上次寫入座標的距離；nil 代表沒有上次紀錄（第一次分享或 App 重啟後查不到）
     /// - previousStationarySince：上次寫入的開始停留時間；舊版文件沒有這欄時為 nil
