@@ -146,13 +146,18 @@ struct EventListView: View {
 
     // 本頁是「動態」分頁的根內容，導航堆疊由 EventsTabView 提供，
     // 自己不再包 NavigationStack（巢狀堆疊會讓 push/pop 行為錯亂）
+    private static let quickSafeRowID = "quickSafeCard"
+    @State private var didInitialScrollToTop = false
+
     var body: some View {
         let feed = currentFeed()
+        ScrollViewReader { scrollProxy in
         List {
             // 報平安一鍵卡：打開 App 就能告訴家人「我平安」（沒有家人時改為引導邀請）
             Section {
                 QuickSafetyCard(hasNearbyAttention: !feed.attention.isEmpty)
             }
+            .id(Self.quickSafeRowID)
             // 零導覽引導：定位／邀請碼情境卡（通知說明改在使用者做了相關動作之後才出現）
             FeedOnboardingCards(hasCircle: !circles.isEmpty)
             scopeSection
@@ -178,6 +183,15 @@ struct EventListView: View {
             }
             // #B：不再顯示「已結束」區塊——使用者不需要看已解除／已過期的事件（地圖也早已排除）
             footerLinksSection
+        }
+        // 2026-10-11 實機：冷啟動時列表停在「與我有關」那列，頂端的我平安卡被捲出畫面外。
+        // 首次出現時捲回最頂端一次（之後切分頁回來保留使用者自己的捲動位置）
+        .task {
+            guard !didInitialScrollToTop else { return }
+            didInitialScrollToTop = true
+            try? await Task.sleep(for: .milliseconds(300))
+            scrollProxy.scrollTo(Self.quickSafeRowID, anchor: .top)
+        }
         }
         .navigationTitle("動態")
         .navigationBarTitleDisplayMode(.inline)

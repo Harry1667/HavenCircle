@@ -650,4 +650,15 @@ final class HavenCircleUITests: XCTestCase {
         attach(text: springboard.debugDescription, name: "系統層-12秒後")
         attach(text: "App 狀態=\(app.state.rawValue)\n" + app.debugDescription, name: "App結構-12秒後")
     }
+
+    /// 動態頁頂端「我平安」一鍵卡：切到動態、拉到最頂，確認卡片存在並截圖
+    func testQuickSafeCard() throws {
+        app.tabBars.buttons["動態"].firstMatch.tap()
+        sleep(3)
+        app.swipeDown(); app.swipeDown(); sleep(2)
+        shot("動態頂端")
+        let send = app.buttons["quickSafe.sendButton"].exists
+        let invite = app.staticTexts["加入家人，才能一鍵報平安"].exists
+        attach(text: "送出鈕=\(send) 邀請卡=\(invite)\n" + app.debugDescription, name: "我平安卡")
+    }
 }

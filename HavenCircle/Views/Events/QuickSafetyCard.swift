@@ -128,9 +128,11 @@ struct QuickSafetyCard: View {
                             .accessibilityHidden(true)
                     }
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(hasNearbyAttention ? "附近有狀況，告訴家人你平安" : "我平安")
+                        // 主文固定「我平安」：長文案在窄螢幕會被截成「附近有狀況，告訴…」，
+                        // 附近有狀況的提醒已在按鈕上方那行，副文再補一句即可
+                        Text("我平安")
                             .font(.headline)
-                        Text(hasNearbyAttention ? "一鍵通知家人" : "一鍵告訴家人你現在很平安")
+                        Text(hasNearbyAttention ? "附近有狀況，一鍵告訴家人" : "一鍵告訴家人你現在很平安")
                             .font(.caption)
                             .opacity(0.9)
                     }
@@ -145,7 +147,7 @@ struct QuickSafetyCard: View {
             .buttonStyle(.plain)
             .disabled(isSending)
             .accessibilityIdentifier("quickSafe.sendButton")
-            .accessibilityHint("送出後，家人會收到你平安的通知")
+            .accessibilityHint(hasNearbyAttention ? "附近有狀況。送出後，家人會收到你平安的通知" : "送出後，家人會收到你平安的通知")
             if let errorText {
                 Label(errorText, systemImage: "exclamationmark.circle.fill")
                     .font(.footnote)
