@@ -1,5 +1,6 @@
 import Foundation
 import FirebaseFirestore
+import os
 
 // MARK: - Firestore 家庭圈資料模型（純 struct，Firestore 文件的 Swift 投影）
 
@@ -172,6 +173,9 @@ enum FirestoreFamilyBackend {
     static func leaveFamily(familyId: String, uid: String) async throws {
         let db = FirestoreConfig.store()
         let familyRef = db.collection(FirestoreConfig.Path.families).document(familyId)
+        // 軌跡與事件要在退出「之前」刪：退出後就不再是成員，規則不允許再碰這個家庭圈的子集合
+        try? await deleteOwnTrail(familyId: familyId, uid: uid)
+        try? await pruneOwnArrivals(familyId: familyId, uid: uid, olderThan: nil)
         try await familyRef.updateData(["memberUids": FieldValue.arrayRemove([uid])])
         try? await familyRef.collection(FirestoreConfig.Path.members).document(uid).delete()
         try? await familyRef.collection(FirestoreConfig.Path.locations).document(uid).delete()
@@ -210,6 +214,16 @@ enum FirestoreFamilyBackend {
         }
         let locationsSnapshot = try await familyRef.collection(FirestoreConfig.Path.locations).getDocuments()
         for doc in locationsSnapshot.documents {
+            // 子集合不會隨父文件自動刪除：先清掉每位成員的軌跡點
+            while true {
+                let trailSnapshot = try await doc.reference.collection(FirestoreConfig.Path.trail)
+                    .limit(to: 400).getDocuments()
+                if trailSnapshot.documents.isEmpty { break }
+                let batch = db.batch()
+                trailSnapshot.documents.forEach { batch.deleteDocument($0.reference) }
+                try await batch.commit()
+                if trailSnapshot.documents.count < 400 { break }
+            }
             try await doc.reference.delete()
         }
 
@@ -389,7 +403,8 @@ enum FirestoreFamilyBackend {
         district: String,
         stationarySince: Date,
         placeName: String?,
-        placeSince: Date?
+        placeSince: Date?,
+        trailPoint: TrailPointInput? = nil
     ) async throws {
         let db = FirestoreConfig.store()
         let ref = db.collection(FirestoreConfig.Path.families).document(familyId)
@@ -412,16 +427,89 @@ enum FirestoreFamilyBackend {
             payload["placeName"] = FieldValue.delete()
             payload["placeSince"] = FieldValue.delete()
         }
-        // 與逾時計時器賽跑：10 秒沒收到伺服器確認就丟出逾時（寫入仍在 Firestore 離線佇列，連線後會補送）
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask { try await ref.setData(payload, merge: true) }
-            group.addTask {
-                try await Task.sleep(nanoseconds: 10_000_000_000)
-                throw LiveLocationTimeoutError()
-            }
-            _ = try await group.next()
-            group.cancelAll()
+        // 位置文件與軌跡點放進同一個 batch：要嘛一起成功，不會出現「位置更新了但軌跡缺一點」。
+        // 軌跡點：timestamp 用伺服器時間、clientAt 是手機取得定位的時間（讀取端用它排序與過濾 24 小時）、
+        // expireAt = clientAt + 24 小時（供 Firestore TTL policy 自動清除，寫入時就帶上）。
+        let batch = db.batch()
+        batch.setData(payload, forDocument: ref, merge: true)
+        if let trailPoint {
+            let trailRef = ref.collection(FirestoreConfig.Path.trail).document()
+            batch.setData([
+                "latitude": trailPoint.latitude,
+                "longitude": trailPoint.longitude,
+                "accuracy": trailPoint.accuracy,
+                "timestamp": FieldValue.serverTimestamp(),
+                "clientAt": Timestamp(date: trailPoint.time),
+                "expireAt": Timestamp(date: TrailPolicy.expireAt(for: trailPoint.time))
+            ], forDocument: trailRef)
         }
+        // 與逾時計時器賽跑：10 秒沒收到伺服器確認就丟出逾時（寫入仍在 Firestore 離線佇列，連線後會補送）
+        try await withWriteDeadline(seconds: 10) { try await batch.commit() }
+    }
+
+    /// 軌跡點寫入參數
+    struct TrailPointInput: Sendable {
+        let latitude: Double
+        let longitude: Double
+        let accuracy: Double
+        let time: Date
+    }
+
+    /// 讀某位家人 24 小時內的軌跡（clientAt 單欄位範圍查詢，不需複合索引），由舊到新。
+    static func fetchTrail(familyId: String, uid: String, now: Date = .now) async throws -> [TrailPoint] {
+        let db = FirestoreConfig.store()
+        let snap = try await db.collection(FirestoreConfig.Path.families).document(familyId)
+            .collection(FirestoreConfig.Path.locations).document(uid)
+            .collection(FirestoreConfig.Path.trail)
+            .whereField("clientAt", isGreaterThanOrEqualTo: Timestamp(date: TrailPolicy.cutoff(now: now)))
+            .order(by: "clientAt")
+            .limit(to: 1_500)
+            .getDocuments()
+        return snap.documents.compactMap { doc -> TrailPoint? in
+            let data = doc.data()
+            guard let lat = data["latitude"] as? Double, let lng = data["longitude"] as? Double,
+                  let at = (data["clientAt"] as? Timestamp)?.dateValue() else { return nil }
+            return TrailPoint(
+                id: doc.documentID,
+                sample: LocationSample(time: at, latitude: lat, longitude: lng),
+                accuracy: data["accuracy"] as? Double ?? 0
+            )
+        }
+    }
+
+    /// 刪自己超過 24 小時的軌跡點，一次最多 [TrailPolicy.cleanupBatchLimit] 筆（批次）。回傳刪除筆數。
+    @discardableResult
+    static func pruneOwnTrail(familyId: String, uid: String, now: Date = .now) async throws -> Int {
+        let db = FirestoreConfig.store()
+        let snap = try await trailCollection(db, familyId, uid)
+            .whereField("clientAt", isLessThan: Timestamp(date: TrailPolicy.cutoff(now: now)))
+            .limit(to: TrailPolicy.cleanupBatchLimit)
+            .getDocuments()
+        guard !snap.documents.isEmpty else { return 0 }
+        let batch = db.batch()
+        snap.documents.forEach { batch.deleteDocument($0.reference) }
+        try await batch.commit()
+        return snap.documents.count
+    }
+
+    /// 刪光自己的軌跡（關閉分享、離開家庭圈時）：分頁批次，每批 400 筆
+    static func deleteOwnTrail(familyId: String, uid: String) async throws {
+        let db = FirestoreConfig.store()
+        let collection = trailCollection(db, familyId, uid)
+        while true {
+            let snap = try await collection.limit(to: 400).getDocuments()
+            if snap.documents.isEmpty { return }
+            let batch = db.batch()
+            snap.documents.forEach { batch.deleteDocument($0.reference) }
+            try await batch.commit()
+            if snap.documents.count < 400 { return }
+        }
+    }
+
+    private static func trailCollection(_ db: Firestore, _ familyId: String, _ uid: String) -> CollectionReference {
+        db.collection(FirestoreConfig.Path.families).document(familyId)
+            .collection(FirestoreConfig.Path.locations).document(uid)
+            .collection(FirestoreConfig.Path.trail)
     }
 
     /// 停止分享：標記 isSharing=false（家人下次刷新會移除此人的即時圈）。
@@ -430,8 +518,18 @@ enum FirestoreFamilyBackend {
         try await db.collection(FirestoreConfig.Path.families).document(familyId)
             .collection(FirestoreConfig.Path.locations).document(uid).setData([
                 "isSharing": false,
-                "updatedAt": Timestamp(date: Date())
+                "updatedAt": Timestamp(date: Date()),
+                "placeName": FieldValue.delete(),
+                "placeSince": FieldValue.delete()
             ], merge: true)
+        // 關閉分享＝刪除自己的 24 小時軌跡與到達/離開事件（隱私承諾）。失敗不擋停止分享本身，
+        // 但要記錄；殘留的點最多 24 小時後由 TTL／清理機制移除。
+        do {
+            try await deleteOwnTrail(familyId: familyId, uid: uid)
+            try await pruneOwnArrivals(familyId: familyId, uid: uid, olderThan: nil)
+        } catch {
+            AppLog.cloud.error("停止分享時清除軌跡失敗：\(error.localizedDescription)")
+        }
     }
 
     /// 讀取家庭圈所有成員的即時位置。

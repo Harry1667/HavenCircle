@@ -55,6 +55,9 @@ final class FamilySyncService {
     private var lastPublishedRadius: Int?
     /// 上次寫入的「開始停留時間」；與 lastPublishedLocation（停留錨點座標）一起決定這次是否算移動
     private var lastStationarySince: Date?
+    /// 上次追加的軌跡點（決定這次要不要再加一點）與上次清理過期點的時間
+    private var lastTrailSample: LocationSample?
+    private var lastTrailCleanupAt: Date?
     /// MainActor 在 await 期間仍可重入；只允許一筆位置寫入在途，避免重複建立同一 doc
     private var liveLocationPublishInFlight = false
 
@@ -418,6 +421,16 @@ final class FamilySyncService {
             let isStationary = movedMeters.map { $0 < LiveLocationPresence.stationaryRadiusMeters } ?? false
             let anchor = (isStationary ? previousAnchor : nil) ?? location
 
+            // 24 小時軌跡：移動 30 公尺以上或距上一點 10 分鐘就追加一點（靜止時不必每次心跳都加）
+            let trailSample = LocationSample(
+                time: location.timestamp, latitude: anchor.coordinate.latitude, longitude: anchor.coordinate.longitude
+            )
+            let trailInput: FirestoreFamilyBackend.TrailPointInput? =
+                TrailPolicy.shouldAppendPoint(previous: lastTrailSample, current: trailSample)
+                ? .init(
+                    latitude: trailSample.latitude, longitude: trailSample.longitude,
+                    accuracy: location.horizontalAccuracy, time: location.timestamp
+                ) : nil
             // 目前所在的守護地點（地理圍欄判斷；不在任何守護地點內為 nil）
             let place = LocationService.shared.currentPlace
             // 隱私與救援的取捨：寫入原始座標，不加雜訊模糊化——這是家人要據以趕去救人的位置。
@@ -432,8 +445,15 @@ final class FamilySyncService {
                 district: district,
                 stationarySince: stationarySince,
                 placeName: place?.name,
-                placeSince: place?.since
+                placeSince: place?.since,
+                trailPoint: trailInput
             )
+            if let trailInput {
+                lastTrailSample = LocationSample(
+                    time: trailInput.time, latitude: trailInput.latitude, longitude: trailInput.longitude
+                )
+            }
+            pruneTrailIfDue(familyID: familyID, uid: uid)
             lastPublishedLocation = anchor
             lastStationarySince = stationarySince
             lastPublishedAt = .now
@@ -455,6 +475,48 @@ final class FamilySyncService {
             liveLocationError = "即時位置同步失敗：\(error.localizedDescription)"
             AppLog.cloud.error("即時位置同步失敗：\(error.localizedDescription)")
             return false
+        }
+    }
+
+    /// 上傳成功後順手刪自己超過 24 小時的軌跡點（批次、一次最多 50 筆；至少間隔 10 分鐘才查一次，
+    /// 避免每次上傳都多一次讀取）。失敗只記錄，下次到期再試。
+    private func pruneTrailIfDue(familyID: String, uid: String) {
+        guard TrailPolicy.shouldCleanup(lastCleanupAt: lastTrailCleanupAt) else { return }
+        lastTrailCleanupAt = .now
+        Task {
+            do {
+                try await FirestoreFamilyBackend.pruneOwnTrail(familyId: familyID, uid: uid)
+                try await FirestoreFamilyBackend.pruneOwnArrivals(
+                    familyId: familyID, uid: uid, olderThan: TrailPolicy.cutoff()
+                )
+            } catch {
+                AppLog.cloud.error("清理過期軌跡失敗：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// 讀某位家人 24 小時內的軌跡（含自己）
+    func fetchTrail(forUid targetUid: String) async -> [TrailPoint] {
+        guard let familyID = currentFamilyID else { return [] }
+        do {
+            return try await FirestoreFamilyBackend.fetchTrail(familyId: familyID, uid: targetUid)
+        } catch {
+            AppLog.cloud.error("讀取軌跡失敗：\(error.localizedDescription)")
+            return []
+        }
+    }
+
+    /// 讀 24 小時內某位家人的到達／離開事件（含 visit）
+    func fetchArrivalHistory(forUid targetUid: String) async -> [ArrivalEvent] {
+        guard let familyID = currentFamilyID else { return [] }
+        do {
+            let events = try await FirestoreFamilyBackend.fetchArrivals(
+                familyId: familyID, since: TrailPolicy.cutoff()
+            )
+            return events.filter { $0.uid == targetUid }.sorted { $0.createdAt > $1.createdAt }
+        } catch {
+            AppLog.cloud.error("讀取到達/離開事件失敗：\(error.localizedDescription)")
+            return []
         }
     }
 
@@ -561,6 +623,8 @@ final class FamilySyncService {
         lastPublishedAt = nil
         lastPublishedRadius = nil
         lastStationarySince = nil
+        lastTrailSample = nil
+        lastTrailCleanupAt = nil
         liveLocationError = nil
 
         guard let uid, let familyID = currentFamilyID else { return }

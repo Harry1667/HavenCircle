@@ -25,5 +25,7 @@ enum FirestoreConfig {
         static let inviteCodes = "inviteCodes"
         /// 守護地點到達／離開事件（families/{id}/arrivals）
         static let arrivals = "arrivals"
+        /// 24 小時軌跡（families/{id}/locations/{uid}/trail）
+        static let trail = "trail"
     }
 }

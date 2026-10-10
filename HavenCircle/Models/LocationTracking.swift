@@ -156,6 +156,13 @@ enum TrailPolicy {
     }
 }
 
+/// 軌跡點（Firestore: families/{id}/locations/{uid}/trail/{autoId}）
+struct TrailPoint: Identifiable, Equatable {
+    let id: String
+    let sample: LocationSample
+    let accuracy: Double
+}
+
 // MARK: - 守護地點地理圍欄
 
 struct GeofencePlace: Equatable {

@@ -59,6 +59,16 @@ service cloud.firestore {
         allow read: if isMember(familyId);
         allow create, update: if request.auth != null && request.auth.uid == uid;
         allow delete: if request.auth != null && (request.auth.uid == uid || isOwner(familyId));
+
+        // 24 小時軌跡點：家庭成員可讀；只有本人能寫入（同意式分享的技術保證）；點不可修改。
+        // 刪除：本人（關閉分享時清空、每次上傳順手清過期點）或圈主（解散家庭圈清子集合）。
+        // 每筆帶 expireAt（clientAt + 24 小時），建議另設 Firestore TTL policy 當第二道保險。
+        match /trail/{pointId} {
+          allow read: if isMember(familyId);
+          allow create: if request.auth != null && request.auth.uid == uid;
+          allow update: if false;
+          allow delete: if request.auth != null && (request.auth.uid == uid || isOwner(familyId));
+        }
       }
 
       // 守護地點到達／離開事件：家庭成員可讀；只能以自己的 uid 新增；不可改；
