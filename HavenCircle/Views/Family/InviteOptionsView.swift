@@ -32,7 +32,7 @@ struct InviteOptionsView: View {
                                 .font(.body.weight(.medium))
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(HCColor.brand)
+                        .tint(HCColor.brandFill)
                         .controlSize(.large)
                     }
                     .listRowBackground(Color.clear)
@@ -84,7 +84,7 @@ struct InviteOptionsView: View {
                         .font(.body.weight(.medium))
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(HCColor.brand)
+                .tint(HCColor.brandFill)
                 .accessibilityIdentifier("invite.renewRetry")
             }
         }

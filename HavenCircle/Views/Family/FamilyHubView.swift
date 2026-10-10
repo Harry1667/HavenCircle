@@ -49,7 +49,7 @@ struct FamilyHubView: View {
                 .padding(.vertical, 6)
         }
         .buttonStyle(.borderedProminent)
-        .tint(HCColor.brand)
+        .tint(HCColor.brandFill)
         .padding(.horizontal, HCSpacing.x4)
         .padding(.bottom, HCSpacing.x2)
         .background(.bar)

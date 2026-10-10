@@ -134,7 +134,7 @@ struct JoinByCodeView: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .tint(HCColor.brand)
+            .tint(HCColor.brandFill)
             .controlSize(.large)
             .disabled(!isCodeValid || isLookingUp)
             .accessibilityIdentifier("join.nextButton")
@@ -169,7 +169,7 @@ struct JoinByCodeView: View {
                         .frame(width: HCSpacing.x6 * 5, height: HCSpacing.x6 * 5)
                     Image(systemName: "person.2.fill")
                         .font(.largeTitle.weight(.medium))
-                        .foregroundStyle(HCColor.brand)
+                        .foregroundStyle(HCColor.brandText)
                 }
                 .accessibilityHidden(true)
 
@@ -207,7 +207,7 @@ struct JoinByCodeView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(HCColor.brand)
+                    .tint(HCColor.brandFill)
                     .controlSize(.large)
                     .accessibilityIdentifier("join.confirmButton")
 

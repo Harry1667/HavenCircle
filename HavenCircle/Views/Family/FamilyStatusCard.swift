@@ -93,7 +93,7 @@ struct FamilyStatusCard: View {
                 HStack(alignment: .top, spacing: HCSpacing.x3) {
                     Image(systemName: tone.icon)
                         .font(.title3.weight(.semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(HCColor.onStatus)
                         .frame(width: HCSpacing.x6 * 2, height: HCSpacing.x6 * 2)
                         .background(tone.color.gradient, in: Circle())
                         .accessibilityHidden(true)
@@ -116,7 +116,7 @@ struct FamilyStatusCard: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(HCColor.danger)
+                    .tint(HCColor.dangerFill)
                     .controlSize(.large)
                 }
                 Divider()
@@ -139,7 +139,7 @@ struct FamilyStatusCard: View {
             HStack(spacing: HCSpacing.x3) {
                 Image(systemName: "dot.radiowaves.left.and.right")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(HCColor.brand)
+                    .foregroundStyle(HCColor.brandText)
                     .frame(width: HCSpacing.x6 + HCSpacing.x2, height: HCSpacing.x6 + HCSpacing.x2)
                     .background(HCColor.brand.opacity(0.10), in: RoundedRectangle(cornerRadius: HCRadius.badge, style: .continuous))
                     .accessibilityHidden(true)
@@ -178,14 +178,14 @@ struct FamilyStatusCard: View {
                 HStack(spacing: HCSpacing.x3) {
                     Image(systemName: "tent.fill")
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(HCColor.brand)
+                        .foregroundStyle(HCColor.brandText)
                         .frame(width: HCSpacing.x6 + HCSpacing.x2, height: HCSpacing.x6 + HCSpacing.x2)
                         .background(HCColor.brand.opacity(0.10), in: RoundedRectangle(cornerRadius: HCRadius.badge, style: .continuous))
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: HCSpacing.x1) {
                         Text("最近避難所")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(HCColor.brand)
+                            .foregroundStyle(HCColor.brandText)
                         Text(nearest.resource.name)
                             .font(.subheadline.weight(.medium))
                             .lineLimit(1)

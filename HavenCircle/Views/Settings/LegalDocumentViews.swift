@@ -17,7 +17,7 @@ struct LegalCenterView: View {
                             }
                         } icon: {
                             Image(systemName: document.symbol)
-                                .foregroundStyle(HCColor.brand)
+                                .foregroundStyle(HCColor.brandText)
                         }
                     }
                 }

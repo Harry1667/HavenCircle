@@ -26,10 +26,10 @@ import SwiftUI
 /// - 「即時位置已過期」的灰色語意不變，過期判斷在呼叫端（SafetyMapView）用
 ///   `renderedColor = isActiveForAlerts ? color : .gray` 蓋掉這裡算出的顏色，不受本色盤影響。
 enum CircleColorPalette {
-    /// 索引 0 保留給本人；其餘依 hash 分給其他成員。色盤隨 App 外觀切換（見 AppPalette.familyColors）：
+    /// 索引 0 保留給本人；其餘依 hash 分給其他成員。色盤見 HCColor.familyColors：
     /// 層次沿用上面描述的冷色五色，晴空湖水為「我＝湖水青＋四個青→藍→紫」。
     /// 每次讀目前外觀，所以切換外觀後地圖圈與頭像一起換色。
-    static var colors: [Color] { AppAppearance.current.palette.familyColors }
+    static var colors: [Color] { HCColor.familyColors }
 
     /// 依「穩定鍵」與「是否本人」取色。
     /// - Parameters:

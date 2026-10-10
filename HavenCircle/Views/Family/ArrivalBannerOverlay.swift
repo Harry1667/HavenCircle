@@ -9,7 +9,7 @@ struct ArrivalBannerOverlay: View {
         if let banner = sync.arrivalBanners.first {
             HStack(spacing: 10) {
                 Image(systemName: banner.kind == .arrive ? "house.fill" : "figure.walk.departure")
-                    .foregroundStyle(HCColor.brand)
+                    .foregroundStyle(HCColor.brandText)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(banner.message).font(.subheadline.weight(.semibold))
                     Text("\(banner.timeText)・家人守護地點通知").font(.caption).foregroundStyle(.secondary)

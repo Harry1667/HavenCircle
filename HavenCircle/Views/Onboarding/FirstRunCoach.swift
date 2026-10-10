@@ -36,7 +36,7 @@ struct DemoNotificationBanner: View {
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 32, height: 32)
-                .background(HCColor.brand, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(HCColor.brandFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text("安心圈")

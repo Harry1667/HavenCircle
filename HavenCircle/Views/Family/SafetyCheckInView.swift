@@ -170,7 +170,7 @@ struct SafetyCheckInView: View {
                         .frame(maxWidth: .infinity)
                         .frame(minHeight: HCSpacing.x6 * 4)
                         .background(
-                            status == .safe ? HCColor.safe : HCColor.danger.opacity(0.10),
+                            status == .safe ? HCColor.safeFill : HCColor.danger.opacity(0.10),
                             in: RoundedRectangle(cornerRadius: HCRadius.control, style: .continuous)
                         )
                         .overlay(
@@ -257,7 +257,7 @@ struct SafetyCheckInView: View {
                         )
                 }
                 if !ping.ack.isEmpty {
-                    Label("\(sync.ackNames(of: ping).joined(separator: "、"))已收到", systemImage: "heart.fill")
+                    Label("\(sync.ackNames(of: ping).joined(separator: "、")) 已收到", systemImage: "heart.fill")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("pingRow.ackSummary")
@@ -283,7 +283,7 @@ struct SafetyCheckInView: View {
         if sync.hasAcked(ping) {
             Label("已回覆收到", systemImage: "heart.fill")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(HCColor.brand)
+                .foregroundStyle(HCColor.brandText)
                 .accessibilityIdentifier("pingRow.acked")
         } else {
             Button {
@@ -301,7 +301,7 @@ struct SafetyCheckInView: View {
                     .frame(minHeight: 32)
             }
             .buttonStyle(.bordered)
-            .tint(HCColor.brand)
+            .tint(HCColor.brandText)
             .disabled(ackingPingIDs.contains(ping.id))
             .accessibilityIdentifier("pingRow.ackButton")
         }

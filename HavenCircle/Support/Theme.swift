@@ -31,23 +31,46 @@ private extension UIColor {
 enum HCColor {
     /// 地圖「顯示範圍」縣市外框高光（金色）；搭配「顯示範圍：…」文字膠囊，不單靠顏色傳達
     static let countyHighlight = Color(red: 0.96, green: 0.78, blue: 0.25)
-    /// 品牌主色：CTA、選取狀態、生活圈。依 App 外觀取值（層次＝深群青，與 AccentColor.colorset 同值；
-    /// 晴空湖水＝天藍）。每次讀目前外觀，切換外觀後重建的畫面立刻拿到新色。
-    static var brand: Color { AppAppearance.current.palette.brand }
-    /// 次要強調（守護範圍線、小標籤）：層次沿用品牌色，晴空湖水為湖水青
-    static var accent2: Color { AppAppearance.current.palette.secondary }
-    /// 頁面底色：層次＝系統群組底，晴空湖水＝冷白／深靛
-    static var pageBackground: Color { AppAppearance.current.palette.background }
+    /// 品牌主色（晴空湖水天藍）：淡染底、描邊、地圖線條、大圖示等「裝飾性」用途。
+    /// 文字與 tint 請用 `brandText`、白字按鈕底請用 `brandFill`（天藍配白字只有約 3.5:1）。
+    static let brand = Color(light: 0x2E86FF, dark: 0x6FAEFF)
+    /// 文字、連結、小圖示與全 App `.tint`（分頁選中態）：淺色 #1A66D2 在白底 5.4:1、在頁面底 5.0:1；
+    /// 深色沿用亮藍 #6FAEFF 在深靛底 7.8:1。天藍 `brand` 在淺色底只有約 3.5:1，不可拿來當小字。
+    static let brandText = Color(light: 0x1A66D2, dark: 0x6FAEFF)
+    /// 實色按鈕底（上面一律放白字）：淺色 #1A66D2 白字 5.4:1；深色改深藍 #2F6FE0 白字 4.7:1
+    /// （深色若沿用亮藍，白字只剩約 2.4:1）。深色底上按鈕本身與頁面底仍有 3.8:1，看得出邊界。
+    static let brandFill = Color(light: 0x1A66D2, dark: 0x2F6FE0)
+    /// 平安綠實色底（白字）：淺色同 `safe`（白字 5.0:1）；深色 #177A55 白字 5.3:1
+    /// （`safe` 深色 #1F9D6E 配白字只有約 3.5:1，只適合當文字／圖示色）
+    static let safeFill = Color(light: 0x0B7F52, dark: 0x177A55)
+    /// 警示紅實色底（白字）：淺色同 `danger`（白字 5.0:1）；深色 #C0443C 白字 5.1:1
+    /// （`danger` 深色 #FF8A80 是給深底上的文字，配白字只有約 2.2:1）
+    static let dangerFill = Color(light: 0xC83E3E, dark: 0xC0443C)
+    /// 次要強調（守護範圍線、小標籤）：湖水青
+    static let accent2 = Color(light: 0x19C3C9, dark: 0x4DD8DC)
+    /// 頁面底色：冷白／深靛
+    static let pageBackground = Color(light: 0xF3F7FC, dark: 0x0E1630)
+    /// 頂端淡染色（家人頁等沒有專屬頁首背景的頁面，頂端漸層用）
+    static let pageWash = Color(light: 0x2E86FF, dark: 0x6FAEFF).opacity(0.14)
+    /// 家人色盤：索引 0 保留給本人（湖水青），其餘依穩定 hash 分配（見 CircleColorPalette）。
+    /// 五色全落在青→藍→紫，避開紅／琥珀／綠，不與狀態色混淆。
+    static let familyColors: [Color] = [
+        Color(light: 0x19C3C9, dark: 0x4DD8DC), // 我：湖水青
+        Color(light: 0x2E86FF, dark: 0x5EA5FF), // 天藍
+        Color(light: 0x7A5AF8, dark: 0xA08CFF), // 紫
+        Color(light: 0xC45AE8, dark: 0xDA8CFF), // 洋紅紫
+        Color(light: 0x0F7A96, dark: 0x3FB1D1), // 深青
+    ]
     /// 實色狀態方塊（圖示方塊）上的符號色：淺色模式白字；深色模式的狀態色偏亮，白字對比不足，改近黑
     static let onStatus = Color(light: 0xFFFFFF, dark: 0x14161C)
     /// 無需注意、回報平安、操作成功。兩種外觀共用同一個值（狀態語意不隨外觀變）。
-    /// 2026-10-11 依晴空湖水規格改為 0x0F8A5C／0x1F9D6E：往黃綠側推（色相約 152°），
-    /// 與湖水青（182°）拉開；層次外觀也共用，「家人收到的已報平安」在兩種外觀下顏色一致。
+    /// 2026-10-11 依晴空湖水規格改為 0x0B7F52／0x1F9D6E（淺色自規格 0x0F8A5C 再深一點，在冷白頁面底對比 4.2→4.7）：往黃綠側推（色相約 152°），
+    /// 與湖水青（182°）拉開。
     /// 色相仍與 medical（0x0E7C86，偏青）保持距離，地圖上盾牌與醫院標記不混淆
-    static let safe = Color(light: 0x0F8A5C, dark: 0x1F9D6E)
+    static let safe = Color(light: 0x0B7F52, dark: 0x1F9D6E)
     /// 確認中、需留意、時段外。深色值刻意偏橘（0xFFAF52）：
     /// 與 notice 的黃（0xF5D76E）拉開色相，深色模式下兩階才分得出來
-    static let attention = Color(light: 0xA96400, dark: 0xFFAF52)
+    static let attention = Color(light: 0x9C5C00, dark: 0xFFAF52)
     /// 明確危險、官方確認的警報
     static let danger = Color(light: 0xC83E3E, dark: 0xFF8A80)
     /// 區域警報最低層級（留意/提醒）的塗色——比 attention 再低一階
@@ -144,7 +167,7 @@ struct HCCenteredLabel: View {
 }
 
 extension View {
-    /// 統一卡片（層次風格）：`.regularMaterial` 單層＋極淡描邊與陰影，兩種外觀共用。
+    /// 統一卡片：`.regularMaterial` 單層＋極淡描邊與陰影。
     /// 卡片內不再放第二層 Material（疊 Material 會掉幀且對比不足）；
     /// 要染色（例如警報底色）請用實色 fill，不要再疊材質。
     func hcCard() -> some View {
@@ -238,13 +261,12 @@ extension EventCategory {
     }
 }
 
-/// 頁面底＋頂端淡染色（隨外觀）。純色加一層漸層，沒有 Material，也不動。
+/// 頁面底＋頂端淡染色。純色加一層漸層，沒有 Material，也不動。
 struct HCPageBackdrop: View {
     var body: some View {
-        let palette = AppAppearance.current.palette
         ZStack(alignment: .top) {
-            palette.background
-            LinearGradient(colors: [palette.wash, .clear], startPoint: .top, endPoint: .bottom)
+            HCColor.pageBackground
+            LinearGradient(colors: [HCColor.pageWash, .clear], startPoint: .top, endPoint: .bottom)
                 .frame(height: 220)
         }
         .ignoresSafeArea()

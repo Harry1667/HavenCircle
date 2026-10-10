@@ -347,7 +347,7 @@ struct CircleEditorView: View {
                     Annotation("守護地點", coordinate: coordinate) {
                         Image(systemName: "mappin.circle.fill")
                             .font(.title2)
-                            .foregroundStyle(HCColor.brand)
+                            .foregroundStyle(HCColor.brandText)
                     }
                 }
             }

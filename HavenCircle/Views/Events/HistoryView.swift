@@ -70,7 +70,7 @@ struct HistoryView: View {
                     } label: {
                         HStack(spacing: HCSpacing.x3) {
                             Image(systemName: "clock.badge.questionmark")
-                                .foregroundStyle(HCColor.brand)
+                                .foregroundStyle(HCColor.brandText)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("回顧更久以前需要 Guardian+")
                                     .font(.subheadline.weight(.medium))

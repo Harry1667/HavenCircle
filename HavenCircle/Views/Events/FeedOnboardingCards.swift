@@ -111,7 +111,7 @@ struct FeedOnboardingCards: View {
         return VStack(alignment: .leading, spacing: HCSpacing.x2) {
             HStack(alignment: .top) {
                 Image(systemName: denied ? "location.slash.fill" : "location.fill")
-                    .foregroundStyle(HCColor.brand)
+                    .foregroundStyle(HCColor.brandText)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: HCSpacing.x1) {
                     Text(denied ? "沒有定位也能用" : "想看你家附近的？")
@@ -139,6 +139,7 @@ struct FeedOnboardingCards: View {
                 if denied {
                     Button("新增守護地點") { addPlace() }
                         .buttonStyle(.borderedProminent)
+                        .tint(HCColor.brandFill)
                     Button("前往設定") { openSystemSettings() }
                         .buttonStyle(.bordered)
                 } else {
@@ -147,11 +148,12 @@ struct FeedOnboardingCards: View {
                         location.requestPermissionIfNeeded()
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(HCColor.brandFill)
                     Button("新增守護地點") { addPlace() }
                         .buttonStyle(.bordered)
                 }
             }
-            .tint(HCColor.brand)
+            .tint(HCColor.brandText)
             .font(.subheadline.weight(.semibold))
         }
         .hcCard()
@@ -170,7 +172,7 @@ struct FeedOnboardingCards: View {
             } label: {
                 HStack(spacing: HCSpacing.x3) {
                     Image(systemName: "number.square.fill")
-                        .foregroundStyle(HCColor.brand)
+                        .foregroundStyle(HCColor.brandText)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("家人傳了邀請碼給你？")
@@ -238,14 +240,16 @@ struct NoCircleEmptyState: View {
                 if LocationService.shared.authorization == .notDetermined {
                     Button("允許定位") { LocationService.shared.requestPermissionIfNeeded() }
                         .buttonStyle(.borderedProminent)
+                        .tint(HCColor.brandFill)
                     Button("新增守護地點") { addPlace() }
                         .buttonStyle(.bordered)
                 } else {
                     Button("新增守護地點") { addPlace() }
                         .buttonStyle(.borderedProminent)
+                        .tint(HCColor.brandFill)
                 }
             }
-            .tint(HCColor.brand)
+            .tint(HCColor.brandText)
             .font(.subheadline.weight(.semibold))
         }
         .hcCard()

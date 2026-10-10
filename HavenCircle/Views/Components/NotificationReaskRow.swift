@@ -41,7 +41,7 @@ struct NotificationReaskRow: View {
                         Spacer()
                         Text(status == .notDetermined ? "開啟" : "到設定開啟")
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(HCColor.brand)
+                            .foregroundStyle(HCColor.brandText)
                     }
                     .frame(minHeight: 44)
                     .contentShape(Rectangle())

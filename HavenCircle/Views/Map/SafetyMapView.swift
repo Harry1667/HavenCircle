@@ -221,7 +221,7 @@ struct SafetyMapView: View {
                 } label: {
                     Label("調整", systemImage: "slider.horizontal.3")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(HCColor.brand)
+                        .foregroundStyle(HCColor.brandText)
                         .padding(.leading, HCSpacing.x2)
                         .padding(.trailing, HCSpacing.x3)
                         .padding(.vertical, 6)
@@ -602,7 +602,7 @@ struct SafetyMapView: View {
                         VStack(spacing: 1) {
                             Image(systemName: circle.kind.iconName)
                                 .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(HCColor.onStatus)
                                 .frame(width: 24, height: 24)
                                 .background(renderedColor, in: Circle())
                                 .overlay(Circle().stroke(.white, lineWidth: 1.5))
@@ -726,7 +726,7 @@ struct SafetyMapView: View {
                     VStack(spacing: 2) {
                         Image(systemName: "person.fill")
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(HCColor.onStatus)
                             .frame(width: 30, height: 30)
                             .background(ping.status == .safe ? HCColor.safe : HCColor.danger, in: Circle())
                             .overlay(Circle().stroke(.white, lineWidth: 2))
@@ -845,7 +845,7 @@ struct SafetyMapView: View {
             .foregroundStyle(.white)
             .padding(.horizontal, HCSpacing.x3)
             .padding(.vertical, HCSpacing.x2)
-            .background(HCColor.brand, in: Capsule())
+            .background(HCColor.brandFill, in: Capsule())
             .shadow(color: .black.opacity(0.18), radius: HCSpacing.x1, y: HCSpacing.x1 / 2)
             .fixedSize()
     }
@@ -871,7 +871,7 @@ struct SafetyMapView: View {
                   ? "bell.and.waves.left.and.right"
                   : EventCategory.icon(for: event.eventType))
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(HCColor.onStatus)
                 .frame(width: 32, height: 32)
                 .background(event.isOfficiallyConfirmed ? HCColor.danger : HCColor.attention, in: Circle())
                 .overlay(Circle().stroke(.white, lineWidth: 2))
@@ -892,7 +892,7 @@ struct SafetyMapView: View {
             } label: {
                 Image(systemName: icon)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(HCColor.onStatus)
                     .frame(width: 26, height: 26)
                     .background(color, in: Circle())
                     .overlay(Circle().stroke(.white, lineWidth: 1.5))
@@ -1170,7 +1170,7 @@ struct SafetyMapView: View {
                       ? "exclamationmark.shield.fill"
                       : (hasCircles ? "checkmark.shield.fill" : "shield"))
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(HCColor.onStatus)
                     .frame(width: HCSpacing.x6 + HCSpacing.x1, height: HCSpacing.x6 + HCSpacing.x1)
                     .background(statusColor, in: Circle())
                     .symbolEffect(.bounce, value: shieldConfirmPulse)
@@ -1214,7 +1214,7 @@ struct SafetyMapView: View {
                     // 盾牌放進色底圓形 chip：狀態色作底、白色圖示，讓「目前安全與否」一眼可辨
                     Image(systemName: hasAttention ? "exclamationmark.shield.fill" : "checkmark.shield.fill")
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(HCColor.onStatus)
                         .frame(width: HCSpacing.x6 + HCSpacing.x3, height: HCSpacing.x6 + HCSpacing.x3)
                         .background(hasAttention ? HCColor.danger : HCColor.safe, in: Circle())
                         // 守護圈細環：與 Onboarding hero、提醒中心平安狀態同一個圓環 motif
@@ -1417,7 +1417,7 @@ private struct EventClusterListSheet: View {
                             HStack(alignment: .top, spacing: HCSpacing.x3) {
                                 Image(systemName: EventCategory.icon(for: event.eventType))
                                     .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(HCColor.onStatus)
                                     .frame(width: 32, height: 32)
                                     .background(
                                         event.isOfficiallyConfirmed ? HCColor.danger : HCColor.attention,
@@ -1547,6 +1547,7 @@ private struct MapEventSheet: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
+            .tint(HCColor.brandFill)
 
             Text("有立即危險請直接撥打 110 或 119。")
                 .font(.caption2)

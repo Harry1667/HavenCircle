@@ -48,7 +48,7 @@ struct AIAssistantView: View {
                 } label: {
                     HStack {
                         Label("詢問 AI", systemImage: "sparkles")
-                            .foregroundStyle(HCColor.brand)
+                            .foregroundStyle(HCColor.brandText)
                         if isAsking {
                             Spacer()
                             ProgressView()

@@ -78,7 +78,7 @@ struct MemberTrailSection: View {
                     "最新 \(LiveLocationPresence.clockText(last.sample.time))",
                     coordinate: CLLocationCoordinate2D(latitude: last.sample.latitude, longitude: last.sample.longitude)
                 ) {
-                    Image(systemName: "mappin.circle.fill").font(.title2).foregroundStyle(HCColor.brand)
+                    Image(systemName: "mappin.circle.fill").font(.title2).foregroundStyle(HCColor.brandText)
                 }
             }
         }

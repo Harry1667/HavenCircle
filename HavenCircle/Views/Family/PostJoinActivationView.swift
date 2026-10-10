@@ -83,7 +83,7 @@ struct PostJoinActivationView: View {
                     .frame(width: 80, height: 80)
                 Image(systemName: icon)
                     .font(.system(size: 40, weight: .medium))
-                    .foregroundStyle(HCColor.brand)
+                    .foregroundStyle(HCColor.brandText)
             }
             VStack(spacing: HCSpacing.x2) {
                 Text(title)
@@ -107,8 +107,9 @@ struct PostJoinActivationView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(HCColor.brandFill)
                     .controlSize(.large)
-                    .tint(HCColor.brand)
+                    .tint(HCColor.brandFill)
 
                     Button(action: secondaryAction) {
                         Text("先不用")

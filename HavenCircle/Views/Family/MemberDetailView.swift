@@ -40,7 +40,7 @@ struct MemberDetailView: View {
                                 }
                             }
                             Spacer()
-                            Text("編輯").foregroundStyle(HCColor.brand)
+                            Text("編輯").foregroundStyle(HCColor.brandText)
                         }
                     }
                     .accessibilityIdentifier("member.editNameButton")
@@ -155,7 +155,7 @@ struct MemberDetailView: View {
                 // 用詞鐵律：不用 circle.kind.title（模型層文案含「固定地點」），這裡自己講「警戒圈」
                 Label(circle.kind == .live ? "即時圈" : "警戒圈", systemImage: circle.kind.iconName)
                     .font(.caption2.bold())
-                    .foregroundStyle(circle.kind == .live ? HCColor.safe : HCColor.brand)
+                    .foregroundStyle(circle.kind == .live ? HCColor.safe : HCColor.brandText)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(
@@ -176,7 +176,7 @@ struct MemberDetailView: View {
             }
             Text("提醒：\(circle.alertTypes.joined(separator: "、")) · \(circle.scheduleText)")
                 .font(.caption)
-                .foregroundStyle(HCColor.brand)
+                .foregroundStyle(HCColor.brandText)
         }
     }
 }

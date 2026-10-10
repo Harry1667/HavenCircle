@@ -16,7 +16,7 @@ struct AppleSignInPage: View {
             Spacer()
             Image(systemName: "person.crop.circle.badge.checkmark")
                 .font(.system(size: 56))
-                .foregroundStyle(HCColor.brand)
+                .foregroundStyle(HCColor.brandText)
             VStack(spacing: 8) {
                 Text("用 Apple 帳號登入")
                     .font(.title2.bold())

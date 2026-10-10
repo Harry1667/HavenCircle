@@ -125,7 +125,7 @@ struct EventDetailView: View {
                         HStack {
                             Spacer()
                             Label("開始分析", systemImage: "sparkles")
-                                .foregroundStyle(HCColor.brand)
+                                .foregroundStyle(HCColor.brandText)
                             if aiImpactLoading {
                                 ProgressView()
                             }
@@ -377,7 +377,7 @@ struct EventDetailView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(HCColor.safe)
+                    .tint(HCColor.safeFill)
                     .controlSize(.large)
                     Button {
                         report(.inDanger)
@@ -410,7 +410,7 @@ struct EventDetailView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(HCColor.brand)
+                    .tint(HCColor.brandFill)
                     .controlSize(.large)
                 }
                 if let checkInFeedback {
@@ -450,7 +450,7 @@ struct EventDetailView: View {
             HStack(alignment: .top, spacing: HCSpacing.x3) {
                 Image(systemName: "person.2.fill")
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(HCColor.brand)
+                    .foregroundStyle(HCColor.brandText)
                     .frame(width: HCSpacing.x6 + HCSpacing.x3, height: HCSpacing.x6 + HCSpacing.x3)
                     .background(HCColor.brand.opacity(0.10), in: Circle())
                     .accessibilityHidden(true)
@@ -467,7 +467,7 @@ struct EventDetailView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .tint(HCColor.brand)
+            .tint(HCColor.brandFill)
             .controlSize(.large)
             .disabled(isInviting)
             if isInviting {

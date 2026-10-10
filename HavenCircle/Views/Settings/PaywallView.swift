@@ -120,7 +120,7 @@ struct PaywallView: View {
                 .font(.system(size: 28, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 60, height: 60)
-                .background(HCColor.brand.gradient, in: Circle())
+                .background(HCColor.brandFill.gradient, in: Circle())
                 .shadow(color: HCColor.brand.opacity(0.35), radius: 12, y: 6)
                 .accessibilityHidden(true)
             Text("把守護範圍，留給更多重要的人與地點")
@@ -149,7 +149,7 @@ struct PaywallView: View {
         HStack(alignment: .center, spacing: HCSpacing.x2) {
             Image(systemName: "checkmark.shield.fill")
                 .fontWeight(.medium)
-                .foregroundStyle(HCColor.brand)
+                .foregroundStyle(HCColor.brandText)
             Text("火災、地震、颱風等**保命警報永遠免費**，付費只解鎖規模與便利。")
                 .font(.caption)
                 .fixedSize(horizontal: false, vertical: true)
@@ -179,7 +179,7 @@ struct PaywallView: View {
         VStack(spacing: HCSpacing.x3) {
             Image(systemName: "checkmark.seal.fill")
                 .font(.system(size: 40, weight: .medium))
-                .foregroundStyle(HCColor.brand)
+                .foregroundStyle(HCColor.brandText)
             Text(store.isLifetime ? "你已是終身 Guardian+" : "你已是 Guardian+")
                 .font(.title3.weight(.bold))
             Text(
@@ -221,7 +221,7 @@ struct PaywallView: View {
                     VStack(alignment: .leading, spacing: HCSpacing.x1) {
                         Image(systemName: item.icon)
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(HCColor.brand)
+                            .foregroundStyle(HCColor.brandText)
                             .frame(width: 28, height: 28)
                             .background(HCColor.brand.opacity(0.12), in: Circle())
                             .accessibilityHidden(true)
@@ -256,7 +256,7 @@ struct PaywallView: View {
                 }
                 .font(.subheadline.weight(.semibold))
                 .buttonStyle(.borderedProminent)
-                .tint(HCColor.brand)
+                .tint(HCColor.brandFill)
             }
             .frame(maxWidth: .infinity)
             .padding(HCSpacing.x4)
@@ -351,7 +351,7 @@ struct PaywallView: View {
                 HStack {
                     HStack(spacing: HCSpacing.x1) {
                         Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(selected ? HCColor.brand : .secondary)
+                            .foregroundStyle(selected ? HCColor.brandText : .secondary)
                             .font(.body.weight(.medium))
                         Text(title).font(.body.weight(.bold))
                     }
@@ -361,7 +361,7 @@ struct PaywallView: View {
                             .font(.caption2.weight(.bold))
                             .padding(.horizontal, HCSpacing.x2)
                             .padding(.vertical, HCSpacing.x1)
-                            .background(HCColor.brand, in: Capsule())
+                            .background(HCColor.brandFill, in: Capsule())
                             .foregroundStyle(.white)
                     }
                 }
@@ -412,7 +412,7 @@ struct PaywallView: View {
                 HStack(spacing: HCSpacing.x1) {
                     Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                         .font(.caption)
-                        .foregroundStyle(selected ? HCColor.brand : .secondary)
+                        .foregroundStyle(selected ? HCColor.brandText : .secondary)
                     Text(title).font(.subheadline.weight(.semibold))
                 }
                 if let price {
@@ -460,7 +460,7 @@ struct PaywallView: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, HCSpacing.x3)
             .background(
-                isPrimaryStyle ? AnyShapeStyle(HCColor.brand.gradient) : AnyShapeStyle(Color.clear),
+                isPrimaryStyle ? AnyShapeStyle(HCColor.brandFill.gradient) : AnyShapeStyle(Color.clear),
                 in: Capsule()
             )
             .overlay(

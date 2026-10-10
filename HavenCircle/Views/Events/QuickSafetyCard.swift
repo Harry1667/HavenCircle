@@ -85,7 +85,7 @@ struct QuickSafetyCard: View {
         VStack(alignment: .leading, spacing: HCSpacing.x3) {
             HStack(alignment: .top, spacing: HCSpacing.x3) {
                 Image(systemName: "person.2.badge.plus")
-                    .foregroundStyle(HCColor.brand)
+                    .foregroundStyle(HCColor.brandText)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: HCSpacing.x1) {
                     Text("加入家人，才能一鍵報平安")
@@ -105,7 +105,7 @@ struct QuickSafetyCard: View {
                     .frame(minHeight: 36)
             }
             .buttonStyle(.borderedProminent)
-            .tint(HCColor.brand)
+            .tint(HCColor.brandFill)
             disclaimer
         }
     }
@@ -145,7 +145,7 @@ struct QuickSafetyCard: View {
                 .foregroundStyle(.white)
                 .padding(.horizontal, HCSpacing.x4)
                 .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
-                .background(HCColor.safe, in: RoundedRectangle(cornerRadius: HCRadius.control, style: .continuous))
+                .background(HCColor.safeFill, in: RoundedRectangle(cornerRadius: HCRadius.control, style: .continuous))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -177,9 +177,9 @@ struct QuickSafetyCard: View {
                     // 有人按「收到 ❤️」就顯示是誰；沒有人收到時維持原文案
                     let ackers = ackNames(for: sent)
                     if !ackers.isEmpty {
-                        Label("\(ackers.joined(separator: "、"))已收到", systemImage: "heart.fill")
+                        Label("\(ackers.joined(separator: "、")) 已收到", systemImage: "heart.fill")
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(HCColor.brand)
+                            .foregroundStyle(HCColor.brandText)
                             .accessibilityIdentifier("quickSafe.ackSummary")
                     } else {
                         Text(isSafe ? "家人會收到通知，可在「家人」分頁看到已讀回條。"

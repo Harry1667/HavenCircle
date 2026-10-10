@@ -1,10 +1,7 @@
 import SwiftUI
-import UIKit
 
-// 動態頁頁首：兩種外觀共用一個入口 FeedHeaderBackdrop，內部依外觀切換——
-// - 層次：守護範圍靜態地圖快照（無守護範圍／快照失敗時退回柔和漸層）
-// - 晴空湖水：隨時段變色的天空（單層漸層＋夜晚星點＋附近有狀況時的琥珀光暈）
-// 兩者都是裝飾（accessibilityHidden），資訊一律由旁邊的文字膠囊與卡片承載。
+// 動態頁頁首：隨時段變色的天空（單層漸層＋夜晚星點＋附近有狀況時的琥珀光暈）。
+// 純裝飾（accessibilityHidden），資訊一律由旁邊的文字膠囊與卡片承載。
 // 效能：背景只畫一層、不放即時 Map、不疊 Material；捲動時只改 opacity，
 // 且捲動進度放在獨立的 @Observable，不會讓整個 EventListView 跟著每幀重算。
 
@@ -45,13 +42,6 @@ private struct FeedHeaderMinYKey: PreferenceKey {
     }
 }
 
-/// 守護範圍地圖快照的輸入（本人守護範圍的圈心與半徑）
-struct GuardAreaCenter: Hashable {
-    let latitude: Double
-    let longitude: Double
-    let radiusMeters: Int
-}
-
 // MARK: - 頁首列（List 第一列：提供捲動基準＋注意事件文字膠囊）
 
 struct FeedHeaderRow: View {
@@ -61,7 +51,7 @@ struct FeedHeaderRow: View {
     /// 自繪大標題：系統大標題在 iOS 17 不吃 toolbarColorScheme，夜晚深靛天空上會是黑字看不清，
     /// 所以改由頁首列自己畫；深色天空用白字，其餘跟系統主文字色
     private var titleColor: Color {
-        AppAppearance.current == .skyLagoon && SkyPhase.current().isDarkSky ? .white : .primary
+        SkyPhase.current().isDarkSky ? .white : .primary
     }
 
     var body: some View {
@@ -100,6 +90,38 @@ struct FeedInlineTitle: View {
     }
 }
 
+/// 導覽列樣式：天空還在時背景透明（夜晚深靛天空上導覽列用深色配色）；
+/// 天空淡出後（progress ≥ 0.98）導覽列換成系統材質底、跟隨淺深色，小標題才不會疊在捲上來的內容上。
+/// 獨立成 ViewModifier：只有它讀捲動進度，捲動時不會重算整個 EventListView
+struct FeedToolbarStyle: ViewModifier {
+    let fade: FeedHeaderFade
+
+    func body(content: Content) -> some View {
+        let skyVisible = fade.progress < 0.98
+        content
+            .toolbarColorScheme(skyVisible && SkyPhase.current().isDarkSky ? .dark : nil, for: .navigationBar)
+            .toolbarBackground(skyVisible ? .hidden : .visible, for: .navigationBar)
+    }
+}
+
+/// 頁首右上角的設定齒輪：天空頁首上的底色不固定（白天亮藍、夜晚深靛），
+/// 所以放在實色圓底上，圖示色與底的對比與天空無關（淺色 5.4:1／深色 7:1 以上）
+struct FeedSettingsButton: View {
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "gearshape")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(HCColor.brandText)
+                .frame(width: 36, height: 36)
+                .background(Color(.systemBackground).opacity(0.92), in: Circle())
+                // 細描邊：深色模式的底接近天空的深靛，加一圈才看得出圓形邊界
+                .overlay(Circle().strokeBorder(.primary.opacity(0.12), lineWidth: 1))
+        }
+        .accessibilityLabel("設定")
+    }
+}
+
 /// 「守護範圍內有需要注意的事件」：圖示＋文字＋琥珀色，不單靠顏色；
 /// 底用實色（不是 Material），疊在天空／地圖上也看得清。
 struct AttentionPill: View {
@@ -118,18 +140,11 @@ struct AttentionPill: View {
 // MARK: - 頁首背景（List 後方，固定在頂端）
 
 struct FeedHeaderBackdrop: View {
-    let appearance: AppAppearance
     let hasAttention: Bool
-    let guardArea: GuardAreaCenter?
     let fade: FeedHeaderFade
 
     var body: some View {
-        Group {
-            switch appearance {
-            case .layered: MapSnapshotBackdrop(area: guardArea)
-            case .skyLagoon: SkyBackdrop(hasAttention: hasAttention)
-            }
-        }
+        SkyBackdrop(hasAttention: hasAttention)
         .frame(height: 300)
         .frame(maxWidth: .infinity)
         // 底端漸隱進頁面底色，避免硬邊
@@ -144,7 +159,7 @@ struct FeedHeaderBackdrop: View {
     }
 }
 
-// MARK: - 晴空湖水：隨時間變色的天空
+// MARK: - 隨時間變色的天空
 
 private struct SkyBackdrop: View {
     let hasAttention: Bool
@@ -192,60 +207,5 @@ private struct StarField: View {
                 context.fill(Path(ellipseIn: rect), with: .color(.white.opacity(a)))
             }
         }
-    }
-}
-
-// MARK: - 層次：守護範圍地圖快照
-
-private struct MapSnapshotBackdrop: View {
-    let area: GuardAreaCenter?
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var image: UIImage?
-
-    private struct TaskKey: Hashable {
-        let area: GuardAreaCenter?
-        let width: Int
-        let isDark: Bool
-    }
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                // 沒有快照時的底：柔和品牌漸層（無守護範圍、尚在產生、產生失敗都是這個）
-                LinearGradient(
-                    colors: [HCColor.brand.opacity(0.18), .clear],
-                    startPoint: .top, endPoint: .bottom
-                )
-                if let image {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        // 去飽和＋調淡：地圖只是脈絡，不能搶過卡片
-                        .saturation(0.4)
-                        .opacity(colorScheme == .dark ? 0.30 : 0.38)
-                        .transition(.opacity)
-                }
-            }
-            .frame(width: geo.size.width, height: geo.size.height)
-            .clipped()
-            .task(id: TaskKey(area: area, width: Int(geo.size.width), isDark: colorScheme == .dark)) {
-                await loadSnapshot(width: Int(geo.size.width))
-            }
-        }
-    }
-
-    private func loadSnapshot(width: Int) async {
-        guard let area, width > 0 else { image = nil; return }
-        let request = MapSnapshotStore.Request(
-            latitude: area.latitude, longitude: area.longitude, radiusMeters: area.radiusMeters,
-            width: width, height: 300, isDark: colorScheme == .dark
-        )
-        let stroke = UIColor(HCColor.brand).resolvedColor(
-            with: UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light)
-        )
-        let result = await MapSnapshotStore.image(for: request, stroke: stroke)
-        guard !Task.isCancelled else { return }
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.4)) { image = result }
     }
 }

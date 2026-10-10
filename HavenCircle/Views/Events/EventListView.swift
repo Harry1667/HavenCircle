@@ -151,13 +151,6 @@ struct EventListView: View {
     /// 頁首背景的捲動淡出進度（獨立參考物件，更新不觸發本頁 body）
     @State private var headerFade = FeedHeaderFade()
 
-    /// 本人守護範圍（優先本人啟用中的圈，其次任何本人的圈，最後任何啟用中的圈）：層次外觀的地圖快照以它為中心
-    private var guardArea: GuardAreaCenter? {
-        let own = members.first(where: \.isCurrentUser)?.lifeCircles ?? []
-        let circle = own.first(where: \.isActiveForAlerts) ?? own.first ?? circles.first(where: \.isActiveForAlerts)
-        return circle.map { GuardAreaCenter(latitude: $0.latitude, longitude: $0.longitude, radiusMeters: $0.radiusMeters) }
-    }
-
     var body: some View {
         let feed = currentFeed()
         ScrollViewReader { scrollProxy in
@@ -208,15 +201,13 @@ struct EventListView: View {
             headerFade.calibrate()
         }
         }
-        // 層次風格：大標題＋頁首背景（地圖快照／天空）；夜晚的深靛天空上標題改白字
+        // 大標題＋頁首背景（天空）；夜晚的深靛天空上標題改白字
         .scrollContentBackground(.hidden)
         .background(alignment: .top) {
             ZStack(alignment: .top) {
                 HCColor.pageBackground
                 FeedHeaderBackdrop(
-                    appearance: AppAppearance.current,
                     hasAttention: !feed.attention.isEmpty,
-                    guardArea: guardArea,
                     fade: headerFade
                 )
             }
@@ -228,13 +219,9 @@ struct EventListView: View {
         .toolbar {
             ToolbarItem(placement: .principal) { FeedInlineTitle(fade: headerFade) }
         }
-        .toolbarColorScheme(
-            AppAppearance.current == .skyLagoon && SkyPhase.current().isDarkSky ? .dark : nil,
-            for: .navigationBar
-        )
-        // toolbarColorScheme 要搭配明確的 toolbarBackground 設定才會套到大標題（否則夜晚深靛天空上標題仍是黑字）；
-        // 背景本來就透明（頁首天空／地圖快照要透出來），明確宣告 hidden 不改變外觀
-        .toolbarBackground(.hidden, for: .navigationBar)
+        // 夜晚深靛天空上導覽列走深色配色；捲走後（天空淡出）導覽列改為一般材質底，
+        // 否則小標題會疊在捲上來的卡片上看不清。見 FeedToolbarStyle
+        .modifier(FeedToolbarStyle(fade: headerFade))
         .analyticsScreen("alert_center")
         // 手動下拉刷新：重跑一次資料管線
         .refreshable { await EventPipeline.refresh(context: context) }
@@ -331,7 +318,7 @@ struct EventListView: View {
                     .font(.system(size: 26, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 54, height: 54)
-                    .background(HCColor.safe.gradient, in: Circle())
+                    .background(HCColor.safeFill.gradient, in: Circle())
             }
             .accessibilityHidden(true)
             Text("警戒圈一切平安")

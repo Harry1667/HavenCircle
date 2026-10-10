@@ -22,10 +22,10 @@ struct JoinWelcomeView: View {
                     .frame(width: 88, height: 88)
                 Image(systemName: "person.3.fill")
                     .font(.system(size: 42, weight: .medium))
-                    .foregroundStyle(HCColor.brand)
+                    .foregroundStyle(HCColor.brandText)
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(HCColor.brand)
+                    .foregroundStyle(HCColor.brandText)
                     .offset(x: 36, y: 36)
             }
                 .accessibilityHidden(true)
@@ -47,8 +47,9 @@ struct JoinWelcomeView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
+            .tint(HCColor.brandFill)
             .controlSize(.large)
-            .tint(HCColor.brand)
+            .tint(HCColor.brandFill)
             .padding(.bottom, HCSpacing.x4)
         }
         .padding(.horizontal, HCSpacing.x6)

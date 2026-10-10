@@ -69,7 +69,7 @@ struct SettingsView: View {
                         showPaywall = true
                     } label: {
                         HStack(spacing: HCSpacing.x3) {
-                            settingsIcon("crown.fill", color: HCColor.brand)
+                            settingsIcon("crown.fill", color: HCColor.brandText)
                             VStack(alignment: .leading, spacing: HCSpacing.x1) {
                                 Text("升級 Guardian+")
                                     .font(.body.weight(.semibold))
@@ -89,26 +89,26 @@ struct SettingsView: View {
                 Section {
                     // 標題從「個人資訊」改為白話版，讓使用者一眼知道改名／改身分在這裡
                     settingsRow("你的名字與家庭身分", subtitle: "本名、家人怎麼叫你，與緊急聯絡備註",
-                                icon: "person.text.rectangle.fill", color: HCColor.brand) {
+                                icon: "person.text.rectangle.fill", color: HCColor.brandText) {
                         PersonalProfileView()
                     }
                     settingsRow("提醒設定", subtitle: "本機提醒、可信度與每日摘要",
-                                icon: "bell.badge.fill", color: HCColor.brand) {
+                                icon: "bell.badge.fill", color: HCColor.brandText) {
                         AlertSettingsView()
                     }
                     settingsRow("顯示與文字", subtitle: "深淺外觀、字體大小與即時預覽",
-                                icon: "textformat.size", color: HCColor.brand) {
+                                icon: "textformat.size", color: HCColor.brandText) {
                         DisplaySettingsView()
                     }
                 }
 
                 Section {
                     settingsRow("法律與隱私", subtitle: "隱私權政策、用戶協議與使用條款",
-                                icon: "hand.raised.square.fill", color: HCColor.brand) {
+                                icon: "hand.raised.square.fill", color: HCColor.brandText) {
                         LegalCenterView()
                     }
                     settingsRow("資料來源", subtitle: "政府示警來源與資料新鮮度",
-                                icon: "antenna.radiowaves.left.and.right", color: HCColor.brand) {
+                                icon: "antenna.radiowaves.left.and.right", color: HCColor.brandText) {
                         DataSourceView()
                     }
                     // 匿名統計可整個關掉：隱私承諾不是只寫在政策裡，要給使用者實際的關閉權
@@ -122,7 +122,7 @@ struct SettingsView: View {
                                     .foregroundStyle(.secondary)
                             }
                         } icon: {
-                            settingsIcon("chart.bar.fill", color: HCColor.brand)
+                            settingsIcon("chart.bar.fill", color: HCColor.brandText)
                         }
                     }
                     .onChange(of: analyticsEnabled) { _, enabled in
@@ -130,7 +130,7 @@ struct SettingsView: View {
                         Analytics.applyFirebaseCollectionSetting() // 同步 Firebase 收集開關
                     }
                     settingsRow("關於安心圈", subtitle: "版本、官網與隱私原則",
-                                icon: "info.circle.fill", color: HCColor.brand) {
+                                icon: "info.circle.fill", color: HCColor.brandText) {
                         AboutView()
                     }
                     Button {
@@ -148,7 +148,7 @@ struct SettingsView: View {
                                     .foregroundStyle(.secondary)
                             }
                         } icon: {
-                            settingsIcon("rectangle.stack.badge.plus", color: HCColor.brand)
+                            settingsIcon("rectangle.stack.badge.plus", color: HCColor.brandText)
                         }
                     }
                 }
@@ -243,7 +243,7 @@ struct SettingsView: View {
                 } icon: {
                     Image(systemName: "bell.and.waves.left.and.right.fill")
                         .font(.callout)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(HCColor.onStatus)
                         .frame(width: 29, height: 29)
                         .background(HCColor.attention.gradient, in: RoundedRectangle(cornerRadius: HCRadius.badge))
                 }
@@ -265,7 +265,7 @@ struct SettingsView: View {
                         .font(.callout)
                         .foregroundStyle(.white)
                         .frame(width: 29, height: 29)
-                        .background(HCColor.brand.gradient, in: RoundedRectangle(cornerRadius: HCRadius.badge))
+                        .background(HCColor.brandFill.gradient, in: RoundedRectangle(cornerRadius: HCRadius.badge))
                 }
             }
             Button {
@@ -327,7 +327,7 @@ struct SettingsView: View {
                         .font(.callout)
                         .foregroundStyle(.white)
                         .frame(width: 29, height: 29)
-                        .background(HCColor.brand.gradient, in: RoundedRectangle(cornerRadius: HCRadius.badge))
+                        .background(HCColor.brandFill.gradient, in: RoundedRectangle(cornerRadius: HCRadius.badge))
                 }
             }
             if let demoSeedFeedback {
@@ -491,11 +491,11 @@ struct SettingsView: View {
             if let initial = displayName.first {
                 Text(String(initial))
                     .font(.title2.weight(.bold))
-                    .foregroundStyle(HCColor.brand)
+                    .foregroundStyle(HCColor.brandText)
             } else {
                 Image(systemName: "shield.lefthalf.filled")
                     .font(.title3.weight(.medium))
-                    .foregroundStyle(HCColor.brand)
+                    .foregroundStyle(HCColor.brandText)
             }
         }
         .frame(width: 56, height: 56)
@@ -553,7 +553,6 @@ struct SettingsView: View {
 private struct DisplaySettingsView: View {
     @AppStorage(SettingsKeys.appearanceMode) private var appearanceMode = AppearanceMode.system.rawValue
     @AppStorage(SettingsKeys.appTextSize) private var appTextSize = AppTextSize.system.rawValue
-    @AppStorage(SettingsKeys.appAppearance) private var appAppearance = AppAppearance.default.rawValue
 
     private var selectedAppearance: AppearanceMode {
         AppearanceMode(rawValue: appearanceMode) ?? .system
@@ -565,21 +564,6 @@ private struct DisplaySettingsView: View {
 
     var body: some View {
         List {
-            // 外觀風格：換配色與動態頁頁首；與下方「深淺」是兩件事，切換後立即生效
-            Section {
-                Picker("外觀", selection: $appAppearance) {
-                    ForEach(AppAppearance.allCases) { appearance in
-                        Text(appearance.label).tag(appearance.rawValue)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("settings.appearancePicker")
-            } header: {
-                Text("外觀風格")
-            } footer: {
-                Text("兩種外觀功能相同，只有配色與頁首不同。")
-            }
-
             Section {
                 ForEach(AppearanceMode.allCases, id: \.rawValue) { mode in
                     Button {
@@ -648,7 +632,7 @@ private struct DisplaySettingsView: View {
             if isSelected {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.title3)
-                    .foregroundStyle(HCColor.brand)
+                    .foregroundStyle(HCColor.brandText)
                     .accessibilityHidden(true)
             }
         }

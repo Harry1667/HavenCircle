@@ -11,7 +11,7 @@ struct EventsTabView: View {
             EventListView()
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button("設定", systemImage: "gearshape") { router.showSettings = true }
+                        FeedSettingsButton { router.showSettings = true }
                     }
                 }
                 .navigationDestination(for: TabRouter.EventsDestination.self) { destination in

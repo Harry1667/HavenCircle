@@ -314,7 +314,7 @@ struct FamilyHomeView: View {
                     } else {
                         Text("登入")
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(HCColor.brand)
+                            .foregroundStyle(HCColor.brandText)
                     }
                 }
                 .foregroundStyle(.primary)
@@ -359,7 +359,7 @@ struct FamilyHomeView: View {
                         .frame(width: 72, height: 72)
                     Image(systemName: "person.2.slash")
                         .font(.system(size: 32, weight: .medium))
-                        .foregroundStyle(HCColor.brand)
+                        .foregroundStyle(HCColor.brandText)
                 }
                 Text("災害來的時候，一個人知道不夠。")
                     .font(.title3.weight(.bold))
@@ -374,6 +374,7 @@ struct FamilyHomeView: View {
                         .font(.body.weight(.medium))
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(HCColor.brandFill)
                 .controlSize(.large)
                 .disabled(isInviting)
                 .accessibilityIdentifier("family.inviteButton")
@@ -473,7 +474,7 @@ struct FamilyHomeView: View {
                         .frame(width: 72, height: 72)
                     Image(systemName: "hourglass")
                         .font(.system(size: 30, weight: .medium))
-                        .foregroundStyle(HCColor.brand)
+                        .foregroundStyle(HCColor.brandText)
                 }
                 Text("等待家人加入")
                     .font(.title3.weight(.bold))
@@ -516,6 +517,7 @@ struct FamilyHomeView: View {
                             .font(.body.weight(.medium))
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(HCColor.brandFill)
                     .controlSize(.large)
                 }
             }
@@ -557,6 +559,7 @@ struct FamilyHomeView: View {
                     .font(.body.weight(.medium))
             }
             .buttonStyle(.borderedProminent)
+            .tint(HCColor.brandFill)
             .controlSize(.large)
             .accessibilityIdentifier("family.renewInviteRetry")
         }
@@ -600,7 +603,7 @@ struct FamilyHomeView: View {
                             } label: {
                                 Label("更新位置", systemImage: "arrow.triangle.2.circlepath")
                             }
-                            .tint(HCColor.brand)
+                            .tint(HCColor.brandText)
                         }
                     }
                     .swipeActions {

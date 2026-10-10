@@ -80,7 +80,7 @@ private struct SignInPreflightCard: View {
             Spacer(minLength: 4)
             Image(systemName: "person.2.badge.plus")
                 .font(.system(size: 44))
-                .foregroundStyle(HCColor.brand)
+                .foregroundStyle(HCColor.brandText)
             VStack(spacing: 6) {
                 Text("連結家人需要 Apple 帳號")
                     .font(.title3.bold())

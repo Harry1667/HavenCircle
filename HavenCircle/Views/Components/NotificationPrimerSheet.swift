@@ -11,7 +11,7 @@ struct NotificationPrimerSheet: View {
             Spacer(minLength: 4)
             Image(systemName: "bell.badge.fill")
                 .font(.system(size: 44))
-                .foregroundStyle(HCColor.brand)
+                .foregroundStyle(HCColor.brandText)
                 .accessibilityHidden(true)
             Text(trigger.title)
                 .font(.title3.bold())
@@ -33,7 +33,7 @@ struct NotificationPrimerSheet: View {
                     .padding(.vertical, 6)
             }
             .buttonStyle(.borderedProminent)
-            .tint(HCColor.brand)
+            .tint(HCColor.brandFill)
             Button("稍後", action: onLater)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -47,7 +47,7 @@ struct NotificationPrimerSheet: View {
     private func reasonRow(_ icon: String, _ title: String, _ detail: String) -> some View {
         HStack(alignment: .top, spacing: HCSpacing.x3) {
             Image(systemName: icon)
-                .foregroundStyle(HCColor.brand)
+                .foregroundStyle(HCColor.brandText)
                 .frame(width: 24)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {

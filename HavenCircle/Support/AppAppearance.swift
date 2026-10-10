@@ -1,87 +1,6 @@
 import SwiftUI
 
-// MARK: - 兩種可切換外觀（層次／晴空湖水）
-// 設計背景（2026-10-11）：使用者決定「層次」與「晴空湖水」兩種都做、App 內可切換，比較後再留一個。
-// 兩者共用同一套層次版面與元件，只換「情緒色」（品牌／次要強調／頁面底／家人色盤）與動態頁頁首：
-// - 層次：品牌藍沿用舊 HCColor；頁首是守護範圍的靜態地圖快照。
-// - 晴空湖水：天藍＋湖水青；頁首是隨時段變色的天空。
-// 狀態色（danger／attention／safe／medical…）兩外觀完全共用，不隨外觀變——紅、琥珀、綠只有一種解讀。
-
-enum AppAppearance: String, CaseIterable, Identifiable {
-    case layered
-    case skyLagoon
-
-    var id: String { rawValue }
-
-    /// 預設外觀：晴空湖水
-    static let `default`: AppAppearance = .skyLagoon
-
-    var label: String {
-        switch self {
-        case .layered: "層次"
-        case .skyLagoon: "晴空湖水"
-        }
-    }
-
-    /// 目前外觀。每次直接讀 UserDefaults（鍵不存在＝預設），與 @AppStorage 讀的是同一份，
-    /// 不另存快取，才不會出現「設定改了但 HCColor 還讀舊值」的雙份真相。
-    static var current: AppAppearance {
-        UserDefaults.standard.string(forKey: SettingsKeys.appAppearance)
-            .flatMap(AppAppearance.init(rawValue:)) ?? .default
-    }
-
-    var palette: AppPalette {
-        switch self {
-        case .layered: AppPalette.layered
-        case .skyLagoon: AppPalette.skyLagoon
-        }
-    }
-}
-
-/// 外觀相依的「情緒色」。狀態色不在這裡（見 HCColor）。
-struct AppPalette {
-    /// 品牌主色：CTA、選取、全 App `.tint`
-    let brand: Color
-    /// 次要強調：守護範圍線、小標籤（層次沿用品牌色，晴空湖水用湖水青）
-    let secondary: Color
-    /// 頁面底色
-    let background: Color
-    /// 頁首淡染色（家人頁等沒有專屬頁首背景的頁面，頂端漸層用）
-    let wash: Color
-    /// 家人色盤：索引 0 保留給本人，其餘依穩定 hash 分配（見 CircleColorPalette）
-    let familyColors: [Color]
-
-    static let layered = AppPalette(
-        brand: Color(light: 0x3657D6, dark: 0x89A0FF),
-        secondary: Color(light: 0x3657D6, dark: 0x89A0FF),
-        background: Color(uiColor: .systemGroupedBackground),
-        wash: Color(light: 0x3657D6, dark: 0x89A0FF).opacity(0.14),
-        familyColors: [
-            HCColor.safe, // 0：本人專屬，沿用平安綠語意
-            Color(hue: 0.58, saturation: 0.68, brightness: 0.88), // 天藍（約 209°）
-            Color(hue: 0.70, saturation: 0.55, brightness: 0.72), // 藍紫（約 252°）
-            Color(hue: 0.80, saturation: 0.55, brightness: 0.78), // 紫（約 288°）
-            Color(hue: 0.875, saturation: 0.55, brightness: 0.82), // 洋紅（約 315°）
-            Color(hue: 0.94, saturation: 0.50, brightness: 0.85), // 玫瑰粉（約 338°）
-        ]
-    )
-
-    /// 晴空湖水 tokens（設計比較頁「配色 A」）。五個家人色全落在青→藍→紫，避開紅／琥珀／綠；
-    /// 本人固定湖水青（＝次要強調色），其餘四色依穩定 hash 分配。
-    static let skyLagoon = AppPalette(
-        brand: Color(light: 0x2E86FF, dark: 0x6FAEFF),
-        secondary: Color(light: 0x19C3C9, dark: 0x4DD8DC),
-        background: Color(light: 0xF3F7FC, dark: 0x0E1630),
-        wash: Color(light: 0x2E86FF, dark: 0x6FAEFF).opacity(0.14),
-        familyColors: [
-            Color(light: 0x19C3C9, dark: 0x4DD8DC), // 我：湖水青
-            Color(light: 0x2E86FF, dark: 0x5EA5FF), // 爸爸：天藍
-            Color(light: 0x7A5AF8, dark: 0xA08CFF), // 媽媽：紫
-            Color(light: 0xC45AE8, dark: 0xDA8CFF), // 妹妹：洋紅紫
-            Color(light: 0x0F7A96, dark: 0x3FB1D1), // 阿嬤：深青
-        ]
-    )
-}
+// 配色（晴空湖水）已併入 Theme.swift 的 HCColor；本檔只留頁首天空的時段與色票。
 
 // MARK: - 天空時段
 
@@ -151,23 +70,5 @@ extension Color {
             green: Double((rgb >> 8) & 0xFF) / 255,
             blue: Double(rgb & 0xFF) / 255
         )
-    }
-}
-
-// MARK: - 測試／除錯啟動參數
-
-enum AppearanceLaunchArguments {
-    /// `--appearance layered|skyLagoon`：啟動時直接套用指定外觀（寫入 UserDefaults，與設定頁同一份）。
-    /// 僅 DEBUG 編入——發佈版不解析任何啟動參數，使用者無從被參數改掉外觀。
-    static func applyIfRequested() {
-        #if DEBUG
-        let args = ProcessInfo.processInfo.arguments
-        guard let i = args.firstIndex(of: "--appearance"), i + 1 < args.count else { return }
-        guard let appearance = AppAppearance(rawValue: args[i + 1]) else {
-            AppLog.dataError("--appearance 參數無法辨識：\(args[i + 1])（可用：layered、skyLagoon）")
-            return
-        }
-        UserDefaults.standard.set(appearance.rawValue, forKey: SettingsKeys.appAppearance)
-        #endif
     }
 }

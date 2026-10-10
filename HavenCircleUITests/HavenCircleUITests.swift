@@ -13,8 +13,8 @@ final class HavenCircleUITests: XCTestCase {
         // UX 稽核測試（Audit）自行決定啟動參數，不走既有的預先啟動
         // 現況快照：不重啟 App，原樣拍下使用者眼前的畫面
         if name.contains("testSnapshotNow") { return }
-        // 外觀走查：每種外觀各自重啟並帶 --appearance 參數，由測試本體啟動
-        if name.contains("testAppearanceTour") { return }
+        // 外觀走查／深淺色稽核：每個時段各自重啟並帶 --force-sky-period，由測試本體啟動
+        if name.contains("testAppearanceTour") || name.contains("testThemeAudit") { return }
         if name.contains("testOnboardingTour") || name.contains("testEventsTour")
             || name.contains("testSettingsTour") || name.contains("testPaywallTour") {
             installPermissionMonitor()
@@ -765,12 +765,12 @@ final class HavenCircleUITests: XCTestCase {
         XCTAssertTrue(systemAlert, "按開啟通知後應跳出系統詢問")
     }
 
-    // MARK: - 外觀走查（層次／晴空湖水）
+    // MARK: - 外觀走查（晴空湖水）
 
-    /// 以指定外觀（與天空時段）重新啟動 App；--appearance／--force-sky-period 只有 DEBUG 建置會解析
-    private func launchForAppearance(_ appearance: String, period: String? = nil) {
+    /// 以指定天空時段重新啟動 App；--force-sky-period 只有 DEBUG 建置會解析
+    private func launchForAppearance(period: String? = nil) {
         if app.state != .notRunning { app.terminate() }
-        app.launchArguments = ["--appearance", appearance, "--skip-location-prompt", "--skip-notification-prompt"]
+        app.launchArguments = ["--skip-location-prompt", "--skip-notification-prompt"]
         if let period { app.launchArguments += ["--force-sky-period", period] }
         addUIInterruptionMonitor(withDescription: "系統權限") { alert in
             for title in ["使用 App 時允許", "允許", "好", "Allow While Using App", "Allow", "OK"] {
@@ -785,45 +785,99 @@ final class HavenCircleUITests: XCTestCase {
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.02)).tap()
     }
 
-    /// 兩種外觀各截：動態頁頂端、地圖頁、家人頁、設定頁外觀區塊；
-    /// 晴空湖水另外用 --force-sky-period 各截清晨／白天／傍晚／夜晚的動態頁頂端
+    /// 晴空湖水外觀走查：動態頁頂端、地圖頁、家人頁，再用 --force-sky-period 各截四個時段的動態頁頂端
     func testAppearanceTour() throws {
-        for appearance in ["layered", "skyLagoon"] {
-            launchForAppearance(appearance)
-            app.tabBars.buttons["動態"].firstMatch.tap()
-            sleep(3)
-            app.swipeDown(); app.swipeDown(); sleep(2)
-            shot("\(appearance)-動態頁頂端")
-            app.tabBars.buttons["地圖"].firstMatch.tap()
-            sleep(4)
-            shot("\(appearance)-地圖頁")
-            app.tabBars.buttons["家人"].firstMatch.tap()
-            sleep(3)
-            shot("\(appearance)-家人頁")
-            // 設定（齒輪）→ 顯示與文字 → 外觀區塊
-            app.tabBars.buttons["動態"].firstMatch.tap()
-            sleep(1)
-            if tapIf("設定") {
-                if tapIf("顯示與文字") {
-                    sleep(1)
-                    shot("\(appearance)-設定頁外觀區塊")
-                    let picker = app.segmentedControls.firstMatch
-                    attach(text: "外觀選擇器存在=\(picker.exists)", name: "\(appearance)-外觀選擇器")
-                } else {
-                    shot("\(appearance)-找不到顯示與文字")
-                }
-                dismissSheet()
-            } else {
-                shot("\(appearance)-找不到設定入口")
-            }
-        }
+        launchForAppearance()
+        app.tabBars.buttons["動態"].firstMatch.tap()
+        sleep(3)
+        app.swipeDown(); app.swipeDown(); sleep(2)
+        shot("動態頁頂端")
+        app.tabBars.buttons["地圖"].firstMatch.tap()
+        sleep(4)
+        shot("地圖頁")
+        app.tabBars.buttons["家人"].firstMatch.tap()
+        sleep(3)
+        shot("家人頁")
         for period in ["dawn", "day", "dusk", "night"] {
-            launchForAppearance("skyLagoon", period: period)
+            launchForAppearance(period: period)
             app.tabBars.buttons["動態"].firstMatch.tap()
             sleep(3)
             app.swipeDown(); app.swipeDown(); sleep(2)
-            shot("skyLagoon-天空-\(period)")
+            shot("天空-\(period)")
         }
+    }
+
+    /// 深淺色稽核：外部先用 `simctl ui appearance light|dark` 設定模擬器明暗，這裡逐畫面截圖。
+    /// 每張都用白天天空；動態頁另外截夜晚。找不到的元素略過並記錄（不中斷）。
+    func testThemeAudit() throws {
+        launchForAppearance(period: "day")
+        // 動態頁
+        app.tabBars.buttons["動態"].firstMatch.tap(); sleep(3)
+        app.swipeDown(); app.swipeDown(); sleep(2)
+        shot("動態頂端")
+        app.swipeUp(); sleep(1)
+        shot("動態下捲一屏")
+        // 第一則事件詳情（先試區域警報，再試事件列）
+        app.swipeDown(); app.swipeDown(); sleep(1)
+        let row = app.buttons.matching(NSPredicate(format: "label CONTAINS '警報：' OR label CONTAINS '進行中、' OR label CONTAINS '已結束、'")).firstMatch
+        if row.waitForExistence(timeout: 6), row.isHittable {
+            row.tap(); sleep(2)
+            shot("事件詳情")
+            app.swipeUp(); sleep(1)
+            shot("事件詳情下捲")
+            if app.navigationBars.buttons.count > 0 { app.navigationBars.buttons.element(boundBy: 0).tap() } else { dismissSheet() }
+            sleep(1)
+        } else { attach(text: "動態無可點的事件列", name: "略過-事件詳情") }
+        // 地圖頁
+        app.tabBars.buttons["地圖"].firstMatch.tap(); sleep(4)
+        shot("地圖頁")
+        // 點底部事件卡開出事件摘要（標記本身的無障礙元素在模擬器常點不到）
+        let card = app.buttons.matching(NSPredicate(format: "label CONTAINS '距離'")).firstMatch
+        if card.exists, card.isHittable {
+            card.tap(); sleep(2)
+            shot("地圖事件摘要卡")
+            dismissSheet()
+            sleep(1)
+        } else { attach(text: "地圖找不到底部事件卡", name: "略過-地圖事件摘要卡") }
+        let legend = app.buttons["地圖圖例"].firstMatch
+        if legend.exists { legend.tap(); sleep(1); shot("地圖圖例展開"); legend.tap(); sleep(1) }
+        else { attach(text: "找不到地圖圖例鈕", name: "略過-地圖圖例") }
+        // 家人頁
+        app.tabBars.buttons["家人"].firstMatch.tap(); sleep(3)
+        shot("家人頁")
+        let checkIn = app.buttons["回報平安"].firstMatch
+        if checkIn.exists, checkIn.isHittable {
+            checkIn.tap(); sleep(2)
+            shot("回報平安sheet")
+            dismissSheet()
+        } else { attach(text: "找不到回報平安鈕", name: "略過-回報平安") }
+        // 設定
+        let gear = app.buttons["設定"].firstMatch
+        if gear.exists, gear.isHittable {
+            gear.tap(); sleep(2)
+            shot("設定頁")
+            for name in ["顯示與文字", "提醒設定"] {
+                let r = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", name)).firstMatch
+                if !r.isHittable { app.swipeUp(); sleep(1) }
+                if r.exists, r.isHittable {
+                    r.tap(); sleep(2)
+                    shot("設定-\(name)")
+                    app.navigationBars.buttons.element(boundBy: 0).tap(); sleep(1)
+                } else { attach(text: "找不到 \(name)", name: "略過-\(name)") }
+            }
+            let about = app.staticTexts["關於安心圈"].firstMatch
+            for _ in 0..<5 where !about.isHittable { app.swipeUp(); sleep(1) }
+            if about.exists, about.isHittable {
+                about.tap(); sleep(2)
+                shot("關於")
+            } else { attach(text: "找不到關於安心圈", name: "略過-關於") }
+        } else { attach(text: "找不到設定齒輪", name: "略過-設定") }
+        // 夜晚動態頁
+        launchForAppearance(period: "night")
+        app.tabBars.buttons["動態"].firstMatch.tap(); sleep(3)
+        app.swipeDown(); app.swipeDown(); sleep(2)
+        shot("動態頂端-night")
+        // 通知說明 sheet 需要全新安裝才會觸發，這裡略過
     }
 
     /// 地圖圖例：開關在工具列 ⓘ，展開後接在頂部狀態卡下方；左下角不再有圖例膠囊

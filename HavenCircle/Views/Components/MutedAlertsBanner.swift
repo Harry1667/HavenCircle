@@ -28,7 +28,7 @@ struct MutedAlertsBanner: View {
                         Spacer()
                         Text("恢復")
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(HCColor.brand)
+                            .foregroundStyle(HCColor.brandText)
                     }
                     .frame(minHeight: 44)
                     .contentShape(Rectangle())

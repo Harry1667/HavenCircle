@@ -6,9 +6,6 @@ struct AppTabs: View {
     @Environment(\.modelContext) private var context
     @Query private var members: [LocalFamilyMember]
     @AppStorage(SettingsKeys.profileDisplayName) private var profileDisplayName = ""
-    /// 外觀風格（層次／晴空湖水）：變動時重建分頁內容，讓所有 HCColor 取值重新讀取；
-    /// 設定 sheet 掛在外層，切換時不會被收掉
-    @AppStorage(SettingsKeys.appAppearance) private var appAppearance = AppAppearance.default.rawValue
 
     /// 擁有者名稱作為安否回報的發送者署名
     private var myName: String {
@@ -51,7 +48,7 @@ struct AppTabs: View {
                     .tabItem { Label("家人", systemImage: "person.2.fill") }
                     .tag(TabRouter.familyTab)
             }
-            .tint(HCColor.brand)
+            .tint(HCColor.brandText)
             .environment(router)
             // 下滑關閉等同「稍後」：不問系統，次數已在顯示時記下，不需要額外處理
             .sheet(item: Bindable(primer).presenting) { trigger in
@@ -70,7 +67,7 @@ struct AppTabs: View {
             .fullScreenCover(isPresented: $debugShowPaywall) { PaywallView() }
             #endif
         }
-        .tint((AppAppearance(rawValue: appAppearance) ?? .default).palette.brand)
+        .tint(HCColor.brandText)
         // 設定改為全域 sheet：任何頁面（含家人頁的「查看 Apple 帳號狀態」）都能打開
         // 外層 sheet 不在 TabView 的 .environment(router) 範圍內，要自己補注入（缺了會在讀 TabRouter 時閃退）
         .sheet(isPresented: Bindable(router).showSettings) { SettingsView().hcSheet().environment(router) }
