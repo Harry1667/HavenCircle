@@ -129,8 +129,8 @@ struct EventListView: View {
             try? await Task.sleep(for: .milliseconds(450))
             selected = match
         }
-        .sheet(item: $selected) { EventDetailView(event: $0, members: members) }
-        .sheet(item: $selectedAlert) { RegionAlertDetailView(alert: $0, members: members) }
+        .sheet(item: $selected) { EventDetailView(event: $0, members: members).hcSheet() }
+        .sheet(item: $selectedAlert) { RegionAlertDetailView(alert: $0, members: members).hcSheet() }
         #if DEBUG
         .task(id: events.count) {
             guard !didOpenDebugDetail,

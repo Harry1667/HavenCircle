@@ -14,4 +14,14 @@ extension View {
             self
         }
     }
+
+    /// 統一的 sheet 呈現：中高 + 全高兩段停靠，上方留出可點的暗色區域——點空白處或下拉即可關閉
+    /// （iPhone 在 medium 時背景可點關閉；iPad 收斂為 form 尺寸，點 sheet 外側即關閉）。
+    /// 全螢幕且不可被打斷的流程（新手、付費牆、角色選擇）不套用，見各自 fullScreenCover。
+    func hcSheet() -> some View {
+        self
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .formPresentationSizing()
+    }
 }

@@ -49,8 +49,7 @@ struct InviteFamilySection: View {
         .signInPreflight(signInGate)
         .sheet(isPresented: $showInviteOptions) {
             InviteOptionsView()
-                // iPad 會忽略隱含尺寸而放大成整頁 sheet，這裡收斂成 form 尺寸
-                .formPresentationSizing()
+                .hcSheet()
         }
         .fullScreenCover(isPresented: $showRoleSelect) {
             RoleSelectView(

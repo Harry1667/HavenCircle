@@ -53,7 +53,7 @@ struct SafetyCheckInView: View {
             Text(shareError ?? "")
         }
         .sheet(isPresented: $showInviteOptions) {
-            InviteOptionsView()
+            InviteOptionsView().hcSheet()
         }
         .task {
             await sync.refreshAccountStatus()

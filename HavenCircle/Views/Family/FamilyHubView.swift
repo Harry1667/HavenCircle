@@ -27,6 +27,7 @@ struct FamilyHubView: View {
                 .safeAreaInset(edge: .bottom) { if !isSoloUser { checkInButton } }
                 .sheet(isPresented: $showCheckIn) {
                     NavigationStack { SafetyCheckInView(myName: myName) }
+                        .hcSheet()
                 }
         }
     }

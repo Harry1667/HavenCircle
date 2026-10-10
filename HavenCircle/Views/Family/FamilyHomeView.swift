@@ -181,21 +181,21 @@ struct FamilyHomeView: View {
                 pendingCirclePlace = createPlace(name: name)
                 addingPlace = false
             }
+            .hcSheet()
         }
         .fullScreenCover(isPresented: $showPaywall) {
             PaywallView()
         }
         .sheet(item: $newMemberForCircle) { member in
-            CircleEditorView(member: member)
+            CircleEditorView(member: member).hcSheet()
         }
         .sheet(isPresented: $showInviteOptions) {
             InviteOptionsView()
-                // iPad 會忽略隱含尺寸而放大成整頁 sheet，這裡收斂成 form 尺寸
-                .formPresentationSizing()
+                .hcSheet()
         }
         .sheet(isPresented: $showJoinByCode, onDismiss: { prefilledJoinCode = nil }) {
             JoinByCodeView(prefilledCode: prefilledJoinCode)
-                .formPresentationSizing()
+                .hcSheet()
         }
         .fullScreenCover(isPresented: $showRoleSelect) {
             RoleSelectView(

@@ -46,7 +46,7 @@ struct FamilyManageView: View {
         .signInPreflight(signInGate)
         .sheet(isPresented: $showJoinByCode) {
             JoinByCodeView(prefilledCode: nil)
-                .formPresentationSizing()
+                .hcSheet()
         }
         .confirmationDialog("要加入另一個家庭圈嗎？", isPresented: $showJoinSwitchConfirm, titleVisibility: .visible) {
             Button("繼續輸入邀請碼") {

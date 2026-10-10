@@ -55,7 +55,7 @@ struct AppTabs: View {
             .tint(HCColor.brand)
             .environment(router)
             // 設定改為全域 sheet：任何頁面（含家人頁的「查看 Apple 帳號狀態」）都能打開
-            .sheet(isPresented: Bindable(router).showSettings) { SettingsView() }
+            .sheet(isPresented: Bindable(router).showSettings) { SettingsView().hcSheet() }
             #if DEBUG
             // DEBUG：--show-paywall 直接開付費牆，供自動化截圖（同 --start-tab 定式）
             // 跟正式的 4 個入口一樣改用 fullScreenCover，截圖才會反映使用者實際看到的樣子。

@@ -42,9 +42,9 @@ struct MemberDetailView: View {
         }
         .navigationTitle(member.name)
         .analyticsScreen("member_detail")
-        .sheet(isPresented: $creatingCircle) { CircleEditorView(member: member) }
+        .sheet(isPresented: $creatingCircle) { CircleEditorView(member: member).hcSheet() }
         .sheet(item: $editing) { circle in
-            CircleEditorView(member: member, circle: circle)
+            CircleEditorView(member: member, circle: circle).hcSheet()
         }
     }
 

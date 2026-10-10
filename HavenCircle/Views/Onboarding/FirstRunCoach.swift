@@ -91,6 +91,9 @@ struct NotificationPromptCard: View {
         ZStack {
             Color.black.opacity(0.001) // 幾乎透明但能接住點擊，避免使用者誤點到底下的地圖
                 .ignoresSafeArea()
+                // 點卡片外的空白處＝先不用（關閉，等同按「先不用」）
+                .onTapGesture { decline() }
+                .accessibilityHidden(true)
             VStack(spacing: 14) {
                 Text("圈內有新狀況時，要通知你嗎？")
                     .font(.title3.weight(.bold))
