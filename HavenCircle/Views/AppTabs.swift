@@ -32,25 +32,25 @@ struct AppTabs: View {
             return min(max(tab, 0), 2)
         }
         #endif
-        // 第一次開 App 完成著陸後：直接落在地圖頁，展開親切帶領（看見自己的警戒圈）
+        // 第一次開 App 完成著陸後（帶領進行中）：直接落在地圖頁，展開親切帶領（看見自己的警戒圈）
         if UserDefaults.standard.bool(forKey: SettingsKeys.firstRunCoachingPending) {
             return TabRouter.mapTab
         }
-        return TabRouter.familyTab  // 打開就是家人首頁：人在前、事在後
+        return TabRouter.eventsTab  // 打開就是動態首頁
     }
 
     var body: some View {
         ZStack {
             TabView(selection: Bindable(router).selection) {
-                FamilyHubView(myName: myName)
-                    .tabItem { Label("家人", systemImage: "person.2.fill") }
-                    .tag(TabRouter.familyTab)
                 EventsTabView()
                     .tabItem { Label("動態", systemImage: "bell.badge.fill") }
                     .tag(TabRouter.eventsTab)
                 SafetyMapView()
                     .tabItem { Label("地圖", systemImage: "map.fill") }
                     .tag(TabRouter.mapTab)
+                FamilyHubView(myName: myName)
+                    .tabItem { Label("家人", systemImage: "person.2.fill") }
+                    .tag(TabRouter.familyTab)
             }
             .tint(HCColor.brand)
             .environment(router)

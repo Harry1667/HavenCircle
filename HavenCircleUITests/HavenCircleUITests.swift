@@ -16,11 +16,11 @@ final class HavenCircleUITests: XCTestCase {
             installPermissionMonitor()
             return
         }
-        // 家人走查要驗「冷啟動落在家人首頁」，不指定分頁（預設即家人）；其餘維持地圖
+        // 家人走查驗「冷啟動預設落在動態」，不指定分頁，之後自行切到家人；其餘維持地圖（tag 1）
         if name.contains("testFamilyTour") {
             app.launchArguments += ["--skip-location-prompt"]
         } else {
-            app.launchArguments += ["--start-tab", "2", "--skip-location-prompt"]
+            app.launchArguments += ["--start-tab", "1", "--skip-location-prompt"]
         }
         // 系統彈窗（定位、通知）會卡住自動化
         addUIInterruptionMonitor(withDescription: "系統權限") { alert in
@@ -381,7 +381,7 @@ final class HavenCircleUITests: XCTestCase {
 
     func testOnboardingTour() throws {
         let flow = "onboarding"
-        auditLaunch(["--start-tab", "0"].filter { _ in false }) // 不帶任何旗標：模擬全新使用者
+        auditLaunch(["--start-tab", "2"].filter { _ in false }) // 不帶任何旗標：模擬全新使用者
         auditShot(flow, "首次開啟")
         // 偏好的「往前走」按鈕（越前面越優先）
         let buttonPrefs = ["下一步", "完成", "開始使用", "開始", "繼續", "先看看，稍後再開", "先看看警報長什麼樣", "先不用", "稍後再說", "略過", "跳過"]
@@ -428,7 +428,7 @@ final class HavenCircleUITests: XCTestCase {
     func testEventsTour() throws {
         let flow = "events"
         // 先看家人首頁（狀態卡），再切到「動態」分頁
-        auditLaunch(["--start-tab", "0", "--skip-location-prompt"])
+        auditLaunch(["--start-tab", "2", "--skip-location-prompt"])
         clearOverlays()
         sleep(8) // 等事件管線抓到資料
         auditShot(flow, "家人首頁")
@@ -520,7 +520,7 @@ final class HavenCircleUITests: XCTestCase {
 
     func testSettingsTour() throws {
         let flow = "settings"
-        auditLaunch(["--start-tab", "0", "--skip-location-prompt"])
+        auditLaunch(["--start-tab", "2", "--skip-location-prompt"])
         clearOverlays()
         auditShot(flow, "安心首頁-設定入口前")
         guard let gear = firstMatch("設定", types: [.button]) else {
@@ -562,7 +562,7 @@ final class HavenCircleUITests: XCTestCase {
 
     func testPaywallTour() throws {
         let flow = "paywall"
-        auditLaunch(["--start-tab", "0", "--skip-location-prompt", "--show-paywall"])
+        auditLaunch(["--start-tab", "2", "--skip-location-prompt", "--show-paywall"])
         sleep(2)
         auditShot(flow, "付費牆")
         app.swipeUp(); sleep(1)

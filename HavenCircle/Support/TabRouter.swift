@@ -2,14 +2,15 @@ import Foundation
 import Observation
 
 /// 跨分頁導航：讓任何畫面能切換主分頁、推入動態分頁的二級頁、或打開設定 sheet。
-/// 方案 B「家人優先」：三個一級分頁依序為 家人（首頁）・動態・地圖；
+/// 三個一級分頁依序為 動態（首頁）・地圖・家人；
 /// 回顧由動態分頁 push，設定是全域 sheet。
 @Observable
 @MainActor
 final class TabRouter {
-    nonisolated static let familyTab = 0
-    nonisolated static let eventsTab = 1
-    nonisolated static let mapTab = 2      // 保留原 tag 值：DEBUG --start-tab 2 仍是地圖
+    // 分頁順序：動態(0)・地圖(1)・家人(2)；DEBUG --start-tab <n> 直接對應這三個值
+    nonisolated static let eventsTab = 0
+    nonisolated static let mapTab = 1
+    nonisolated static let familyTab = 2
 
     /// 動態分頁的二級頁（回顧由此 push）
     enum EventsDestination: Hashable {
@@ -28,7 +29,7 @@ final class TabRouter {
     /// 用過就清空，避免重新進到家人頁時被舊值誤觸發。
     var pendingJoinCode: String?
 
-    init(selection: Int = TabRouter.familyTab) {
+    init(selection: Int = TabRouter.eventsTab) {
         self.selection = selection
     }
 
