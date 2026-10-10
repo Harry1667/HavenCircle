@@ -545,5 +545,7 @@ struct CircleEditorView: View {
         // 分辨「有存過」跟「取消/下滑關閉」，順序反了會被自己剛存好的圈也一併判定成孤兒刪掉
         didSave = true
         dismiss()
+        // 新增守護地點後說明通知用途（編輯既有地點不問）
+        if isNewPlaceCircle { NotificationPrimer.shared.request(.place) }
     }
 }

@@ -149,7 +149,11 @@ struct EventListView: View {
     var body: some View {
         let feed = currentFeed()
         List {
-            // 零導覽引導：定位／通知／邀請碼三張情境卡（最多同時兩張）
+            // 報平安一鍵卡：打開 App 就能告訴家人「我平安」（沒有家人時改為引導邀請）
+            Section {
+                QuickSafetyCard(hasNearbyAttention: !feed.attention.isEmpty)
+            }
+            // 零導覽引導：定位／邀請碼情境卡（通知說明改在使用者做了相關動作之後才出現）
             FeedOnboardingCards(hasCircle: !circles.isEmpty)
             scopeSection
             // 沒有任何守護範圍時不能說「一切平安」——那是假性安心；改給空狀態與出路

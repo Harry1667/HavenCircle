@@ -17,6 +17,8 @@ struct AppTabs: View {
 
     // DEBUG：--start-tab <n> 讓 App 直接開在指定分頁，方便自動化截圖驗證
     @State private var router = TabRouter(selection: Self.initialTab())
+    /// 通知權限的 App 內說明：加入／建立家庭、新增守護地點、第一次按「我平安」後才由各處呼叫 request
+    @State private var primer = NotificationPrimer.shared
     #if DEBUG
     // DEBUG：--show-paywall 啟動即開付費牆（IAP 審查截圖用），發佈版不編入
     @State private var debugShowPaywall = ProcessInfo.processInfo.arguments.contains("--show-paywall")
@@ -50,6 +52,17 @@ struct AppTabs: View {
             .environment(router)
             // 設定改為全域 sheet：任何頁面（含家人頁的「查看 Apple 帳號狀態」）都能打開
             .sheet(isPresented: Bindable(router).showSettings) { SettingsView().hcSheet() }
+            // 下滑關閉等同「稍後」：不問系統，次數已在顯示時記下，不需要額外處理
+            .sheet(item: Bindable(primer).presenting) { trigger in
+                NotificationPrimerSheet(
+                    trigger: trigger,
+                    onAccept: { Task { await primer.accept() } },
+                    onLater: { primer.later() }
+                )
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .formPresentationSizing()
+            }
             #if DEBUG
             // DEBUG：--show-paywall 直接開付費牆，供自動化截圖（同 --start-tab 定式）
             // 跟正式的 4 個入口一樣改用 fullScreenCover，截圖才會反映使用者實際看到的樣子。

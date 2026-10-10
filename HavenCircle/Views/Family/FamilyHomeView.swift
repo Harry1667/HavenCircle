@@ -192,7 +192,8 @@ struct FamilyHomeView: View {
         .sheet(item: $newMemberForCircle) { member in
             CircleEditorView(member: member).hcSheet()
         }
-        .sheet(isPresented: $showInviteOptions) {
+        // 邀請頁（建立家庭圈後）收合後，說明為什麼需要通知
+        .sheet(isPresented: $showInviteOptions, onDismiss: { NotificationPrimer.shared.request(.family) }) {
             InviteOptionsView()
                 .hcSheet()
         }

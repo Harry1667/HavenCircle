@@ -1124,6 +1124,9 @@ private struct AlertSettingsView: View {
                     )
                     .font(.caption)
                     .foregroundStyle(granted ? HCColor.safe : HCColor.attention)
+                    if !granted, let url = URL(string: UIApplication.openSettingsURLString) {
+                        Button("到設定開啟") { UIApplication.shared.open(url) }
+                    }
                 }
             }
             Section {

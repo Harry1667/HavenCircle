@@ -53,7 +53,10 @@ struct SafetyCheckInView: View {
         } message: {
             Text(shareError ?? "")
         }
-        .sheet(isPresented: $showInviteOptions) {
+        .sheet(isPresented: $showInviteOptions, onDismiss: {
+            // 剛建立家庭圈、邀請頁收合後，才說明為什麼需要通知（已授權／已問夠次數會自動略過）
+            NotificationPrimer.shared.request(.family)
+        }) {
             InviteOptionsView().hcSheet()
         }
         .namePrompt(nameGate)

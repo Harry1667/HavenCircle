@@ -5,11 +5,11 @@ import UserNotifications
 /// 零導覽新手引導：動態列表頂端的三張「情境卡」，取代舊的著陸頁與地圖強制帶領。
 /// 它們是列表裡的普通列（不是 overlay、不擋畫面），可滑過、可關；沒有任何一張是進 App 的前置條件。
 /// - 定位邀請卡：定位尚未決定時出現；拒絕後換成「新增守護地點／前往設定」的出路（拒絕定位也有路）。
-/// - 通知邀請卡：使用者看過內容之後才出現（首次渲染 3 秒後，或已點開過任一事件），含示範橫幅與非緊急服務聲明。
+/// - 通知：不再於動態頂端主動邀請——改在加入／建立家庭、新增守護地點、第一次按「我平安」時由 NotificationPrimer 說明後才問。
 /// - 邀請碼列：還沒加入家庭圈的前 3 次啟動，給「家人傳了邀請碼給你」的人一個入口。
-/// 一次只顯示一張引導卡：定位卡處理掉（允許、拒絕或關閉）後才輪到通知卡；邀請碼列是一行小列，可與卡片並存。
+/// 一次只顯示一張引導卡；邀請碼列是一行小列，可與卡片並存。
 
-/// 三張卡共用的旗標重置（設定「重新顯示引導卡」、DEBUG 的 --demo-firstrun、重跑新手流程共用）。
+/// 引導卡共用的旗標重置（設定「重新顯示引導卡」、DEBUG 的 --demo-firstrun、重跑新手流程共用）。
 enum FeedOnboardingFlags {
     static func reset() {
         let defaults = UserDefaults.standard
@@ -30,15 +30,10 @@ struct FeedOnboardingCards: View {
     @Environment(TabRouter.self) private var router
     @AppStorage(SettingsKeys.feedLocationCardDismissed) private var locationDismissed = false
     @AppStorage(SettingsKeys.feedLocationDeniedShown) private var deniedShown = false
-    @AppStorage(SettingsKeys.notificationPromptDeclined) private var notificationDeclined = false
-    @AppStorage(SettingsKeys.notificationCardEligibleAt) private var eligibleAt: Double = 0
-    @AppStorage(SettingsKeys.hasOpenedEventDetail) private var hasOpenedDetail = false
     @AppStorage(SettingsKeys.inviteRowDismissed) private var inviteDismissed = false
     @AppStorage(SettingsKeys.currentFamilyID) private var currentFamilyID = ""
     @AppStorage(SettingsKeys.launchCount) private var launchCount = 0
 
-    @State private var notificationStatus: UNAuthorizationStatus = .authorized
-    @State private var notificationTimeReady = false
     /// 本次啟動中看到「被拒絕」才顯示拒絕態（避免之後每次啟動都提醒）
     @State private var deniedVisibleThisSession = false
 
@@ -58,22 +53,15 @@ struct FeedOnboardingCards: View {
         !locationDismissed && authorizationDenied && deniedVisibleThisSession && !hasCircle
     }
 
-    private var showNotification: Bool {
-        notificationStatus == .notDetermined && !notificationDeclined
-            && (hasOpenedDetail || notificationTimeReady)
-    }
-
     private var showInvite: Bool {
         currentFamilyID.isEmpty && launchCount <= 3 && !inviteDismissed
     }
 
-    /// 一次一張：定位邀請 > 通知邀請 > 定位拒絕出路；邀請碼列另外附在後面（一行小列）
+    /// 一次一張：定位邀請 > 定位拒絕出路；邀請碼列另外附在後面（一行小列）
     private var visibleKinds: [Kind] {
         var kinds: [Kind] = []
         if locationPending {
             kinds.append(.location)
-        } else if showNotification {
-            kinds.append(.notification)
         } else if showLocationDenied {
             kinds.append(.location)
         }
@@ -81,7 +69,7 @@ struct FeedOnboardingCards: View {
         return kinds
     }
 
-    private enum Kind: Hashable { case location, notification, invite }
+    private enum Kind: Hashable { case location, invite }
 
     var body: some View {
         Group {
@@ -90,7 +78,6 @@ struct FeedOnboardingCards: View {
                     ForEach(visibleKinds, id: \.self) { kind in
                         switch kind {
                         case .location: locationCard
-                        case .notification: notificationCard
                         case .invite: inviteRow
                         }
                     }
@@ -98,8 +85,6 @@ struct FeedOnboardingCards: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: visibleKinds)
-        .task { await refreshNotificationStatus() }
-        .task { await armNotificationTimer() }
         .onChange(of: location.authorization) { old, new in
             // 剛被拒絕：本次啟動內顯示一次拒絕態，並記下「顯示過」
             if old == .notDetermined, new == .denied || new == .restricted {
@@ -174,42 +159,6 @@ struct FeedOnboardingCards: View {
         .onAppear { Analytics.track("feed_location_card_shown") }
     }
 
-    // MARK: - 通知邀請卡
-
-    private var notificationCard: some View {
-        VStack(alignment: .leading, spacing: HCSpacing.x2) {
-            HStack(alignment: .top) {
-                Image(systemName: "bell.badge.fill")
-                    .foregroundStyle(HCColor.brand)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: HCSpacing.x1) {
-                    Text("圈內有狀況時要通知你嗎？")
-                        .font(.headline)
-                    Text("附近有警報、家人回報平安時提醒你。安心圈不是緊急服務，遇到危險請直接撥 110／119。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            HStack(spacing: HCSpacing.x2) {
-                Button("開啟通知") {
-                    Task {
-                        let granted = await NotificationScheduler.requestPermission()
-                        Analytics.track(granted ? "notify_granted" : "notify_denied")
-                        await refreshNotificationStatus()
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                Button("先不用") { notificationDeclined = true }
-                    .buttonStyle(.bordered)
-            }
-            .tint(HCColor.brand)
-            .font(.subheadline.weight(.semibold))
-        }
-        .hcCard()
-        .cardRow()
-        .onAppear { Analytics.track("notify_prompt_shown") }
-    }
-
     // MARK: - 邀請碼列
 
     private var inviteRow: some View {
@@ -269,21 +218,6 @@ struct FeedOnboardingCards: View {
             UIApplication.shared.open(url)
         }
     }
-
-    private func refreshNotificationStatus() async {
-        notificationStatus = await NotificationScheduler.authorizationStatus()
-    }
-
-    /// 通知卡的時間條件：列表首次渲染完成後 3 秒。時間戳存起來，之後啟動不必再等。
-    private func armNotificationTimer() async {
-        if eligibleAt == 0 { eligibleAt = Date.now.timeIntervalSince1970 }
-        let remaining = eligibleAt + 3 - Date.now.timeIntervalSince1970
-        if remaining > 0 {
-            try? await Task.sleep(for: .seconds(remaining))
-        }
-        guard !Task.isCancelled else { return }
-        notificationTimeReady = true
-    }
 }
 
 /// 「與我有關」在沒有任何守護範圍時的空狀態：說明原因並給兩條出路（和定位邀請卡同一組動作）。
@@ -319,7 +253,7 @@ struct NoCircleEmptyState: View {
     }
 }
 
-private extension View {
+extension View {
     /// 卡片列：透明列背景＋較小邊距，避免「卡中卡」的雙層框
     func cardRow() -> some View {
         self

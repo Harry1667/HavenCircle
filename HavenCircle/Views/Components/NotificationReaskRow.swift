@@ -1,16 +1,26 @@
 import SwiftUI
 import UserNotifications
 
-/// D4 重問通道：情境式權限卡（A4）被按過「先不用」之後，通知就永遠沒有回頭路——
-/// 這裡是唯一的補救：事件串頂部再問一次。notDetermined 直接跳系統框；已被系統拒絕過
-/// 就只能靠使用者自己去系統設定開，這裡負責把人帶過去。授權成功後這列自然消失。
+/// 通知被系統拒絕後的補救列：已在家庭圈（會收到家人報平安）卻拒絕了通知時，
+/// 事件串頂部給一條「到設定開啟」的路。舊版情境卡被按過「先不用」（declined 旗標）者
+/// 仍保留原本的重問行為。授權成功後這列自然消失。
+/// 注意：這一列只是補救入口，不是首次詢問——首次詢問由 NotificationPrimer 在使用者
+/// 加入家庭／新增守護地點／按「我平安」時先說明再問。
 struct NotificationReaskRow: View {
     @State private var status: UNAuthorizationStatus = .notDetermined
     @AppStorage(SettingsKeys.notificationPromptDeclined) private var declined = false
+    @AppStorage(SettingsKeys.currentFamilyID) private var currentFamilyID = ""
+
+    /// 顯示條件：舊版「先不用」過且尚未授權；或已在家庭圈卻被系統拒絕（會漏接家人回報）
+    private var shouldShow: Bool {
+        if status == .authorized || status == .provisional || status == .ephemeral { return false }
+        if status == .denied { return !currentFamilyID.isEmpty }
+        return declined
+    }
 
     var body: some View {
         Group {
-            if declined, status != .authorized {
+            if shouldShow {
                 Button {
                     Task {
                         if status == .notDetermined {
@@ -29,7 +39,7 @@ struct NotificationReaskRow: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Text("開啟")
+                        Text(status == .notDetermined ? "開啟" : "到設定開啟")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(HCColor.brand)
                     }

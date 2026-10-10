@@ -81,6 +81,12 @@ enum SettingsKeys {
     static let quietEndHour = "quietEndHour"
     /// 情境式通知權限卡（帶領結束後）是否被使用者按過「先不用」；按過就不再出現這張卡
     static let notificationPromptDeclined = "notificationPromptDeclined"
+    /// 通知說明卡（NotificationPrimer）各時機已顯示的次數；每個時機最多 2 次（第一次＋稍後再提示一次）
+    static func notificationPrimerCount(_ trigger: String) -> String { "notificationPrimerCount.\(trigger)" }
+    /// 最近一次動態頂端「我平安」卡送出的時間（timeIntervalSince1970；0＝沒送過），用來顯示「已告訴家人」
+    static let lastQuickPingAt = "lastQuickPingAt"
+    /// 最近一次動態頂端送出的狀態（SafetyStatus.rawValue），與 lastQuickPingAt 成對
+    static let lastQuickPingStatus = "lastQuickPingStatus"
 
     // MARK: - 安全地圖圖層記憶（2026-07-24：使用者拍板「預設地圖不要出現避難所」）
 

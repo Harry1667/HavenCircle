@@ -49,7 +49,8 @@ struct InviteFamilySection: View {
         }
         .signInPreflight(signInGate)
         .namePrompt(nameGate)
-        .sheet(isPresented: $showInviteOptions) {
+        // 邀請頁（建立家庭圈後）收合後，說明為什麼需要通知
+        .sheet(isPresented: $showInviteOptions, onDismiss: { NotificationPrimer.shared.request(.family) }) {
             InviteOptionsView()
                 .hcSheet()
         }

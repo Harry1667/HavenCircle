@@ -47,10 +47,10 @@ struct PostJoinActivationView: View {
                 questionCard(
                     icon: "bell.badge.fill",
                     title: "圈內有狀況時通知你？",
-                    subtitle: "家人回報平安、附近有警報時提醒你。",
+                    subtitle: "家人回報平安、附近有警報、家人到家時提醒你。安心圈不是緊急服務，危急請撥 110／119。",
                     primaryLabel: "開啟通知",
                     primaryAction: { Task { await enableNotifications() } },
-                    secondaryAction: { onFinished() }
+                    secondaryAction: { onFinished() } // 「稍後」：不問系統，次數在顯示時已記下
                 )
             }
         }
@@ -138,11 +138,12 @@ struct PostJoinActivationView: View {
     }
 
     private func checkNotificationsStep() async {
-        let status = await NotificationScheduler.authorizationStatus()
-        guard status == .notDetermined else {
+        // 已授權／已拒絕／已提示滿次數／自動化跳過時，整步略過
+        guard await NotificationPrimer.shouldAsk(.family) else {
             onFinished()
             return
         }
+        NotificationPrimer.recordShown(.family)
         step = .notifications
     }
 
