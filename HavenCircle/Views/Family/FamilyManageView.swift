@@ -11,6 +11,7 @@ struct FamilyManageView: View {
     @Query private var members: [LocalFamilyMember]
 
     @State private var signInGate = SignInGate()
+    @State private var nameGate = NamePromptGate()
     @State private var showJoinByCode = false
     /// 已有家庭圈時，點「輸入邀請碼換圈」先說明後果的確認框
     @State private var showJoinSwitchConfirm = false
@@ -44,14 +45,17 @@ struct FamilyManageView: View {
         .navigationBarTitleDisplayMode(.inline)
         .analyticsScreen("family_manage")
         .signInPreflight(signInGate)
+        .namePrompt(nameGate)
         .sheet(isPresented: $showJoinByCode) {
             JoinByCodeView(prefilledCode: nil)
                 .hcSheet()
         }
         .confirmationDialog("要加入另一個家庭圈嗎？", isPresented: $showJoinSwitchConfirm, titleVisibility: .visible) {
             Button("繼續輸入邀請碼") {
-                signInGate.perform {
-                    showJoinByCode = true
+                nameGate.perform {
+                    signInGate.perform {
+                        showJoinByCode = true
+                    }
                 }
             }
             Button("取消", role: .cancel) {}

@@ -12,6 +12,9 @@ struct MemberDetailView: View {
     /// 僅用於地點孤兒補救：地點成員已建立但一個警戒圈都沒有時，唯一的「補建」入口
     /// （不是「新增第二個」，member 本來就 0 圈，建立後仍維持 1 地點＝1 圈）
     @State private var creatingCircle = false
+    /// 「我的卡」編輯名字（只有本人那張卡有）
+    @State private var editingName = false
+    @AppStorage(SettingsKeys.profileDisplayName) private var ownName = ""
 
     private var fixedCircles: [LocalLifeCircle] {
         member.lifeCircles.filter { $0.kind == .fixed }
@@ -20,6 +23,27 @@ struct MemberDetailView: View {
     var body: some View {
         List {
             if member.isCurrentUser {
+                // 名字：家人看到的稱呼；沒設定時家人會看到「家人 N」，所以這裡明講並給編輯入口
+                Section("我的名字") {
+                    Button {
+                        editingName = true
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(FamilyNaming.clean(ownName).isEmpty ? "尚未設定" : FamilyNaming.clean(ownName))
+                                    .foregroundStyle(.primary)
+                                if FamilyNaming.clean(ownName).isEmpty {
+                                    Text("家人目前會看到你是「家人 N」")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Text("編輯").foregroundStyle(HCColor.brand)
+                        }
+                    }
+                    .accessibilityIdentifier("member.editNameButton")
+                }
                 // 自己的詳情頁直接放即時圈控制，不再是「請回家人頁開啟」的死路文字
                 LiveCircleSharingSection()
                 if let uid = AuthService.shared.uid,
@@ -51,8 +75,14 @@ struct MemberDetailView: View {
                 legacyFixedCircleSection
             }
         }
-        .navigationTitle(member.name)
+        .navigationTitle(member.isCurrentUser ? "我" : member.name)
         .analyticsScreen("member_detail")
+        .sheet(isPresented: $editingName) {
+            NamePromptSheet(mode: .edit) { editingName = false }
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .formPresentationSizing()
+        }
         .sheet(isPresented: $creatingCircle) { CircleEditorView(member: member).hcSheet() }
         .sheet(item: $editing) { circle in
             CircleEditorView(member: member, circle: circle).hcSheet()

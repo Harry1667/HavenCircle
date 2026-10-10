@@ -12,6 +12,7 @@ struct InviteFamilySection: View {
     @AppStorage(SettingsKeys.profileFamilyRole) private var familyRole = ""
 
     @State private var signInGate = SignInGate()
+    @State private var nameGate = NamePromptGate()
     @State private var showInviteOptions = false
     @State private var showRoleSelect = false
     @State private var isWorking = false
@@ -22,13 +23,13 @@ struct InviteFamilySection: View {
             switch sync.state {
             case .noAccount:
                 Button {
-                    signInGate.perform { await startInvite() }
+                    nameGate.perform { signInGate.perform { await startInvite() } }
                 } label: {
                     Label("邀請更多家人", systemImage: "person.crop.circle.badge.plus")
                 }
             default:
                 Button {
-                    Task { await startInvite() }
+                    nameGate.perform { Task { await startInvite() } }
                 } label: {
                     HStack {
                         Label("邀請更多家人", systemImage: "person.crop.circle.badge.plus")
@@ -47,6 +48,7 @@ struct InviteFamilySection: View {
             }
         }
         .signInPreflight(signInGate)
+        .namePrompt(nameGate)
         .sheet(isPresented: $showInviteOptions) {
             InviteOptionsView()
                 .hcSheet()

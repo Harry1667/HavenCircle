@@ -21,6 +21,7 @@ struct SafetyCheckInView: View {
     @State private var shareError: String?
     /// 登入前置把關：未登入時先彈預告卡解釋「為什麼」，登入成功後自動接續原動作
     @State private var gate = SignInGate()
+    @State private var nameGate = NamePromptGate()
 
     var body: some View {
         // 由 FamilyHubView 承載（提供 NavigationStack 與分段切換）
@@ -39,7 +40,7 @@ struct SafetyCheckInView: View {
                 ProgressView()
             } else {
                 Button("邀請家人", systemImage: "person.badge.plus") {
-                    Task { await startShare() }
+                    nameGate.perform { Task { await startShare() } }
                 }
                 .disabled(sync.state == .noAccount)
             }
@@ -55,6 +56,7 @@ struct SafetyCheckInView: View {
         .sheet(isPresented: $showInviteOptions) {
             InviteOptionsView().hcSheet()
         }
+        .namePrompt(nameGate)
         .task {
             await sync.refreshAccountStatus()
             await sync.fetchPings()

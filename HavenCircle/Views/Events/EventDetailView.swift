@@ -21,6 +21,7 @@ struct EventDetailView: View {
     // C1：情境觸發邀請——「我平安」回報完成、圈內沒有其他人時，原地展開邀請卡
     @State private var showSoloInviteCard = false
     @State private var signInGate = SignInGate()
+    @State private var nameGate = NamePromptGate()
     @State private var showRoleSelect = false
     @State private var showInviteOptions = false
     @State private var isInviting = false
@@ -71,6 +72,7 @@ struct EventDetailView: View {
             }
             // C1：情境觸發邀請的登入前置＋邀請動線（沿用 FamilyHomeView.startInviteFlow 的作法）
             .signInPreflight(signInGate)
+            .namePrompt(nameGate)
             .fullScreenCover(isPresented: $showRoleSelect) {
                 RoleSelectView(
                     onSelect: { role in
@@ -458,7 +460,7 @@ struct EventDetailView: View {
             }
             Button {
                 Analytics.track("solo_checkin_invite_tapped")
-                signInGate.perform { await startInviteFlow() }
+                nameGate.perform { signInGate.perform { await startInviteFlow() } }
             } label: {
                 Label("邀請家人", systemImage: "person.crop.circle.badge.plus")
                     .font(.body.weight(.medium))
@@ -491,7 +493,8 @@ struct EventDetailView: View {
         isReporting = true
         checkInFeedback = nil
         checkInError = nil
-        let senderName = profileName.trimmingCharacters(in: .whitespaces).isEmpty ? "我" : profileName
+        // 沒有真名就送空字串（不上傳「我」），家人端顯示「家人 N」
+        let senderName = FamilyNaming.ownUploadName()
         let success = await sync.postPing(
             senderName: senderName,
             status: status,

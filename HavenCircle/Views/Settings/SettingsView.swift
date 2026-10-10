@@ -930,6 +930,9 @@ private struct PersonalProfileView: View {
     @AppStorage(SettingsKeys.profileContactNote) private var contactNote = ""
     @Environment(\.modelContext) private var context
     @Query private var members: [LocalFamilyMember]
+    @Environment(FamilySyncService.self) private var sync
+    /// 改名同步到雲端的去抖任務：打字中不要每個字都寫一次 Firestore
+    @State private var cloudSyncTask: Task<Void, Never>?
 
     private var me: LocalFamilyMember? { members.first(where: \.isCurrentUser) }
 
@@ -956,6 +959,7 @@ private struct PersonalProfileView: View {
             }
             .onChange(of: displayName) { _, newValue in
                 syncMemberName(displayName: newValue, familyRole: familyRole)
+                scheduleCloudSync()
             }
 
             Section {
@@ -977,6 +981,7 @@ private struct PersonalProfileView: View {
             }
             .onChange(of: familyRole) { _, newValue in
                 syncMemberName(displayName: displayName, familyRole: newValue)
+                scheduleCloudSync()
             }
 
             Section("緊急聯絡備註") {
@@ -1019,6 +1024,16 @@ private struct PersonalProfileView: View {
         .buttonStyle(.plain)
         .accessibilityLabel(role.label)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    /// 停止打字 1 秒後，把新名字同步到雲端（成員資料與位置文件）
+    private func scheduleCloudSync() {
+        cloudSyncTask?.cancel()
+        cloudSyncTask = Task {
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            await sync.applyOwnNameChange(context: context)
+        }
     }
 
     /// 同步到本人的家庭成員資料：安否回報署名（senderName）與家人清單都靠它，

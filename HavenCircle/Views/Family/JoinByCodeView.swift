@@ -266,7 +266,8 @@ struct JoinByCodeView: View {
            !name.isEmpty, name != "我的家庭" {
             return name
         }
-        if let owner = preview.ownerName?.trimmingCharacters(in: .whitespacesAndNewlines), !owner.isEmpty {
+        let owner = FamilyNaming.clean(preview.ownerName)
+        if !owner.isEmpty {
             return "\(owner) 的家庭圈"
         }
         return "這組邀請碼的家庭圈"
@@ -282,8 +283,8 @@ struct JoinByCodeView: View {
             return name
         }
         // 邀請者沒有設名字時後端會補「圈主」這個預設稱呼，不能拿來當人名顯示成「圈主 的安心圈」
-        if let owner = preview.ownerName?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !owner.isEmpty, owner != "圈主" {
+        let owner = FamilyNaming.clean(preview.ownerName)
+        if !owner.isEmpty {
             return "\(owner) 的安心圈"
         }
         return "家人的安心圈"

@@ -27,7 +27,11 @@ private func roleEmoji(for name: String) -> String {
 /// 還沒回報過就明講「尚未回報」，不是留白讓人猜。
 private func lastPingText(_ member: LocalFamilyMember, pings: [SafetyPing]) -> String {
     guard let ping = pings
-        .filter({ $0.senderName == member.name })
+        .filter({
+            // 優先用 uid 對人（名字可能是讀取端補的「家人 N」或會改名）；沒有 uid 的舊資料才比名字
+            if let key = member.sharedIdentityKey, !$0.senderUid.isEmpty { return $0.senderUid == key }
+            return $0.senderName == member.name
+        })
         .max(by: { $0.createdAt < $1.createdAt }) else {
         return "平安回報：尚未回報"
     }
@@ -104,6 +108,7 @@ struct FamilyHomeView: View {
 
     // 邀請流程（空狀態的主 CTA／單人邀請碼卡）
     @State private var signInGate = SignInGate()
+    @State private var nameGate = NamePromptGate()
     @State private var showInviteOptions = false
     @State private var showJoinByCode = false
     @State private var showRoleSelect = false
@@ -176,6 +181,7 @@ struct FamilyHomeView: View {
             }
         }
         .signInPreflight(signInGate)
+        .namePrompt(nameGate)
         .alert(
             "更新位置",
             isPresented: Binding(get: { locationRequestToast != nil }, set: { if !$0 { locationRequestToast = nil } })
@@ -239,9 +245,11 @@ struct FamilyHomeView: View {
         .task(id: router.pendingJoinCode) {
             guard let code = router.pendingJoinCode else { return }
             router.pendingJoinCode = nil
-            signInGate.perform {
-                prefilledJoinCode = code
-                showJoinByCode = true
+            nameGate.perform {
+                signInGate.perform {
+                    prefilledJoinCode = code
+                    showJoinByCode = true
+                }
             }
         }
         // iPad：整份清單限寬置中，避免按鈕與列卡撐滿 13 吋全寬（iPhone 上無感）；
@@ -359,7 +367,7 @@ struct FamilyHomeView: View {
                     .font(.title3.weight(.bold))
                     .multilineTextAlignment(.center)
                 Button {
-                    signInGate.perform { await startInviteFlow() }
+                    nameGate.perform { signInGate.perform { await startInviteFlow() } }
                 } label: {
                     // 問題2：未登入時先講成本再讓人按——「登入並邀請家人」比裸「邀請家人」
                     // 更誠實，不會讓人點下去才發現還要先過一關登入。
@@ -394,9 +402,11 @@ struct FamilyHomeView: View {
                 // 問題2：阿嬤是被邀請方——小灰字容易被當成無用的免責宣告直接忽略，
                 // 升級成次要按鈕樣式，跟主鈕同寬同尺寸但視覺次要（#16：輸碼入口置頂可見）
                 Button {
-                    signInGate.perform {
-                        prefilledJoinCode = nil
-                        showJoinByCode = true
+                    nameGate.perform {
+                        signInGate.perform {
+                            prefilledJoinCode = nil
+                            showJoinByCode = true
+                        }
                     }
                 } label: {
                     HCCenteredLabel("我收到了邀請碼", systemImage: "number.square")
