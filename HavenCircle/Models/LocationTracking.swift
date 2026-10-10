@@ -159,8 +159,10 @@ struct LocationProfile: Equatable {
 
     static let moving = LocationProfile(desiredAccuracy: kCLLocationAccuracyHundredMeters, distanceFilter: 50)
     /// 靜止：精度維持 100 公尺（1 公里精度的定位很少回呼、上傳端還會因精度 > 1000 公尺拒收），
-    /// 且不設距離門檻——讓系統持續有定位回呼喚醒 App，回呼端（LocationService）再節流成每 5 分鐘一筆心跳
-    static let stationary = LocationProfile(desiredAccuracy: kCLLocationAccuracyHundredMeters, distanceFilter: kCLDistanceFilterNone)
+    /// 距離門檻 25 公尺。2026-10-10 實機回報整體卡死：原本設 kCLDistanceFilterNone，系統約每秒回呼一次，
+    /// 主執行緒被定位回呼與連帶的管線重算佔滿。改成 25 公尺：人待在原地幾乎沒有回呼，
+    /// 5 分鐘心跳由 LocationService 的心跳排程（暫時放開門檻＋requestLocation()）保底。
+    static let stationary = LocationProfile(desiredAccuracy: kCLLocationAccuracyHundredMeters, distanceFilter: 25)
 
     static func profile(for state: MotionState) -> LocationProfile {
         state == .moving ? .moving : .stationary

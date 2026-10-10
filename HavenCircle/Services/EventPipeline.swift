@@ -102,10 +102,13 @@ enum EventPipeline {
         if minInterval > 0, let last = lastRefreshFinishedAt, Date.now.timeIntervalSince(last) < minInterval { return }
         isRefreshing = true
         defer { isRefreshing = false; lastRefreshFinishedAt = .now }
+        // 補跑最多一次，避免呼叫端高頻要求時變成無限迴圈
+        var runs = 0
         repeat {
             rerunRequested = false
             await performRefresh(context: context)
-        } while rerunRequested
+            runs += 1
+        } while rerunRequested && runs < 2
     }
 
     private static var rerunRequested = false

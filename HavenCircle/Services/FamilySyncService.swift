@@ -758,9 +758,10 @@ final class FamilySyncService {
             let changed = applyLiveLocationSnapshots(resolved, context: context)
             if changed {
                 context.saveReporting()
-                // 家人位置變了不代表事件資料變了：管線刷新要打 7 個網路來源，
-                // 這裡限流（距上次刷新 90 秒內不重跑），事件資料本身另有 5 分鐘定時與回前景刷新
-                await EventPipeline.refresh(context: context, minInterval: 90)
+                // 家人位置變了不代表事件資料變了：管線刷新要打 7 個網路來源。
+                // 只有圈新增／刪除或位移 > 200 公尺才在 30 秒限流下重跑，其餘（心跳、小幅位移）至少隔 5 分鐘；
+                // 事件資料本身另有 5 分鐘定時與回前景刷新
+                await EventPipeline.refresh(context: context, minInterval: lastProjectionSignificant ? 30 : 300)
             }
         } catch {
             AppLog.cloud.error("讀取即時位置失敗：\(error.localizedDescription)")
@@ -768,10 +769,15 @@ final class FamilySyncService {
     }
 
     /// 把家人即時位置投影成本機 SwiftData 即時圈，讓警報比對／地圖／摘要共用同一套圈資料。
+    /// 上一次投影是否有「值得重跑警報比對」的變動：圈新增／刪除、或圈心位移 > 200 公尺、半徑改變。
+    /// 只有心跳（updatedAt 刷新）或小幅位移不算——它們不會改變任何事件與圈的命中關係。
+    private var lastProjectionSignificant = false
+
     private func applyLiveLocationSnapshots(
         _ locations: [FamilyLiveLocation],
         context: ModelContext
     ) -> Bool {
+        lastProjectionSignificant = false
         let selfUID = uid ?? ""
         var members = (try? context.fetch(FetchDescriptor<LocalFamilyMember>())) ?? []
         var circles = (try? context.fetch(FetchDescriptor<LocalLifeCircle>())) ?? []
@@ -783,6 +789,7 @@ final class FamilySyncService {
             guard let sourceID = circle.sharedLocationID, !activeIDs.contains(sourceID) else { continue }
             context.delete(circle)
             changed = true
+            lastProjectionSignificant = true
         }
 
         for location in activeLocations {
@@ -829,8 +836,14 @@ final class FamilySyncService {
                 context.insert(circle)
                 circles.append(circle)
                 changed = true
+                lastProjectionSignificant = true
             }
 
+            if circle.radiusMeters != location.radiusMeters
+                || CLLocation(latitude: circle.latitude, longitude: circle.longitude)
+                    .distance(from: CLLocation(latitude: location.latitude, longitude: location.longitude)) > 200 {
+                lastProjectionSignificant = true
+            }
             if circle.latitude != location.latitude
                 || circle.longitude != location.longitude
                 || circle.radiusMeters != location.radiusMeters
@@ -1405,7 +1418,7 @@ final class FamilySyncService {
             if changed {
                 context.saveReporting()
                 GeofenceSync.sync(context: context)
-                await EventPipeline.refresh(context: context)
+                await EventPipeline.refresh(context: context, minInterval: 120)
             }
         } catch {
             AppLog.cloud.error("同步共用守護地點失敗：\(error.localizedDescription)")
