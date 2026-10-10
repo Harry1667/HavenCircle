@@ -24,6 +24,12 @@ struct SafetyMapView: View {
     /// 2026-07-24：改用 @AppStorage 記住使用者在圖層選單裡的選擇——開過一次之後，
     /// 下次開 App 不必重新再開一次（純顯示偏好，不影響通知判定）。
     @AppStorage(SettingsKeys.mapShowShelters) private var showShelters = false
+    /// 地圖顯示範圍（只影響地圖呈現，不影響推播與警報判斷）
+    @AppStorage(SettingsKeys.mapDisplayScope) private var mapDisplayScopeRaw = MapDisplayScope.family.rawValue
+    /// 相關縣市（依顯示範圍計算、已快取）：座標或成員變動時才由 refreshRelevantCounties 重算，
+    /// 不在 body 內做點面內判。空集合＝還沒定位／沒有任何座標，退回全台不過濾。
+    @State private var relevantCounties: [String] = []
+    @State private var countyHighlights: [CountyHighlight] = []
     @AppStorage(SettingsKeys.mapShowHospitals) private var showHospitals = false
     /// 目前鏡頭範圍，供資源圖層做視野內過濾
     @State private var visibleRegion: MKCoordinateRegion?
@@ -80,8 +86,124 @@ struct SafetyMapView: View {
 
     /// 套用圖層過濾後、顯示在地圖與卡片上的事件
     private var filteredEvents: [LocalSafetyEvent] {
-        allActiveEvents.filter {
+        let scope = scopeCounties
+        return allActiveEvents.filter {
             enabledTypes.contains($0.eventType) && (showUnverified || $0.isOfficiallyConfirmed)
+                && isInScope($0, scope)
+        }
+    }
+
+    // MARK: - 地圖顯示範圍（依縣市）
+
+    private struct CountyHighlight: Identifiable {
+        let id: String
+        let ring: [CLLocationCoordinate2D]
+    }
+
+    private var mapDisplayScope: MapDisplayScope {
+        MapDisplayScope(rawValue: mapDisplayScopeRaw) ?? .family
+    }
+
+    /// 生效中的縣市過濾集合；nil＝不過濾（範圍為全台，或相關縣市為空）
+    private var scopeCounties: Set<String>? {
+        guard mapDisplayScope != .all, !relevantCounties.isEmpty else { return nil }
+        return Set(relevantCounties)
+    }
+
+    /// 事件是否在範圍內：演練事件一律顯示；座標不在任何縣市內（海上等）也保留，寧可多顯示不漏掉
+    private func isInScope(_ event: LocalSafetyEvent, _ scope: Set<String>?) -> Bool {
+        guard let scope, !event.isDrill else { return true }
+        guard let county = CountyBoundaries.shared.county(
+            at: CLLocationCoordinate2D(latitude: event.latitude, longitude: event.longitude)
+        ) else { return true }
+        return scope.contains(county)
+    }
+
+    /// 相關縣市的輸入指紋（座標取小數 2 位≈1km）：指紋不變就不重算
+    private var relevantCountiesKey: String {
+        var parts: [String] = [mapDisplayScopeRaw]
+        func tag(_ lat: Double, _ lon: Double) -> String { String(format: "%.2f,%.2f", lat, lon) }
+        if let c = LocationService.shared.lastCoordinate { parts.append("me" + tag(c.latitude, c.longitude)) }
+        if mapDisplayScope == .family {
+            for loc in sync.liveLocations where loc.isSharing {
+                parts.append("l" + tag(loc.latitude, loc.longitude))
+            }
+        }
+        for member in members where mapDisplayScope == .family || member.isCurrentUser {
+            for circle in member.lifeCircles {
+                parts.append("c" + tag(circle.latitude, circle.longitude))
+            }
+        }
+        return parts.joined(separator: "|")
+    }
+
+    private func refreshRelevantCounties() {
+        let boundaries = CountyBoundaries.shared
+        var counties = Set<String>()
+        func add(_ lat: Double, _ lon: Double) {
+            if let name = boundaries.county(at: .init(latitude: lat, longitude: lon)) { counties.insert(name) }
+        }
+        var hasOwnLocation = false
+        if let c = LocationService.shared.lastCoordinate {
+            add(c.latitude, c.longitude)
+            hasOwnLocation = !counties.isEmpty
+        }
+        switch mapDisplayScope {
+        case .all:
+            break
+        case .mine:
+            // 沒有定位時退而用本人的守護地點／即時圈所在縣市
+            if !hasOwnLocation {
+                for circle in members.filter(\.isCurrentUser).flatMap(\.lifeCircles) {
+                    add(circle.latitude, circle.longitude)
+                }
+            }
+        case .family:
+            for loc in sync.liveLocations where loc.isSharing { add(loc.latitude, loc.longitude) }
+            for circle in members.flatMap(\.lifeCircles) { add(circle.latitude, circle.longitude) }
+        }
+        let sorted = counties.sorted()
+        if sorted != relevantCounties { relevantCounties = sorted }
+        let highlights = mapDisplayScope == .all ? [] : sorted.flatMap { county in
+            boundaries.outline(for: county).enumerated().map { index, ring in
+                CountyHighlight(id: "\(county)-\(index)", ring: ring)
+            }
+        }
+        if highlights.map(\.id) != countyHighlights.map(\.id) { countyHighlights = highlights }
+    }
+
+    /// 範圍提示膠囊文字：最多列 3 個縣市，超過改「台中市等 4 個縣市」
+    private var scopePillText: String {
+        let names = relevantCounties
+        let list = names.count > 3 ? "\(names[0])等 \(names.count) 個縣市" : names.joined(separator: "、")
+        return "顯示範圍：\(list)"
+    }
+
+    /// 範圍提示膠囊：點擊打開設定（與右上角齒輪同一路徑），文字明確標示目前範圍
+    @ViewBuilder
+    private var scopePill: some View {
+        if mapDisplayScope != .all, !relevantCounties.isEmpty {
+            Button {
+                router.showSettings = true
+            } label: {
+                HStack(spacing: HCSpacing.x2) {
+                    Image(systemName: "scope")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(HCColor.countyHighlight)
+                    Text(scopePillText)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                    Text("｜調整")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(HCColor.brand)
+                }
+                .padding(.horizontal, HCSpacing.x3)
+                .padding(.vertical, 6)
+                .background(.thinMaterial, in: Capsule())
+                .overlay(Capsule().stroke(HCColor.countyHighlight.opacity(0.7), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(scopePillText)，點擊調整地圖顯示範圍")
         }
     }
 
@@ -250,6 +372,10 @@ struct SafetyMapView: View {
                 .overlay(alignment: .top) {
                     topOverlays
                 }
+                // 相關縣市：輸入指紋變了才重算（含首次進場）
+                .onChange(of: relevantCountiesKey, initial: true) {
+                    refreshRelevantCounties()
+                }
                 // 圖例：地圖有多層塗色，沒有圖例評審與使用者都無法自行解讀顏色
                 // （含治安層免責：統計≠即時安全程度，避免標籤化社區——產品倫理要求）
                 .overlay(alignment: .bottomLeading) {
@@ -319,8 +445,11 @@ struct SafetyMapView: View {
                 }
             }
         }
+        let scope = scopeCounties
         return severityByTown.flatMap { town, info in
-            DistrictBoundaries.shared.districts(named: town).flatMap { district in
+            DistrictBoundaries.shared.districts(named: town)
+                .filter { scope?.contains(CountyBoundaries.normalize($0.county)) ?? true }
+                .flatMap { district in
                 district.rings.enumerated().map { index, ring in
                     AlertArea(id: "\(district.county)-\(town)-\(index)", ring: ring, severityRank: info.rank)
                 }
@@ -388,6 +517,13 @@ struct SafetyMapView: View {
                         .foregroundStyle(color.opacity(isSevere ? 0.20 : 0.07))
                         .stroke(color.opacity(isSevere ? 0.6 : 0.18), lineWidth: isSevere ? 1.5 : 0.5)
                 }
+            }
+            // 顯示範圍的縣市外框金色高光：底層寬光暈＋上層細實線；放在事件標記之前，標記永遠在上層
+            ForEach(countyHighlights) { highlight in
+                MapPolyline(coordinates: highlight.ring)
+                    .stroke(HCColor.countyHighlight.opacity(0.35), lineWidth: 6)
+                MapPolyline(coordinates: highlight.ring)
+                    .stroke(HCColor.countyHighlight, lineWidth: 2)
             }
             if showCircles {
                 ForEach(visibleCircles) { circle in
@@ -780,6 +916,7 @@ struct SafetyMapView: View {
     private var topOverlays: some View {
         VStack(spacing: HCSpacing.x2) {
             safetySummary
+            scopePill
             // 靜音生效期間常駐提示：誤觸靜音鈕後最容易被忽略的就是「沒有任何持續提示」，
             // 這顆 chip 跟摘要膠囊一樣永遠在視野裡，點一下立刻恢復，不必特地去工具列找。
             if isPaused {

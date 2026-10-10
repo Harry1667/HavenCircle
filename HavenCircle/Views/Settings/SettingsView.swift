@@ -1056,6 +1056,7 @@ private struct AlertSettingsView: View {
     @AppStorage(SettingsKeys.digestHour) private var digestHour = 20
     // D4：通知自主權——吵醒門檻與安靜時段（實際攔截在 NotificationScheduler.effectiveTimeSensitive）
     @AppStorage(SettingsKeys.wakeThreshold) private var wakeThresholdRaw = WakeThreshold.standard.rawValue
+    @AppStorage(SettingsKeys.mapDisplayScope) private var mapDisplayScopeRaw = MapDisplayScope.family.rawValue
     @AppStorage(SettingsKeys.quietHoursEnabled) private var quietHoursEnabled = false
     @AppStorage(SettingsKeys.quietStartHour) private var quietStartHour = 22
     @AppStorage(SettingsKeys.quietEndHour) private var quietEndHour = 7
@@ -1136,6 +1137,18 @@ private struct AlertSettingsView: View {
                 Text("警戒範圍")
             } footer: {
                 Text("以你的位置為圓心，這個半徑內發生的事件才會提醒你。改了會立即套用到地圖上的圈與警報判斷；分享位置中時家人也會看到新的範圍。")
+            }
+            Section {
+                Picker("地圖顯示範圍", selection: $mapDisplayScopeRaw) {
+                    ForEach(MapDisplayScope.allCases) { scope in
+                        Text(scope.title).tag(scope.rawValue)
+                    }
+                }
+                .accessibilityIdentifier("mapDisplayScopePicker")
+            } header: {
+                Text("地圖")
+            } footer: {
+                Text("只影響地圖上顯示的事件，不影響通知。範圍內的縣市邊界會用金色描出。")
             }
             Section("勿擾與吵醒") {
                 Picker("吵醒門檻", selection: $wakeThresholdRaw) {

@@ -29,6 +29,8 @@ private extension UIColor {
 
 /// 語意色票：命名說「用途」不說「顏色」，之後換色不用改呼叫端
 enum HCColor {
+    /// 地圖「顯示範圍」縣市外框高光（金色）；搭配「顯示範圍：…」文字膠囊，不單靠顏色傳達
+    static let countyHighlight = Color(red: 0.96, green: 0.78, blue: 0.25)
     /// 品牌主色（深群青）：CTA、選取狀態、生活圈。與 AccentColor.colorset 同值。
     static let brand = Color(light: 0x3657D6, dark: 0x89A0FF)
     /// 無需注意、回報平安、操作成功。

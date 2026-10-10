@@ -88,6 +88,32 @@ enum SettingsKeys {
     static let mapShowShelters = "mapShowShelters"
     /// 急救責任醫院圖層開關；預設關，理由同避難收容所
     static let mapShowHospitals = "mapShowHospitals"
+    /// 地圖顯示範圍（MapDisplayScope.rawValue）：只影響地圖上畫哪些縣市的事件與塗層，不影響通知判斷
+    static let mapDisplayScope = "mapDisplayScope"
+}
+
+/// 地圖顯示範圍：預設只畫「我和家人所在的縣市」，全台事件與塗層太雜也拖慢舊機型。
+/// 僅影響地圖呈現——推播與警報判斷依守護圈半徑，與這裡完全無關。
+enum MapDisplayScope: String, CaseIterable, Identifiable {
+    case family  // 我和家人的縣市（預設）：本人位置、家人即時位置、所有守護地點所在縣市
+    case mine    // 只有我所在的縣市
+    case all     // 全台
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .family: "我和家人的縣市"
+        case .mine: "只有我所在的縣市"
+        case .all: "全台"
+        }
+    }
+
+    /// 目前設定值（鍵不存在時預設「我和家人的縣市」）
+    static var current: MapDisplayScope {
+        let raw = UserDefaults.standard.string(forKey: SettingsKeys.mapDisplayScope)
+        return raw.flatMap(MapDisplayScope.init(rawValue:)) ?? .family
+    }
 }
 
 /// 吵醒門檻：勿擾／靜音下，時效性通知能不能突破。使用者在設定頁「勿擾與吵醒」調整；

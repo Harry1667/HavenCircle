@@ -36,6 +36,10 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
     var onRegionTransition: ((RegionTransition) -> Void)?
     /// 目前所在的守護地點（地理圍欄判斷；持久化，背景重啟後仍有效）
     private(set) var currentPlace: CurrentPlace? = LocationService.loadCurrentPlace()
+    /// 最近已知位置（只在位移超過 [lastCoordinateMinMove] 才更新）：供地圖判斷「我所在的縣市」。
+    /// 節流是因為 @Observable 一更新就會讓讀它的畫面重算，縣市尺度用不到每次定位回呼。
+    private(set) var lastCoordinate: CLLocationCoordinate2D?
+    private static let lastCoordinateMinMove: CLLocationDistance = 2_000
     private var hasFollowCircle = false
     private var liveSharingEnabled = false
     /// 心跳排程：分享期間每 15 秒醒來檢查一次是否該補一筆「仍在此處」（到期才真的取位，平常不耗電；15 秒是為了上傳失敗時能快速重試）
@@ -62,6 +66,7 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
         manager.pausesLocationUpdatesAutomatically = false
         manager.delegate = self
         authorization = manager.authorizationStatus
+        lastCoordinate = manager.location?.coordinate
     }
 
     var isAuthorized: Bool {
@@ -297,6 +302,11 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let latest = locations.last else { return }
+        if lastCoordinate.map({
+            CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: latest) >= Self.lastCoordinateMinMove
+        }) ?? true {
+            lastCoordinate = latest.coordinate
+        }
         let arrivedAt = Date.now
         if liveSharingEnabled, motionDetector.state == .stationary, oneShot == nil, !heartbeatAwaitingFix,
            let lastProcessedFixAt,
