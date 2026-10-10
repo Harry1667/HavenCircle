@@ -22,6 +22,10 @@ struct MemberDetailView: View {
             if member.isCurrentUser {
                 // 自己的詳情頁直接放即時圈控制，不再是「請回家人頁開啟」的死路文字
                 LiveCircleSharingSection()
+                if let uid = AuthService.shared.uid,
+                   UserDefaults.standard.bool(forKey: SettingsKeys.liveLocationSharingEnabled) {
+                    MemberTrailSection(uid: uid)
+                }
             } else if member.isPlace {
                 placeCircleSection
             } else {
@@ -35,7 +39,14 @@ struct MemberDetailView: View {
                         ForEach(liveCircles) { circle in
                             circleRow(circle)
                         }
+                        if let uid = member.sharedIdentityKey {
+                            RequestLocationButton(uid: uid, name: member.name)
+                        }
                     }
+                }
+                if !member.lifeCircles.filter({ $0.kind == .live }).isEmpty,
+                   let uid = member.sharedIdentityKey {
+                    MemberTrailSection(uid: uid)
                 }
                 legacyFixedCircleSection
             }

@@ -42,7 +42,8 @@ private func locationStatusText(_ member: LocalFamilyMember) -> String {
         isCurrentUser: member.isCurrentUser,
         sharingEnabled: UserDefaults.standard.bool(forKey: SettingsKeys.liveLocationSharingEnabled),
         hasLiveCircle: live != nil,
-        lastReportedAt: live?.locationUpdatedAt
+        lastReportedAt: live?.locationUpdatedAt,
+        statusDetail: live?.locationFreshnessText
     )
 }
 
@@ -91,6 +92,8 @@ struct FamilyHomeView: View {
     @AppStorage(SettingsKeys.appleAccountEmail) private var appleAccountEmail = ""
 
     @State private var addingPlace = false
+    /// 「更新位置」滑動操作的結果提示
+    @State private var locationRequestToast: String?
     /// 地點額度閘門觸發時開這個付費頁（見 [gateAddPlace]）
     @State private var showPaywall = false
     /// 剛儲存的家人/地點：編輯器收合後接著替它開固定圈編輯器（兩段式流程合併成一段）
@@ -173,6 +176,14 @@ struct FamilyHomeView: View {
             }
         }
         .signInPreflight(signInGate)
+        .alert(
+            "更新位置",
+            isPresented: Binding(get: { locationRequestToast != nil }, set: { if !$0 { locationRequestToast = nil } })
+        ) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(locationRequestToast ?? "")
+        }
         .sheet(isPresented: $addingPlace, onDismiss: presentPendingCircleEditor) {
             // 名字用點擊選擇取代打字（少一步輸入畫面）。選定後先把地點成員建好、暫存起來，
             // 等這個 sheet「完全關閉」再由 onDismiss 開圈編輯器——不能在關閉動畫途中就 present
@@ -565,6 +576,25 @@ struct FamilyHomeView: View {
                         )
                     )
                     .listRowBackground(Color.clear)
+                    .swipeActions(edge: .leading) {
+                        // 請這位家人的手機現在回報一次位置（對方沒開分享就不會回應）
+                        if !member.isCurrentUser, let uid = member.sharedIdentityKey,
+                           member.lifeCircles.contains(where: { $0.kind == .live }) {
+                            Button {
+                                Task {
+                                    let name = UserDefaults.standard.string(forKey: SettingsKeys.profileDisplayName) ?? ""
+                                    switch await sync.requestLocationUpdate(forUid: uid, requesterName: name) {
+                                    case .sent: locationRequestToast = "已通知\(member.name)的手機更新位置"
+                                    case .cooldown(let seconds): locationRequestToast = "剛剛已請\(member.name)更新過，\(seconds) 秒後可再試"
+                                    case .failed(let reason): locationRequestToast = reason
+                                    }
+                                }
+                            } label: {
+                                Label("更新位置", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            .tint(HCColor.brand)
+                        }
+                    }
                     .swipeActions {
                         // 自己這列不給滑動刪除：刪掉的是本機的「自己」成員資料，不是退出家庭圈
                         // （退出家庭圈有專門的 leaveFamilySection，語意不同，不能被滑一下誤觸）

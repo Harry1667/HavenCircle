@@ -35,12 +35,19 @@ enum LiveLocationPresence {
         sharingEnabled: Bool,
         hasLiveCircle: Bool,
         lastReportedAt: Date?,
+        statusDetail: String? = nil,
         now: Date = .now
     ) -> String {
         if isCurrentUser {
             guard sharingEnabled else { return "位置：未分享給家人" }
         } else {
             guard hasLiveCircle else { return "位置：未分享位置" }
+        }
+        // 有完整狀態句（在家・從 08:30 起／移動中／停留…／N 分鐘沒有回報）就直接用，
+        // 本人手機自己的位置不會「失聯」，所以本人過期時仍走下面的舊文案
+        if let statusDetail, !statusDetail.isEmpty,
+           !isCurrentUser || isReporting(lastReportedAt: lastReportedAt, now: now) {
+            return "位置：\(statusDetail)"
         }
         guard isReporting(lastReportedAt: lastReportedAt, now: now), let lastReportedAt else {
             return "位置：超過 15 分鐘未更新"

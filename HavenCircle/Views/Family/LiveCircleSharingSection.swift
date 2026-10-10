@@ -9,6 +9,9 @@ struct LiveCircleSharingSection: View {
     @AppStorage(SettingsKeys.liveLocationSharingEnabled) private var isSharing = false
     @AppStorage(SettingsKeys.liveCircleRadiusMeters) private var radiusMeters = 1_000
     @State private var isWorking = false
+    @Environment(\.openURL) private var openURL
+    /// @Observable：授權狀態改變（使用者從設定改成「永遠」回來）時這個畫面會自己更新
+    private let location = LocationService.shared
 
     private var iCloudUnavailable: Bool {
         sync.state == .noAccount
@@ -44,6 +47,8 @@ struct LiveCircleSharingSection: View {
                     }
                     .font(.caption)
                 }
+
+                permissionGuidance
             } else {
                 Label(
                     iCloudUnavailable ? "尚未登入 Apple 帳號，分享功能目前不可用" : "即時位置分享已停止",
@@ -61,7 +66,7 @@ struct LiveCircleSharingSection: View {
         } header: {
             Text("我的即時圈")
         } footer: {
-            Text("位置只同步給家庭圈成員（以 Apple 帳號登入辨識），並可隨時停止。畫面會顯示最後更新時間；超過 15 分鐘即視為過期，不參與提醒判斷。")
+            Text("位置只同步給家庭圈成員（以 Apple 帳號登入辨識），並可隨時停止。分享期間會保留最近 24 小時的軌跡，並在你到達或離開守護地點時通知家人；關閉分享就會刪除軌跡。畫面會顯示最後更新時間；超過 15 分鐘即視為過期，不參與提醒判斷。")
         }
         .task(id: radiusMeters) {
             guard isSharing, !iCloudUnavailable else { return }
@@ -72,6 +77,43 @@ struct LiveCircleSharingSection: View {
             }
             await publishCurrentLocation()
         }
+    }
+
+    /// 定位權限狀態與背景定位提醒（分享中才顯示）。不強迫升級：「使用期間」可正常使用，
+    /// 只是 App 在背景時家人可能較久才看到更新；要升級由使用者自己按「前往設定」。
+    @ViewBuilder
+    private var permissionGuidance: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            switch location.authorization {
+            case .authorizedAlways:
+                Label("定位權限：永遠（背景持續更新中）", systemImage: "location.fill")
+                    .font(.caption)
+            case .authorizedWhenInUse:
+                Label("定位權限：使用期間", systemImage: "location")
+                    .font(.caption)
+                Text("目前 App 在背景時定位會停止，家人可能較久才看到你的位置。若希望像「尋找」一樣持續更新、到家或離開守護地點時通知家人，可到設定改成「永遠」；不改也能正常使用，隨時可以暫停分享。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("前往設定") { openAppSettings() }
+                    .font(.caption.weight(.semibold))
+            case .denied, .restricted:
+                Label("定位權限：已關閉", systemImage: "location.slash")
+                    .font(.caption)
+                    .foregroundStyle(HCColor.attention)
+                Button("前往設定") { openAppSettings() }
+                    .font(.caption.weight(.semibold))
+            default:
+                Label("定位權限：尚未決定", systemImage: "location")
+                    .font(.caption)
+            }
+            Text("請不要在多工畫面把安心圈滑掉，否則背景定位會停止，家人就看不到你的最新位置。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func openAppSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
     }
 
     /// 「分享中・剛剛更新」／「等待第一次位置更新」／失聯文案
