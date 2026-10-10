@@ -52,8 +52,10 @@ struct SafetyMapView: View {
     @State private var cameraPosition: MapCameraPosition = .region(Self.taiwanWideRegion)
     /// 地圖的具名座標空間：
     private static let mapSpace = "safetyMapSpace"
-    /// 跨縣市以上視野改顯示數字叢集，避免全國尺度的事件標記互相遮擋。
-    private static let eventClusterZoomThreshold: CLLocationDegrees = 1.5
+    /// 城市尺度以上（約 13 公里）就改顯示數字叢集。
+    /// 2026-10-11 實機回報地圖拖不動：原門檻 1.5° 只在全台視野才叢集，台中到新竹這種常用視野
+    /// 會同時畫上百個自訂 SwiftUI 標記，iPhone 12 拖曳與換頁都明顯卡頓。
+    private static let eventClusterZoomThreshold: CLLocationDegrees = 0.12
     /// 每個方向切成八格，兼顧叢集密度與線性分組成本。
     private static let eventClusterGridDivisions = 8
     /// 首次有跟隨圈時，圈心會先建在暫時位置、再背景校正到實際位置；校正落地前鏡頭要跟著重新取景。
@@ -83,16 +85,22 @@ struct SafetyMapView: View {
         }
     }
 
-    /// 地圖尚未回報鏡頭範圍時維持逐筆標記，避免首屏狀態不確定。
+    /// 叢集與逐筆標記共用的鏡頭範圍：地圖尚未回報時以開圖預設的全台視野估算，
+    /// 首屏就先叢集，不會在第一次回報前先畫出上百個標記。
+    private var clusteringRegion: MKCoordinateRegion {
+        visibleRegion ?? Self.taiwanWideRegion
+    }
+
     private var isEventClusteringEnabled: Bool {
-        guard let region = visibleRegion else { return false }
+        let region = clusteringRegion
         return region.span.latitudeDelta > Self.eventClusterZoomThreshold
             || region.span.longitudeDelta > Self.eventClusterZoomThreshold
     }
 
     /// 遠距視野只聚合真實事件；演練標記一律保留原本的鈴鐺圖示。
     private var eventClusters: [EventCluster] {
-        guard isEventClusteringEnabled, let region = visibleRegion else { return [] }
+        guard isEventClusteringEnabled else { return [] }
+        let region = clusteringRegion
         let items = filteredEvents.lazy
             .filter { !$0.isDrill }
             .map {
@@ -109,6 +117,16 @@ struct SafetyMapView: View {
             region: region,
             gridDivisions: Self.eventClusterGridDivisions
         )
+    }
+
+    /// 近距視野只畫鏡頭範圍（外擴一半）內的事件，畫面外的標記不建立
+    private var eventsInView: [LocalSafetyEvent] {
+        let region = clusteringRegion
+        let latPad = region.span.latitudeDelta, lonPad = region.span.longitudeDelta
+        return filteredEvents.filter {
+            abs($0.latitude - region.center.latitude) <= latPad
+                && abs($0.longitude - region.center.longitude) <= lonPad
+        }
     }
 
     private var drillEvents: [LocalSafetyEvent] {
@@ -449,68 +467,44 @@ struct SafetyMapView: View {
                         "事件叢集",
                         coordinate: cluster.coordinate
                     ) {
-                        Button {
-                            selectedCluster = cluster
-                        } label: {
-                            Text("\(cluster.count)")
-                                .font(.system(size: 15, weight: .bold, design: .rounded))
-                                .foregroundStyle(.white)
-                                .minimumScaleFactor(0.6)
-                                .lineLimit(1)
-                                .frame(width: 40, height: 40)
-                                .background(
-                                    cluster.hasOfficialConfirmed ? HCColor.danger : HCColor.attention,
-                                    in: Circle()
-                                )
-                                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
+                        // 只有一件的格子直接畫原本的事件圖示，點擊開事件卡而不是清單
+                        if cluster.count == 1, let event = cluster.events.first {
+                            eventPin(event)
+                        } else {
+                            Button {
+                                selectedCluster = cluster
+                            } label: {
+                                Text("\(cluster.count)")
+                                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                                    .foregroundStyle(.white)
+                                    .minimumScaleFactor(0.6)
+                                    .lineLimit(1)
+                                    .frame(width: 40, height: 40)
+                                    .background(
+                                        cluster.hasOfficialConfirmed ? HCColor.danger : HCColor.attention,
+                                        in: Circle()
+                                    )
+                                    .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
+                            }
+                            .accessibilityLabel(
+                                "\(cluster.count) 件事件，\(cluster.hasOfficialConfirmed ? "含官方已確認事件" : "事件皆在持續確認中")，點擊查看清單"
+                            )
                         }
-                        .accessibilityLabel(
-                            "\(cluster.count) 件事件，\(cluster.hasOfficialConfirmed ? "含官方已確認事件" : "事件皆在持續確認中")，點擊查看清單"
-                        )
                     }
                     .annotationTitles(.hidden)
                 }
                 ForEach(drillEvents) { event in
-                    Annotation(event.isDrill ? "演練" : event.eventType,
-                               coordinate: .init(latitude: event.latitude, longitude: event.longitude)) {
-                        Button {
-                            selectEvent(event)
-                        } label: {
-                            // 演練不參與叢集，遠距視野仍沿用原本的個別鈴鐺標記。
-                            Image(systemName: event.isDrill
-                                  ? "bell.and.waves.left.and.right"
-                                  : EventCategory.icon(for: event.eventType))
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: 32, height: 32)
-                                .background(event.isOfficiallyConfirmed ? HCColor.danger : HCColor.attention, in: Circle())
-                                .overlay(Circle().stroke(.white, lineWidth: 2))
-                                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
-                        }
-                        .accessibilityLabel("\(event.title)，\(event.trustStatus)，\(event.approximateLocation)")
+                    // 演練不參與叢集，遠距視野仍沿用原本的個別鈴鐺標記。
+                    Annotation("演練", coordinate: .init(latitude: event.latitude, longitude: event.longitude)) {
+                        eventPin(event)
                     }
                     .annotationTitles(.hidden)
                 }
             } else {
-                ForEach(filteredEvents) { event in
+                ForEach(eventsInView) { event in
                     Annotation(event.isDrill ? "演練" : event.eventType,
                                coordinate: .init(latitude: event.latitude, longitude: event.longitude)) {
-                        Button {
-                            selectEvent(event)
-                        } label: {
-                            // 兩套視覺通道：圖示＝事件類型、顏色＝可信度（官方紅／確認中琥珀）；
-                            // 白色外圈讓標記在任何底圖上都可辨識
-                            Image(systemName: event.isDrill
-                                  ? "bell.and.waves.left.and.right"
-                                  : EventCategory.icon(for: event.eventType))
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: 32, height: 32)
-                                .background(event.isOfficiallyConfirmed ? HCColor.danger : HCColor.attention, in: Circle())
-                                .overlay(Circle().stroke(.white, lineWidth: 2))
-                                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
-                        }
-                        .accessibilityLabel("\(event.title)，\(event.trustStatus)，\(event.approximateLocation)")
+                        eventPin(event)
                     }
                     // 事件 pin 不顯示文字標籤：圖示已表達類型，縮遠時一堆「重大交通事故」
                     // 文字互相壓、被鄰近 pin 截斷（實機回報）；點 pin 後底部卡片有完整標題
@@ -680,6 +674,25 @@ struct SafetyMapView: View {
     }
 
     /// 點資源標記→在 Apple 地圖顯示該地點（不直接發起導航，把決定權留給使用者）
+    /// 單一事件標記：兩套視覺通道——圖示＝事件類型、顏色＝可信度（官方紅／確認中琥珀）；
+    /// 白色外圈讓標記在任何底圖上都可辨識
+    private func eventPin(_ event: LocalSafetyEvent) -> some View {
+        Button {
+            selectEvent(event)
+        } label: {
+            Image(systemName: event.isDrill
+                  ? "bell.and.waves.left.and.right"
+                  : EventCategory.icon(for: event.eventType))
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 32, height: 32)
+                .background(event.isOfficiallyConfirmed ? HCColor.danger : HCColor.attention, in: Circle())
+                .overlay(Circle().stroke(.white, lineWidth: 2))
+                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
+        }
+        .accessibilityLabel("\(event.title)，\(event.trustStatus)，\(event.approximateLocation)")
+    }
+
     private func resourceAnnotation(_ resource: EmergencyResource, icon: String, color: Color) -> some MapContent {
         Annotation(resource.name, coordinate: .init(latitude: resource.latitude, longitude: resource.longitude)) {
             Button {

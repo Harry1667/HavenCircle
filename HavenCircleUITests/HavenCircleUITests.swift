@@ -11,6 +11,8 @@ final class HavenCircleUITests: XCTestCase {
         continueAfterFailure = true
         app = XCUIApplication()
         // UX 稽核測試（Audit）自行決定啟動參數，不走既有的預先啟動
+        // 現況快照：不重啟 App，原樣拍下使用者眼前的畫面
+        if name.contains("testSnapshotNow") { return }
         if name.contains("testOnboardingTour") || name.contains("testEventsTour")
             || name.contains("testSettingsTour") || name.contains("testPaywallTour") {
             installPermissionMonitor()
@@ -613,5 +615,39 @@ final class HavenCircleUITests: XCTestCase {
             shot("儲存後-\(name)")
         }
         shot("家人頁-守護地點")
+    }
+
+    /// 診斷「整個 App 點不動」：冷啟動後傾印畫面結構、逐一試點分頁與捲動，記錄每步是否有反應
+    func testDiagnoseFreeze() throws {
+        sleep(8)
+        shot("啟動後8秒")
+        attach(text: app.debugDescription, name: "結構-啟動後")
+        for tab in ["地圖", "家人", "動態"] {
+            let b = app.tabBars.buttons[tab].firstMatch
+            let ok = b.waitForExistence(timeout: 3)
+            let hit = ok && b.isHittable
+            attach(text: "分頁 \(tab)：存在=\(ok) 可點=\(hit) selected=\(ok ? b.isSelected : false)", name: "分頁-\(tab)")
+            if ok { b.tap() }
+            sleep(3)
+            attach(text: "點完 \(tab) 後 selected=\(ok ? b.isSelected : false)", name: "點後-\(tab)")
+            shot("點\(tab)後")
+        }
+        app.swipeUp(); sleep(2); shot("上滑後")
+        attach(text: app.debugDescription, name: "結構-最後")
+    }
+
+    /// 不重啟、不點任何東西：拍下目前螢幕、App 與系統層（SpringBoard）的元素結構，找出攔住觸控的東西
+    func testSnapshotNow() throws {
+        let shotNow = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        shotNow.name = "現況"; shotNow.lifetime = .keepAlways; add(shotNow)
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        attach(text: springboard.debugDescription, name: "系統層")
+        attach(text: "App 狀態=\(app.state.rawValue)\n" + app.debugDescription, name: "App結構")
+        // 安裝測試會把 App 關掉：用 activate 正常開起來（不帶任何測試參數、不自動按掉系統彈窗），等 12 秒再拍
+        app.activate(); sleep(12)
+        let later = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        later.name = "開啟12秒後"; later.lifetime = .keepAlways; add(later)
+        attach(text: springboard.debugDescription, name: "系統層-12秒後")
+        attach(text: "App 狀態=\(app.state.rawValue)\n" + app.debugDescription, name: "App結構-12秒後")
     }
 }
