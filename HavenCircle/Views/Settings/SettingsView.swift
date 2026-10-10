@@ -550,6 +550,7 @@ struct SettingsView: View {
 private struct DisplaySettingsView: View {
     @AppStorage(SettingsKeys.appearanceMode) private var appearanceMode = AppearanceMode.system.rawValue
     @AppStorage(SettingsKeys.appTextSize) private var appTextSize = AppTextSize.system.rawValue
+    @AppStorage(SettingsKeys.appAppearance) private var appAppearance = AppAppearance.default.rawValue
 
     private var selectedAppearance: AppearanceMode {
         AppearanceMode(rawValue: appearanceMode) ?? .system
@@ -561,6 +562,21 @@ private struct DisplaySettingsView: View {
 
     var body: some View {
         List {
+            // 外觀風格：換配色與動態頁頁首；與下方「深淺」是兩件事，切換後立即生效
+            Section {
+                Picker("外觀", selection: $appAppearance) {
+                    ForEach(AppAppearance.allCases) { appearance in
+                        Text(appearance.label).tag(appearance.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("settings.appearancePicker")
+            } header: {
+                Text("外觀風格")
+            } footer: {
+                Text("兩種外觀功能相同，只有配色與頁首不同。")
+            }
+
             Section {
                 ForEach(AppearanceMode.allCases, id: \.rawValue) { mode in
                     Button {
@@ -577,7 +593,7 @@ private struct DisplaySettingsView: View {
                     .accessibilityValue(selectedAppearance == mode ? "已選取" : "未選取")
                 }
             } header: {
-                Text("外觀")
+                Text("深淺")
             } footer: {
                 Text("切換後立即套用；選「跟隨系統」會使用 iPhone 目前的深淺外觀。")
             }

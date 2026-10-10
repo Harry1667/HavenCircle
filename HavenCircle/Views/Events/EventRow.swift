@@ -49,19 +49,20 @@ struct EventRow: View {
                 standardMetadata
             }
             Spacer(minLength: 0)
-            Text(event.trustStatus)
-                .font(.caption2.weight(.semibold))
-                .lineLimit(1)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .foregroundStyle(trustColor)
-                .background(trustColor.opacity(0.12), in: Capsule())
+            trustLabel
         }
         .hcCard()
-        .overlay(
-            RoundedRectangle(cornerRadius: HCRadius.card, style: .continuous)
-                .stroke(.primary.opacity(0.08), lineWidth: 1)
-        )
+    }
+
+    /// 狀態標籤：圖示＋文字＋色（膠囊 12% 淡底），不只靠顏色
+    private var trustLabel: some View {
+        Label(event.trustStatus, systemImage: event.isOfficiallyConfirmed ? "checkmark.seal.fill" : "questionmark.circle.fill")
+            .font(.caption2.weight(.semibold))
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .foregroundStyle(trustColor)
+            .background(trustColor.opacity(0.12), in: Capsule())
     }
 
     /// 「 · N 則報導」（N>1 才有）：同一事件多篇報導合併後讓使用者知道背後有幾則
@@ -128,13 +129,15 @@ struct EventRow: View {
         .foregroundStyle(.secondary)
     }
 
+    /// 設定頁式實色圓角方塊＋反白符號；顏色＝類型色（危及生命＝紅、其餘留意級＝琥珀），
+    /// 狀態（官方確認／確認中）由旁邊的文字標籤表達
     private func eventIcon(size: CGFloat) -> some View {
         Image(systemName: iconName)
             .font(.subheadline.weight(.semibold))
-            .foregroundStyle(trustColor)
+            .foregroundStyle(HCColor.onStatus)
             .frame(width: size, height: size)
             .background(
-                trustColor.opacity(0.12),
+                EventCategory.typeColor(for: event.eventType),
                 in: RoundedRectangle(cornerRadius: HCRadius.badge, style: .continuous)
             )
             .accessibilityHidden(true)

@@ -31,12 +31,20 @@ private extension UIColor {
 enum HCColor {
     /// 地圖「顯示範圍」縣市外框高光（金色）；搭配「顯示範圍：…」文字膠囊，不單靠顏色傳達
     static let countyHighlight = Color(red: 0.96, green: 0.78, blue: 0.25)
-    /// 品牌主色（深群青）：CTA、選取狀態、生活圈。與 AccentColor.colorset 同值。
-    static let brand = Color(light: 0x3657D6, dark: 0x89A0FF)
-    /// 無需注意、回報平安、操作成功。
-    /// 刻意偏 teal（藍綠）而非標準成功綠：與品牌群青更和諧、更有識別度；
+    /// 品牌主色：CTA、選取狀態、生活圈。依 App 外觀取值（層次＝深群青，與 AccentColor.colorset 同值；
+    /// 晴空湖水＝天藍）。每次讀目前外觀，切換外觀後重建的畫面立刻拿到新色。
+    static var brand: Color { AppAppearance.current.palette.brand }
+    /// 次要強調（守護範圍線、小標籤）：層次沿用品牌色，晴空湖水為湖水青
+    static var accent2: Color { AppAppearance.current.palette.secondary }
+    /// 頁面底色：層次＝系統群組底，晴空湖水＝冷白／深靛
+    static var pageBackground: Color { AppAppearance.current.palette.background }
+    /// 實色狀態方塊（圖示方塊）上的符號色：淺色模式白字；深色模式的狀態色偏亮，白字對比不足，改近黑
+    static let onStatus = Color(light: 0xFFFFFF, dark: 0x14161C)
+    /// 無需注意、回報平安、操作成功。兩種外觀共用同一個值（狀態語意不隨外觀變）。
+    /// 2026-10-11 依晴空湖水規格改為 0x0F8A5C／0x1F9D6E：往黃綠側推（色相約 152°），
+    /// 與湖水青（182°）拉開；層次外觀也共用，「家人收到的已報平安」在兩種外觀下顏色一致。
     /// 色相仍與 medical（0x0E7C86，偏青）保持距離，地圖上盾牌與醫院標記不混淆
-    static let safe = Color(light: 0x0F8A6B, dark: 0x4AD6B8)
+    static let safe = Color(light: 0x0F8A5C, dark: 0x1F9D6E)
     /// 確認中、需留意、時段外。深色值刻意偏橘（0xFFAF52）：
     /// 與 notice 的黃（0xF5D76E）拉開色相，深色模式下兩階才分得出來
     static let attention = Color(light: 0xA96400, dark: 0xFFAF52)
@@ -136,14 +144,26 @@ struct HCCenteredLabel: View {
 }
 
 extension View {
-    /// 統一卡片：淡底＋連續圓角。不用 Material 疊 Material（會掉幀且對比不足）。
+    /// 統一卡片（層次風格）：`.regularMaterial` 單層＋極淡描邊與陰影，兩種外觀共用。
+    /// 卡片內不再放第二層 Material（疊 Material 會掉幀且對比不足）；
+    /// 要染色（例如警報底色）請用實色 fill，不要再疊材質。
     func hcCard() -> some View {
         self
             .padding(HCSpacing.x3)
-            .background(
-                .secondary.opacity(0.08),
-                in: RoundedRectangle(cornerRadius: HCRadius.card, style: .continuous)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: HCRadius.card, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: HCRadius.card, style: .continuous)
+                    .strokeBorder(.primary.opacity(0.06), lineWidth: 1)
             )
+            .shadow(color: .black.opacity(0.04), radius: 2, y: 1)
+    }
+
+    /// 頁面底：外觀頁面色＋頂端淡染色漸層（用在沒有專屬頁首背景的頁面，如家人頁）。
+    /// 同時隱藏 List 預設底色，讓這層底透出來。
+    func hcPageBackground() -> some View {
+        self
+            .scrollContentBackground(.hidden)
+            .background(alignment: .top) { HCPageBackdrop() }
     }
 }
 
@@ -215,5 +235,19 @@ extension EventCategory {
     /// 這個函式對兩者都能直接呼叫——詳情頁與（未來）地圖共用同一套判斷，紅/黃分級才對得起來。
     static func typeColor(for type: String) -> Color {
         RemoteConfig.isDangerKind(type) ? HCColor.danger : HCColor.attention
+    }
+}
+
+/// 頁面底＋頂端淡染色（隨外觀）。純色加一層漸層，沒有 Material，也不動。
+struct HCPageBackdrop: View {
+    var body: some View {
+        let palette = AppAppearance.current.palette
+        ZStack(alignment: .top) {
+            palette.background
+            LinearGradient(colors: [palette.wash, .clear], startPoint: .top, endPoint: .bottom)
+                .frame(height: 220)
+        }
+        .ignoresSafeArea()
+        .accessibilityHidden(true)
     }
 }

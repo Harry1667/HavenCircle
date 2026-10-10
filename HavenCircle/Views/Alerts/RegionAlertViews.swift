@@ -6,38 +6,56 @@ struct RegionAlertBanner: View {
     let alert: RegionAlert
     let members: [LocalFamilyMember]
 
-    /// 危急/警戒（rank ≥ 2）視覺升級：實底圖示徽章，掃視時第一眼就跳出來
-    private var isSevere: Bool { alert.severityRank >= 2 }
+    /// 嚴重度標籤的圖示（與文字並列，色盲也分得出層級）
+    private var severityIcon: String {
+        switch alert.severityRank {
+        case 2...: "exclamationmark.triangle.fill"
+        case 1: "exclamationmark.circle.fill"
+        default: "info.circle.fill"
+        }
+    }
 
     var body: some View {
-        HStack(spacing: HCSpacing.x3) {
-            // 左側嚴重度條＋依嚴重度取色：危急/警戒紅、注意橘、留意黃。
-            // 「哪則重要」不能只靠讀完標題才知道
-            RoundedRectangle(cornerRadius: 2)
-                .fill(alert.severityColor)
-                .frame(width: 4)
+        HStack(alignment: .top, spacing: HCSpacing.x3) {
+            // 設定頁式實色方塊＋反白符號，顏色依嚴重度（危急/警戒紅、注意橘、留意黃）；
+            // 取消舊的左側色條——它與圖示是同一件事的兩次表達
             Image(systemName: alert.iconName)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(isSevere ? Color.white : alert.severityColor)
+                .foregroundStyle(HCColor.onStatus)
                 .frame(width: 34, height: 34)
-                .background(
-                    isSevere ? AnyShapeStyle(alert.severityColor) : AnyShapeStyle(alert.severityColor.opacity(0.14)),
-                    in: RoundedRectangle(cornerRadius: HCRadius.badge, style: .continuous)
-                )
+                .background(alert.severityColor, in: RoundedRectangle(cornerRadius: HCRadius.badge, style: .continuous))
                 .accessibilityHidden(true)
-            VStack(alignment: .leading) {
+            VStack(alignment: .leading, spacing: HCSpacing.x1) {
                 Text("\(alert.kind)警報：\(alert.title)")
                     .font(.subheadline.bold())
-                // 嚴重度用文字寫出來，不能只靠顏色（色覺障礙與投影環境）
-                Text("\(alert.severity)・\(matchedText)")
+                // 嚴重度用「圖示＋文字」膠囊寫出來，不能只靠顏色（色覺障礙與投影環境）
+                Label(alert.severity, systemImage: severityIcon)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(alert.severityColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .background(alert.severityColor.opacity(0.12), in: Capsule())
+                Text(matchedText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Spacer()
+            Spacer(minLength: 0)
             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                .padding(.top, HCSpacing.x1)
         }
         .padding(HCSpacing.x3)
-        .background(alert.severityColor.opacity(0.10), in: RoundedRectangle(cornerRadius: HCRadius.card, style: .continuous))
+        // 材質底＋實色淡染（染色是平的 fill，不是第二層 Material）
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: HCRadius.card, style: .continuous).fill(.regularMaterial)
+                RoundedRectangle(cornerRadius: HCRadius.card, style: .continuous).fill(alert.severityColor.opacity(0.08))
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: HCRadius.card, style: .continuous)
+                .strokeBorder(.primary.opacity(0.06), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.04), radius: 2, y: 1)
     }
 
     private var matchedText: String {

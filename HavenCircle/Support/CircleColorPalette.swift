@@ -26,21 +26,17 @@ import SwiftUI
 /// - 「即時位置已過期」的灰色語意不變，過期判斷在呼叫端（SafetyMapView）用
 ///   `renderedColor = isActiveForAlerts ? color : .gray` 蓋掉這裡算出的顏色，不受本色盤影響。
 enum CircleColorPalette {
-    /// 索引 0 保留給本人；索引 1...5 依 hash 分給其他成員。
-    static let colors: [Color] = [
-        HCColor.safe, // 0：本人專屬，沿用既有綠色（約 165° 色相）
-        Color(hue: 0.58, saturation: 0.68, brightness: 0.88), // 1：天藍（約 209°）
-        Color(hue: 0.70, saturation: 0.55, brightness: 0.72), // 2：藍紫（約 252°）
-        Color(hue: 0.80, saturation: 0.55, brightness: 0.78), // 3：紫（約 288°）
-        Color(hue: 0.875, saturation: 0.55, brightness: 0.82), // 4：洋紅（約 315°）
-        Color(hue: 0.94, saturation: 0.50, brightness: 0.85), // 5：玫瑰粉（約 338°，仍與紅色 0° 保持 22° 以上距離）
-    ]
+    /// 索引 0 保留給本人；其餘依 hash 分給其他成員。色盤隨 App 外觀切換（見 AppPalette.familyColors）：
+    /// 層次沿用上面描述的冷色五色，晴空湖水為「我＝湖水青＋四個青→藍→紫」。
+    /// 每次讀目前外觀，所以切換外觀後地圖圈與頭像一起換色。
+    static var colors: [Color] { AppAppearance.current.palette.familyColors }
 
     /// 依「穩定鍵」與「是否本人」取色。
     /// - Parameters:
     ///   - key: 這個人／圈的持久 id 字串（member.memberKey 或退回 circle.circleKey）。
     ///   - isCurrentUser: 是不是本人；本人固定拿綠色，不受 hash 影響。
     static func color(for key: String, isCurrentUser: Bool) -> Color {
+        let colors = Self.colors
         guard !isCurrentUser else { return colors[0] }
         let candidateCount = colors.count - 1 // 扣掉本人專屬的索引 0
         guard candidateCount > 0 else { return colors[0] }

@@ -13,6 +13,8 @@ final class HavenCircleUITests: XCTestCase {
         // UX 稽核測試（Audit）自行決定啟動參數，不走既有的預先啟動
         // 現況快照：不重啟 App，原樣拍下使用者眼前的畫面
         if name.contains("testSnapshotNow") { return }
+        // 外觀走查：每種外觀各自重啟並帶 --appearance 參數，由測試本體啟動
+        if name.contains("testAppearanceTour") { return }
         if name.contains("testOnboardingTour") || name.contains("testEventsTour")
             || name.contains("testSettingsTour") || name.contains("testPaywallTour") {
             installPermissionMonitor()
@@ -729,5 +731,66 @@ final class HavenCircleUITests: XCTestCase {
         shotAlert.name = "系統通知詢問"; shotAlert.lifetime = .keepAlways; self.add(shotAlert)
         attach(text: "系統詢問出現=\(systemAlert)", name: "系統詢問")
         XCTAssertTrue(systemAlert, "按開啟通知後應跳出系統詢問")
+    }
+
+    // MARK: - 外觀走查（層次／晴空湖水）
+
+    /// 以指定外觀（與天空時段）重新啟動 App；--appearance／--force-sky-period 只有 DEBUG 建置會解析
+    private func launchForAppearance(_ appearance: String, period: String? = nil) {
+        if app.state != .notRunning { app.terminate() }
+        app.launchArguments = ["--appearance", appearance, "--skip-location-prompt", "--skip-notification-prompt"]
+        if let period { app.launchArguments += ["--force-sky-period", period] }
+        addUIInterruptionMonitor(withDescription: "系統權限") { alert in
+            for title in ["使用 App 時允許", "允許", "好", "Allow While Using App", "Allow", "OK"] {
+                let b = alert.buttons[title]
+                if b.exists { b.tap(); return true }
+            }
+            return false
+        }
+        app.launch()
+        sleep(3)
+        // 點頂端空白處觸發 interruption monitor（同 setUp 慣例）
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.02)).tap()
+    }
+
+    /// 兩種外觀各截：動態頁頂端、地圖頁、家人頁、設定頁外觀區塊；
+    /// 晴空湖水另外用 --force-sky-period 各截清晨／白天／傍晚／夜晚的動態頁頂端
+    func testAppearanceTour() throws {
+        for appearance in ["layered", "skyLagoon"] {
+            launchForAppearance(appearance)
+            app.tabBars.buttons["動態"].firstMatch.tap()
+            sleep(3)
+            app.swipeDown(); app.swipeDown(); sleep(2)
+            shot("\(appearance)-動態頁頂端")
+            app.tabBars.buttons["地圖"].firstMatch.tap()
+            sleep(4)
+            shot("\(appearance)-地圖頁")
+            app.tabBars.buttons["家人"].firstMatch.tap()
+            sleep(3)
+            shot("\(appearance)-家人頁")
+            // 設定（齒輪）→ 顯示與文字 → 外觀區塊
+            app.tabBars.buttons["動態"].firstMatch.tap()
+            sleep(1)
+            if tapIf("設定") {
+                if tapIf("顯示與文字") {
+                    sleep(1)
+                    shot("\(appearance)-設定頁外觀區塊")
+                    let picker = app.segmentedControls.firstMatch
+                    attach(text: "外觀選擇器存在=\(picker.exists)", name: "\(appearance)-外觀選擇器")
+                } else {
+                    shot("\(appearance)-找不到顯示與文字")
+                }
+                dismissSheet()
+            } else {
+                shot("\(appearance)-找不到設定入口")
+            }
+        }
+        for period in ["dawn", "day", "dusk", "night"] {
+            launchForAppearance("skyLagoon", period: period)
+            app.tabBars.buttons["動態"].firstMatch.tap()
+            sleep(3)
+            app.swipeDown(); app.swipeDown(); sleep(2)
+            shot("skyLagoon-天空-\(period)")
+        }
     }
 }

@@ -20,11 +20,15 @@ struct HavenCircleApp: App {
     // 全域字體大小：使用者可在設定頁放大顯示（預設跟隨系統）；設定變更靠這個 @AppStorage
     // 驅動 Scene body 重新求值即時生效，套用方式同 appearanceMode
     @AppStorage(SettingsKeys.appTextSize) private var appTextSize = AppTextSize.system.rawValue
+    // App 外觀風格（層次／晴空湖水）：驅動根視圖 .tint 即時更新（含 sheet）
+    @AppStorage(SettingsKeys.appAppearance) private var appAppearance = AppAppearance.default.rawValue
     @AppStorage(SettingsKeys.profileDisplayName) private var profileDisplayName = ""
     @AppStorage(SettingsKeys.liveLocationSharingEnabled) private var liveLocationSharingEnabled = false
     @AppStorage(SettingsKeys.liveCircleRadiusMeters) private var liveCircleRadiusMeters = 1_000
 
     init() {
+        // 測試參數 --appearance：必須早於任何視圖取色（僅 DEBUG 生效）
+        AppearanceLaunchArguments.applyIfRequested()
         modelContainer = Self.makeContainer()
         // 無聲推播喚醒的回呼（AppDelegate）需要容器跑資料管線，橋接過去
         AppRuntime.container = modelContainer
@@ -90,6 +94,7 @@ struct HavenCircleApp: App {
                 .preferredColorScheme(AppearanceMode(rawValue: appearanceMode)?.colorScheme)
                 // nil（跟隨系統）時不覆寫，交還使用者在 iOS 設定裡的文字大小
                 .modifier(AppTextSizeOverride(rawValue: appTextSize))
+                .tint((AppAppearance(rawValue: appAppearance) ?? .default).palette.brand)
                 .environment(familySync)
                 .environment(entitlementStore)
                 .overlay(alignment: .top) { ArrivalBannerOverlay().environment(familySync) }

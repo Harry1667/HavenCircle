@@ -59,6 +59,9 @@ enum SettingsKeys {
     static let guardianIntroPending = "guardianIntroPending"
     /// 外觀模式（AppearanceMode 的 rawValue）：跟隨系統／淺色／深色
     static let appearanceMode = "appearanceMode"
+    /// App 外觀風格（AppAppearance 的 rawValue）：層次／晴空湖水（預設）。與上面的深淺模式是兩件事——
+    /// 這裡換的是配色與動態頁頁首，深淺模式換的是明暗
+    static let appAppearance = "appAppearance"
     /// 全域字體大小（AppTextSize 的 rawValue）：跟隨系統（預設）／大／特大／最大
     /// 與 alertFrequencyLevel（提醒多寡：僅重大／標準／靈敏）是兩件事，實機測試曾誤認為同一個設定，故分鍵獨立管理
     static let appTextSize = "appTextSize"

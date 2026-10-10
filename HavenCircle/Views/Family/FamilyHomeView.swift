@@ -250,7 +250,7 @@ struct FamilyHomeView: View {
         // 外圍再鋪同款群組底色，否則 List 底色只到 600pt，左右會露出不同色階的接縫
         .frame(maxWidth: 600)
         .frame(maxWidth: .infinity)
-        .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        .hcPageBackground()
     }
 
     // MARK: - 家庭圈管理入口
@@ -295,7 +295,11 @@ struct FamilyHomeView: View {
                     Text(roleEmoji(for: myDisplayName))
                         .font(.system(size: 30))
                         .frame(width: 48, height: 48)
-                        .background(.secondary.opacity(0.08), in: Circle())
+                        .background(
+                            CircleColorPalette.color(for: "self", isCurrentUser: true).opacity(0.18),
+                            in: Circle()
+                        )
+                        .overlay(Circle().strokeBorder(CircleColorPalette.color(for: "self", isCurrentUser: true), lineWidth: 1.5))
                     VStack(alignment: .leading, spacing: HCSpacing.x1) {
                         Text(accountDisplayText).font(.body.weight(.semibold))
                         Text(accountSubtitle)
@@ -616,6 +620,11 @@ struct FamilyHomeView: View {
         }
     }
 
+    /// 家人頭像描邊色：與地圖守護範圍圈同一套外觀家人色盤（本人固定色，其餘依 memberKey 穩定分配）
+    private func memberColor(_ member: LocalFamilyMember) -> Color {
+        CircleColorPalette.color(for: member.memberKey, isCurrentUser: member.isCurrentUser)
+    }
+
     private func memberRow(_ member: LocalFamilyMember) -> some View {
         let circleCount = member.lifeCircles.count
         let titleText = member.isCurrentUser ? selfListTitle : member.name
@@ -623,7 +632,8 @@ struct FamilyHomeView: View {
             Text(roleEmoji(for: titleText))
                 .font(.system(size: 24))
                 .frame(width: 40, height: 40)
-                .background(.secondary.opacity(0.08), in: Circle())
+                .background(memberColor(member).opacity(0.18), in: Circle())
+                .overlay(Circle().strokeBorder(memberColor(member), lineWidth: 1.5))
             VStack(alignment: .leading, spacing: HCSpacing.x1) {
                 HStack(spacing: HCSpacing.x2) {
                     Text(titleText).font(.body.weight(.medium))

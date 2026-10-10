@@ -6,6 +6,9 @@ struct AppTabs: View {
     @Environment(\.modelContext) private var context
     @Query private var members: [LocalFamilyMember]
     @AppStorage(SettingsKeys.profileDisplayName) private var profileDisplayName = ""
+    /// 外觀風格（層次／晴空湖水）：變動時重建分頁內容，讓所有 HCColor 取值重新讀取；
+    /// 設定 sheet 掛在外層，切換時不會被收掉
+    @AppStorage(SettingsKeys.appAppearance) private var appAppearance = AppAppearance.default.rawValue
 
     /// 擁有者名稱作為安否回報的發送者署名
     private var myName: String {
@@ -69,6 +72,9 @@ struct AppTabs: View {
             .fullScreenCover(isPresented: $debugShowPaywall) { PaywallView() }
             #endif
         }
+        .tint((AppAppearance(rawValue: appAppearance) ?? .default).palette.brand)
+        // 設定改為全域 sheet：任何頁面（含家人頁的「查看 Apple 帳號狀態」）都能打開
+        .sheet(isPresented: Bindable(router).showSettings) { SettingsView().hcSheet() }
         // App 每次回到前景重跑資料管線（含每日摘要重算）。
         // 原型限制：沒有背景更新，用前景時機讓資料與摘要盡量新鮮。
         .onChange(of: scenePhase) { _, phase in

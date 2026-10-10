@@ -15,6 +15,8 @@ import SwiftData
 struct QuickSafetyCard: View {
     /// 附近是否有需要注意的事件（落在守護範圍內的可信事件）
     let hasNearbyAttention: Bool
+    /// 卡片內是否自帶「守護範圍內有需要注意的事件」提示。動態頁頁首已有同款膠囊時傳 false，避免上下重複兩行。
+    var showsAttentionHint = true
 
     @Environment(FamilySyncService.self) private var sync
     @Environment(TabRouter.self) private var router
@@ -112,7 +114,7 @@ struct QuickSafetyCard: View {
 
     private var sendCard: some View {
         VStack(alignment: .leading, spacing: HCSpacing.x3) {
-            if hasNearbyAttention {
+            if hasNearbyAttention && showsAttentionHint {
                 // 不只靠顏色：圖示＋文字說明為什麼此刻特別提醒
                 Label("守護範圍內有需要注意的事件", systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote.weight(.semibold))

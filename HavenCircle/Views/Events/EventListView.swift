@@ -146,18 +146,31 @@ struct EventListView: View {
 
     // 本頁是「動態」分頁的根內容，導航堆疊由 EventsTabView 提供，
     // 自己不再包 NavigationStack（巢狀堆疊會讓 push/pop 行為錯亂）
-    private static let quickSafeRowID = "quickSafeCard"
+    private static let headerRowID = "feedHeaderRow"
     @State private var didInitialScrollToTop = false
+    /// 頁首背景的捲動淡出進度（獨立參考物件，更新不觸發本頁 body）
+    @State private var headerFade = FeedHeaderFade()
+
+    /// 本人守護範圍（優先本人啟用中的圈，其次任何本人的圈，最後任何啟用中的圈）：層次外觀的地圖快照以它為中心
+    private var guardArea: GuardAreaCenter? {
+        let own = members.first(where: \.isCurrentUser)?.lifeCircles ?? []
+        let circle = own.first(where: \.isActiveForAlerts) ?? own.first ?? circles.first(where: \.isActiveForAlerts)
+        return circle.map { GuardAreaCenter(latitude: $0.latitude, longitude: $0.longitude, radiusMeters: $0.radiusMeters) }
+    }
 
     var body: some View {
         let feed = currentFeed()
         ScrollViewReader { scrollProxy in
         List {
+            // 頁首列：捲動基準＋「守護範圍內有需要注意的事件」文字膠囊（頁首背景在 List 後方）
+            Section {
+                FeedHeaderRow(hasAttention: !feed.attention.isEmpty, fade: headerFade)
+            }
+            .id(Self.headerRowID)
             // 報平安一鍵卡：打開 App 就能告訴家人「我平安」（沒有家人時改為引導邀請）
             Section {
-                QuickSafetyCard(hasNearbyAttention: !feed.attention.isEmpty)
+                QuickSafetyCard(hasNearbyAttention: !feed.attention.isEmpty, showsAttentionHint: false)
             }
-            .id(Self.quickSafeRowID)
             // 零導覽引導：定位／邀請碼情境卡（通知說明改在使用者做了相關動作之後才出現）
             FeedOnboardingCards(hasCircle: !circles.isEmpty)
             scopeSection
@@ -167,7 +180,6 @@ struct EventListView: View {
             } else if feed.visibleEvents.isEmpty && activeRegionAlerts.isEmpty && feedScope == .related {
                 Section {
                     safeStateHero
-                        .listRowBackground(Color.clear)
                 }
             }
             if feedScope == .related {
@@ -190,11 +202,29 @@ struct EventListView: View {
             guard !didInitialScrollToTop else { return }
             didInitialScrollToTop = true
             try? await Task.sleep(for: .milliseconds(300))
-            scrollProxy.scrollTo(Self.quickSafeRowID, anchor: .top)
+            scrollProxy.scrollTo(Self.headerRowID, anchor: .top)
         }
+        }
+        // 層次風格：大標題＋頁首背景（地圖快照／天空）；夜晚的深靛天空上標題改白字
+        .scrollContentBackground(.hidden)
+        .background(alignment: .top) {
+            ZStack(alignment: .top) {
+                HCColor.pageBackground
+                FeedHeaderBackdrop(
+                    appearance: AppAppearance.current,
+                    hasAttention: !feed.attention.isEmpty,
+                    guardArea: guardArea,
+                    fade: headerFade
+                )
+            }
+            .ignoresSafeArea()
         }
         .navigationTitle("動態")
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarTitleDisplayMode(.large)
+        .toolbarColorScheme(
+            AppAppearance.current == .skyLagoon && SkyPhase.current().isDarkSky ? .dark : nil,
+            for: .navigationBar
+        )
         .analyticsScreen("alert_center")
         // 手動下拉刷新：重跑一次資料管線
         .refreshable { await EventPipeline.refresh(context: context) }
@@ -236,12 +266,16 @@ struct EventListView: View {
         Section {
             // D4 重問通道：曾拒絕過情境式權限卡、但通知仍未開啟時，動態頂部再給一次機會
             NotificationReaskRow()
+                .listRowBackground(HCListRowBackground())
+            // 系統分段控制，直接放在頁面底上（不包進列容器）
             Picker("動態範圍", selection: feedScopeBinding) {
                 ForEach(FeedScope.allCases) { scope in
                     Text(scope.rawValue).tag(scope)
                 }
             }
             .pickerStyle(.segmented)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: HCSpacing.x1, leading: HCSpacing.x4, bottom: HCSpacing.x1, trailing: HCSpacing.x4))
         } footer: {
             Text(feedScope == .related
                  ? "通知只會依你的生活圈與設定發送；全台內容不會干擾你。"
@@ -257,6 +291,7 @@ struct EventListView: View {
                 Label("回顧過去 \(entitlementStore.isPlus ? FreeTier.plusHistoryDays : FreeTier.historyDays) 天",
                       systemImage: "clock.arrow.circlepath")
             }
+            .listRowBackground(HCListRowBackground())
             NavigationLink {
                 AIAssistantView()
             } label: {
@@ -267,6 +302,7 @@ struct EventListView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .listRowBackground(HCListRowBackground())
         }
     }
 
@@ -295,7 +331,9 @@ struct EventListView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, HCSpacing.x6)
+        .padding(.vertical, HCSpacing.x3)
+        .hcCard()
+        .cardRow()
     }
 
     /// 區域警報依分組分區顯示（天災→公共安全→民生→交通，安全相關優先排前）。
@@ -315,6 +353,7 @@ struct EventListView: View {
                                 regionAlertRow(alert)
                             }
                         }
+                        .listRowBackground(HCListRowBackground())
                     }
                 }
             }
@@ -346,8 +385,11 @@ struct EventListView: View {
                             EventRow(event: event, members: members)
                         }
                         .buttonStyle(.plain)
+                        .cardRow()
+                        .listRowSeparator(.hidden)
                     }
                 }
+                .listRowBackground(HCListRowBackground())
             } footer: {
                 Text("離所有警戒圈較遠的已驗證事件（官方／主流媒體／多來源）收在這裡，避免稀釋與你相關的訊號。")
             }
@@ -363,6 +405,7 @@ struct EventListView: View {
                 } description: {
                     Text("來源仍會持續更新；未驗證線索會清楚標示。")
                 }
+                .listRowBackground(HCListRowBackground())
             }
         } else {
             Section {
@@ -373,6 +416,8 @@ struct EventListView: View {
                         EventRow(event: event, members: members)
                     }
                     .buttonStyle(.plain)
+                    .cardRow()
+                    .listRowSeparator(.hidden)
                 }
             } header: {
                 Text("全台動態（\(nationwideDynamics.count)）")
@@ -395,6 +440,8 @@ struct EventListView: View {
                             EventRow(event: event, members: members)
                         }
                         .buttonStyle(.plain)
+                        .cardRow()
+                        .listRowSeparator(.hidden)
                     }
                     .onDelete { delete(at: $0, in: items) }
                 }
@@ -435,6 +482,14 @@ struct EventListView: View {
             context.delete(items[index])
         }
         context.saveReporting()
+    }
+}
+
+/// 列表列的 Material 底（層次風格的「容器內多列」）：只有少數需要容器感的列使用，
+/// 事件／警報卡本身是獨立卡片（透明列底＋hcCard）
+struct HCListRowBackground: View {
+    var body: some View {
+        Rectangle().fill(.regularMaterial)
     }
 }
 
