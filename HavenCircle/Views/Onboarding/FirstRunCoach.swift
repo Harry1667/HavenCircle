@@ -77,6 +77,8 @@ struct PulseRing: View {
 
 /// 帶領結束後的情境式通知權限卡（A4）：不在新手一開始就要權限，
 /// 而是先讓使用者看過地圖與帶領、感受到價值後才問——「先給價值再開口」。
+/// 卡片一出現就自動播一次 App 內示範橫幅（約 2.5 秒，標明「此為示範」），
+/// 使用者不必按任何東西就看到警報長什麼樣；只剩兩顆鈕：開啟通知／先不用。
 /// 置中卡＋regularMaterial，風格比照 CoachCard；沒有長說明，一句話問完。
 struct NotificationPromptCard: View {
     /// 卡片結束（不論走哪個分支）都呼叫一次，讓外層收起顯示狀態
@@ -93,28 +95,22 @@ struct NotificationPromptCard: View {
                 Text("圈內有新狀況時，要通知你嗎？")
                     .font(.title3.weight(.bold))
                     .multilineTextAlignment(.center)
+                Text("警報通知就像上方的示範橫幅。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
 
                 Button {
-                    Task { await previewThenRequest() }
+                    Task { await enable() }
                 } label: {
-                    Text("先看看警報長什麼樣")
+                    Text("好，開啟通知")
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(HCColor.brand)
 
-                Button {
-                    Task { await enable() }
-                } label: {
-                    Text("好，開啟通知")
-                        .font(.subheadline.weight(.medium))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-
                 Button("先不用") { decline() }
-                    .font(.footnote)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 28)
@@ -138,17 +134,15 @@ struct NotificationPromptCard: View {
         .onAppear {
             Analytics.track("notify_prompt_shown") // 漏斗：情境式通知權限卡出現
         }
-    }
-
-    /// 「先看看警報長什麼樣」：不發真通知（未授權發不出、勿擾下即使獲准也可能靜默失敗），
-    /// 改用 App 內模擬橫幅示範樣式；看完 2.5 秒後才跳系統權限框。
-    private func previewThenRequest() async {
-        Analytics.track("notify_demo_viewed") // 漏斗：模擬通知橫幅被看過
-        withAnimation { showDemoBanner = true }
-        try? await Task.sleep(for: .milliseconds(2500))
-        withAnimation { showDemoBanner = false }
-        try? await Task.sleep(for: .milliseconds(300)) // 讓橫幅滑出動畫走完，避免跟系統框搶畫面
-        await enable()
+        // 自動播示範橫幅：不發真通知（未授權發不出、勿擾下也可能靜默失敗），App 內繪製即可
+        .task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            Analytics.track("notify_demo_viewed") // 漏斗：模擬通知橫幅被看過
+            withAnimation { showDemoBanner = true }
+            try? await Task.sleep(for: .milliseconds(2500))
+            withAnimation { showDemoBanner = false }
+        }
     }
 
     private func enable() async {
