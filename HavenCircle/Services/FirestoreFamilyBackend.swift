@@ -169,6 +169,19 @@ enum FirestoreFamilyBackend {
         return familyId
     }
 
+    /// 登記本機 FCM 權杖到自己的成員文件（merge，只動 fcmToken 相關欄位）。
+    /// 權杖本身無法單獨發訊息（需伺服器端服務帳號），僅供 Oracle 依 uid 發家人到達通知與更新位置喚醒。
+    static func publishFCMToken(familyId: String, uid: String, token: String) async throws {
+        let ref = FirestoreConfig.store().collection(FirestoreConfig.Path.families).document(familyId)
+            .collection(FirestoreConfig.Path.members).document(uid)
+        try await withWriteDeadline(seconds: 10) {
+            try await ref.setData([
+                "fcmToken": token,
+                "fcmTokenUpdatedAt": FieldValue.serverTimestamp()
+            ], merge: true)
+        }
+    }
+
     /// 把自己的名字同步到雲端所有相關文件（成員資料 members/{uid}、位置文件 locations/{uid}、
     /// 圈主時的邀請碼預覽 ownerName）。name 為空＝清掉雲端名字（位置文件刪欄位、成員資料寫空字串）。
     ///

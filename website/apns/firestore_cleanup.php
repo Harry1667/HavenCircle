@@ -6,64 +6,9 @@
 
 if (PHP_SAPI !== 'cli') { http_response_code(404); exit; }
 
-require_once __DIR__ . '/_fcm_lib.php'; // 借用 fcm_service_account()、fcm_base64url()
-
-const FS_PROJECT  = 'havencircle-a48c2';
-const FS_DATABASE = 'default';
-const FS_BASE     = 'https://firestore.googleapis.com/v1/projects/' . FS_PROJECT . '/databases/' . FS_DATABASE . '/documents';
+require_once __DIR__ . '/_firestore_lib.php'; // 共用 Firestore REST 函式（含 FS_* 常數、fs_log、fs_http）
 
 $dryRun = in_array('--dry-run', $argv, true);
-
-function fs_log(string $msg): void {
-    echo '[' . date('Y-m-d H:i:s') . '] ' . $msg . "\n";
-}
-
-// 以服務帳號換 datastore 範圍的 OAuth token（FCM 那支只有 messaging 範圍）
-function fs_access_token(): string {
-    $sa = fcm_service_account();
-    if (!$sa) throw new RuntimeException('讀不到服務帳號檔');
-    $now = time();
-    $header = fcm_base64url(json_encode(['alg' => 'RS256', 'typ' => 'JWT']));
-    $claims = fcm_base64url(json_encode([
-        'iss'   => $sa['client_email'],
-        'scope' => 'https://www.googleapis.com/auth/datastore',
-        'aud'   => 'https://oauth2.googleapis.com/token',
-        'iat'   => $now,
-        'exp'   => $now + 3600,
-    ]));
-    $sig = '';
-    if (!openssl_sign("$header.$claims", $sig, $sa['private_key'], 'sha256WithRSAEncryption')) {
-        throw new RuntimeException('JWT 簽章失敗');
-    }
-    $jwt = "$header.$claims." . fcm_base64url($sig);
-    $res = fs_http('POST', 'https://oauth2.googleapis.com/token', null, http_build_query([
-        'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-        'assertion'  => $jwt,
-    ]), 'application/x-www-form-urlencoded');
-    if (empty($res['access_token'])) throw new RuntimeException('換 token 失敗：' . json_encode($res));
-    return $res['access_token'];
-}
-
-function fs_http(string $method, string $url, ?string $token, ?string $body = null, string $type = 'application/json'): array {
-    $ch = curl_init($url);
-    $headers = ["Content-Type: $type"];
-    if ($token) $headers[] = "Authorization: Bearer $token";
-    curl_setopt_array($ch, [
-        CURLOPT_CUSTOMREQUEST  => $method,
-        CURLOPT_HTTPHEADER     => $headers,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 30,
-    ]);
-    if ($body !== null) curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
-    $raw = curl_exec($ch);
-    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
-    if ($raw === false) throw new RuntimeException("HTTP 失敗：$err");
-    $data = json_decode($raw, true) ?? [];
-    if ($code >= 400) throw new RuntimeException("HTTP $code：" . substr($raw, 0, 300));
-    return $data;
-}
 
 // 列出某個集合的所有文件名稱（分頁）
 function fs_list_names(string $token, string $collectionPath): array {
