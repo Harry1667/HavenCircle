@@ -472,15 +472,17 @@ struct SettingsView: View {
         ProfileIdentity.resolvedName(local: displayName, email: appleEmail)
     }
 
+    // 2026-10-11 實機：Apple 只在首次授權給姓名，使用者若當時隱藏姓名或已授權過就永遠拿不到，
+    // email 也是隱藏信箱——此時不要停在「Apple 帳號」，直接引導去設定名字
     private var accountTitle: String {
         if sync.state == .noAccount { return "登入" }
-        return accountName ?? "Apple 帳號"
+        return accountName ?? "設定你的名字"
     }
 
     private var accountSubtitle: String {
-        sync.state == .noAccount
-            ? "用 Apple 帳號登入，與家人互報平安"
-            : "Apple 帳號、家庭圈與個人資料"
+        if sync.state == .noAccount { return "用 Apple 帳號登入，與家人互報平安" }
+        if accountName == nil { return "家人目前看到的是「家人」，點一下設定名字與照片" }
+        return "Apple 帳號、家庭圈與個人資料"
     }
 
     /// 仿系統設定的列：低彩度語意圖示＋標題＋副標。
@@ -645,6 +647,7 @@ private struct AppleAccountView: View {
     @State private var showPhotoPicker = false
     @State private var pickedItem: PhotosPickerItem?
     @State private var photoError: String?
+    @State private var showNameEditor = false
 
     private var accountName: String? {
         ProfileIdentity.resolvedName(local: displayName, email: appleEmail)
@@ -659,9 +662,24 @@ private struct AppleAccountView: View {
                     Button("編輯") { showEditDialog = true }
                         .font(.subheadline)
                         .accessibilityIdentifier("account.editPhoto")
-                    Text(accountName ?? "Apple 帳號")
-                        .font(.title2.weight(.bold))
-                        .multilineTextAlignment(.center)
+                    if let accountName {
+                        Text(accountName)
+                            .font(.title2.weight(.bold))
+                            .multilineTextAlignment(.center)
+                    } else {
+                        // 沒有任何名字來源（Apple 沒給、隱藏信箱）：名字位置直接是設定入口
+                        // 用 Button＋navigationDestination 而非 NavigationLink：List 列內的 NavigationLink
+                        // 會自帶靠右箭頭並靠左排，破壞置中版面
+                        Button {
+                            showNameEditor = true
+                        } label: {
+                            Text("設定你的名字")
+                                .font(.title2.weight(.bold))
+                                .foregroundStyle(HCColor.brand)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("家人收到你的平安通知時會看到這個名字")
+                    }
                     if !appleEmail.isEmpty {
                         Text(appleEmail)
                             .font(.subheadline)
@@ -747,6 +765,7 @@ private struct AppleAccountView: View {
                 }
             }
         }
+        .navigationDestination(isPresented: $showNameEditor) { PersonalProfileView() }
         .navigationTitle("Apple 帳號")
         .navigationBarTitleDisplayMode(.inline)
         .task { await sync.refreshAccountStatus() }
