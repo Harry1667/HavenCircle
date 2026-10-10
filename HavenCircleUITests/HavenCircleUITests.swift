@@ -16,7 +16,12 @@ final class HavenCircleUITests: XCTestCase {
             installPermissionMonitor()
             return
         }
-        app.launchArguments += ["--start-tab", "2", "--skip-location-prompt"]
+        // 家人走查要驗「冷啟動落在家人首頁」，不指定分頁（預設即家人）；其餘維持地圖
+        if name.contains("testFamilyTour") {
+            app.launchArguments += ["--skip-location-prompt"]
+        } else {
+            app.launchArguments += ["--start-tab", "2", "--skip-location-prompt"]
+        }
         // 系統彈窗（定位、通知）會卡住自動化
         addUIInterruptionMonitor(withDescription: "系統權限") { alert in
             for title in ["使用 App 時允許", "允許", "好", "Allow While Using App", "Allow", "OK"] {
