@@ -91,11 +91,16 @@ try {
         if ($created < $now - FP_ARRIVAL_WINDOW) continue;
         if (($a['expireAt'] ?? PHP_INT_MAX) < $now) continue;
         $stat['arr']++;
-        $kindWord = ($a['kind'] ?? '') === 'leave' ? '離開' : '到達';
-        $who = trim((string)($a['name'] ?? '')) !== '' ? $a['name'] : '家人';
+        // App 寫入的離開是 'depart'（RegionTransition.kind），舊版判斷只認 'leave'，
+        // 導致離開被推成「到達」（2026-10-11 實機模擬位置測出）；兩者都視為離開
+        $kindWord = in_array($a['kind'] ?? '', ['depart', 'leave'], true) ? '離開' : '到達';
+        $members = fp_members($token, $fid);
+        // 事件沒帶名字時改用成員資料的顯示名稱，兩者都沒有才用「家人」
+        $who = trim((string)($a['name'] ?? ''));
+        if ($who === '') $who = trim((string)($members[$a['uid'] ?? '']['name'] ?? ''));
+        if ($who === '') $who = '家人';
         $place = trim((string)($a['placeName'] ?? '')) !== '' ? $a['placeName'] : '守護地點';
         $title = "{$who}{$kindWord}{$place}";
-        $members = fp_members($token, $fid);
         foreach ($members as $uid => $m) {
             if ($uid === ($a['uid'] ?? '')) continue; // 不通知本人
             $key = "arr/$fid/{$a['_id']}/$uid";
