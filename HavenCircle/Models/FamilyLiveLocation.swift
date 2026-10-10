@@ -15,6 +15,8 @@ struct FamilyLiveLocation: Identifiable, Equatable {
     let updatedAt: Date
     /// 開始停留時間：座標最後一次移動超過 100 公尺的時間；舊版文件沒有此欄為 nil
     var stationarySince: Date? = nil
+    /// 最近一次確認實際移動的時間（「移動中」的證據）；舊版文件沒有此欄為 nil，一律不顯示「移動中」
+    var movedAt: Date? = nil
     /// 目前所在的守護地點名稱與進入時間（不在任何守護地點內為 nil）
     var placeName: String? = nil
     var placeSince: Date? = nil
@@ -26,7 +28,7 @@ struct FamilyLiveLocation: Identifiable, Equatable {
             id: id, participantID: participantID, displayName: name,
             latitude: latitude, longitude: longitude, radiusMeters: radiusMeters,
             district: district, updatedAt: updatedAt, stationarySince: stationarySince,
-            placeName: placeName, placeSince: placeSince, isSharing: isSharing
+            movedAt: movedAt, placeName: placeName, placeSince: placeSince, isSharing: isSharing
         )
     }
 
@@ -40,6 +42,7 @@ struct FamilyLiveLocation: Identifiable, Equatable {
         return LiveLocationPresence.statusText(
             lastReportedAt: updatedAt,
             stationarySince: stationarySince,
+            movedAt: movedAt,
             placeName: placeName,
             placeSince: placeSince,
             district: district
@@ -56,6 +59,7 @@ struct FamilyLiveLocation: Identifiable, Equatable {
         static let district = "district"
         static let updatedAt = "updatedAt"
         static let stationarySince = "stationarySince"
+        static let movedAt = "movedAt"
         static let placeName = "placeName"
         static let placeSince = "placeSince"
         static let isSharing = "isSharing"

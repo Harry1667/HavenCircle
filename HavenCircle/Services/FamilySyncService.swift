@@ -57,6 +57,9 @@ final class FamilySyncService {
     private var lastPublishedRadius: Int?
     /// 上次寫入的「開始停留時間」；與 lastPublishedLocation（停留錨點座標）一起決定這次是否算移動
     private var lastStationarySince: Date?
+    /// 上次確認「實際移動」的時間，與連續像在移動的筆數（見 MovementJudge：連續 2 筆才確認，防 GPS 漂移）
+    private var lastMovedAt: Date?
+    private var movedStreak = 0
     /// 上次追加的軌跡點（決定這次要不要再加一點）與上次清理過期點的時間
     private var lastTrailSample: LocationSample?
     private var lastTrailCleanupAt: Date?
@@ -467,32 +470,56 @@ final class FamilySyncService {
         do {
             let familyID = try await ensureFamily()
             let localCircles = (try? context.fetch(FetchDescriptor<LocalLifeCircle>())) ?? []
-            let district = localCircles.first {
+            // 行政區由座標解析（離線邊界優先、CLGeocoder 備援、每移動 500 公尺才重查）；
+            // 解析不到才退回本機跟隨圈已有的值，仍沒有就留空——絕不上傳「未指定」字樣。
+            let localDistrict = localCircles.first {
                 $0.isFollowMe && $0.member?.isCurrentUser == true
-            }?.district ?? Districts.unspecified
+            }?.district
+            let resolvedDistrict = await DistrictResolver.shared.resolve(location)
+            let district: String = resolvedDistrict
+                ?? localDistrict.flatMap { $0 == Districts.unspecified ? nil : $0 }
+                ?? ""
 
             // 停留錨點：優先用本次執行期間記住的；App 被系統重啟後記憶體清空，
             // 退回家庭圈上自己那筆（雲端真相），避免每次重啟都把「停留時間」歸零。
             let previousAnchor: CLLocation?
             let previousStationarySince: Date?
+            let previousMovedAt: Date?
             if let lastPublishedLocation {
                 previousAnchor = lastPublishedLocation
                 previousStationarySince = lastStationarySince
+                previousMovedAt = lastMovedAt
             } else if let own = ownLiveLocation {
                 previousAnchor = CLLocation(latitude: own.latitude, longitude: own.longitude)
                 previousStationarySince = own.stationarySince
+                previousMovedAt = own.movedAt
             } else {
                 previousAnchor = nil
                 previousStationarySince = nil
+                previousMovedAt = nil
             }
             let movedMeters = previousAnchor.map { location.distance(from: $0) }
+            // 移動判定：位移 > max(定位精度, 50 公尺)、速度不是明確低速、連續 2 筆才確認（GPS 漂移不算移動）
+            var confirmedMoved: Bool?
+            if let movedMeters {
+                let result = MovementJudge.advance(
+                    isMovedSample: MovementJudge.isMovedSample(
+                        displacement: movedMeters, accuracy: location.horizontalAccuracy, speed: location.speed
+                    ),
+                    displacement: movedMeters, accuracy: location.horizontalAccuracy, streak: movedStreak
+                )
+                movedStreak = result.streak
+                confirmedMoved = result.confirmed
+            } else {
+                movedStreak = 0
+            }
             let stationarySince = LiveLocationPresence.stationarySince(
-                previousStationarySince: previousStationarySince,
-                movedMeters: movedMeters
+                previousStationarySince: previousStationarySince, moved: confirmedMoved
             )
-            // 沒移動：寫回錨點座標（同座標、新的 updatedAt）；移動了：錨點換成新位置
-            let isStationary = movedMeters.map { $0 < LiveLocationPresence.stationaryRadiusMeters } ?? false
-            let anchor = (isStationary ? previousAnchor : nil) ?? location
+            // 「移動中」的證據：只有確認移動才刷新；沒有可比較的上次紀錄（剛開始分享、重啟）沿用舊值，不當成移動
+            let movedAt: Date? = confirmedMoved == true ? .now : previousMovedAt
+            // 沒移動（含尚未確認的漂移）：寫回錨點座標（同座標、新的 updatedAt）；確認移動：錨點換成新位置
+            let anchor = (confirmedMoved == false ? previousAnchor : nil) ?? location
 
             // 24 小時軌跡：移動 30 公尺以上或距上一點 10 分鐘就追加一點（靜止時不必每次心跳都加）
             let trailSample = LocationSample(
@@ -517,6 +544,7 @@ final class FamilySyncService {
                 radiusMeters: max(300, min(radiusMeters, 5_000)),
                 district: district,
                 stationarySince: stationarySince,
+                movedAt: movedAt,
                 placeName: place?.name,
                 placeSince: place?.since,
                 trailPoint: trailInput
@@ -529,6 +557,7 @@ final class FamilySyncService {
             pruneTrailIfDue(familyID: familyID, uid: uid)
             lastPublishedLocation = anchor
             lastStationarySince = stationarySince
+            lastMovedAt = movedAt
             lastPublishedAt = .now
             lastPublishedRadius = radiusMeters
             liveLocationError = nil
@@ -539,7 +568,7 @@ final class FamilySyncService {
             // 不必等下面這次完整讀取往返；讀取失敗也不會讓畫面卡在「等待」。
             projectOwnPublishedLocation(
                 uid: uid, name: trimmedName, anchor: anchor, radiusMeters: radiusMeters,
-                district: district, stationarySince: stationarySince,
+                district: district, stationarySince: stationarySince, movedAt: movedAt,
                 placeName: place?.name, placeSince: place?.since, context: context
             )
             await fetchLiveLocations(context: context)
@@ -596,7 +625,7 @@ final class FamilySyncService {
     /// 上傳成功後立刻把本人那筆放進 liveLocations 並投影成本機即時圈（樂觀更新，之後由讀取校正）。
     private func projectOwnPublishedLocation(
         uid: String, name: String, anchor: CLLocation, radiusMeters: Int,
-        district: String, stationarySince: Date,
+        district: String, stationarySince: Date, movedAt: Date?,
         placeName: String?, placeSince: Date?, context: ModelContext
     ) {
         let own = FamilyLiveLocation(
@@ -606,9 +635,10 @@ final class FamilySyncService {
             latitude: anchor.coordinate.latitude,
             longitude: anchor.coordinate.longitude,
             radiusMeters: max(300, min(radiusMeters, 5_000)),
-            district: district,
+            district: district.isEmpty ? Districts.unspecified : district,
             updatedAt: .now,
             stationarySince: stationarySince,
+            movedAt: movedAt,
             placeName: placeName,
             placeSince: placeSince,
             isSharing: true
@@ -697,6 +727,8 @@ final class FamilySyncService {
         lastPublishedAt = nil
         lastPublishedRadius = nil
         lastStationarySince = nil
+        lastMovedAt = nil
+        movedStreak = 0
         lastTrailSample = nil
         lastTrailCleanupAt = nil
         liveLocationError = nil
@@ -798,6 +830,7 @@ final class FamilySyncService {
                 || circle.radiusMeters != location.radiusMeters
                 || circle.locationUpdatedAt != location.updatedAt
                 || circle.locationStationarySince != location.stationarySince
+                || circle.locationMovedAt != location.movedAt
                 || circle.locationPlaceName != location.placeName
                 || circle.locationPlaceSince != location.placeSince
                 || circle.district != location.district {
@@ -808,6 +841,7 @@ final class FamilySyncService {
                 circle.radiusMeters = location.radiusMeters
                 circle.locationUpdatedAt = location.updatedAt
                 circle.locationStationarySince = location.stationarySince
+                circle.locationMovedAt = location.movedAt
                 circle.district = location.district
                 changed = true
             }

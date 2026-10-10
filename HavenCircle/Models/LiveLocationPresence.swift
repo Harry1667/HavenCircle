@@ -16,8 +16,8 @@ enum LiveLocationPresence {
     static let heartbeatInterval: TimeInterval = 5 * 60
     /// 移動多少公尺以內算「同一地點」：與 LocationService 的 distanceFilter（100 公尺）一致
     static let stationaryRadiusMeters: Double = 100
-    /// 停留滿這麼久才顯示「在同一地點 N 分鐘」，避免剛到就顯示「在同一地點 0 分鐘」
-    static let stationaryDisplayThreshold: TimeInterval = 5 * 60
+    /// 最近這麼久內確認過實際位移，才顯示「移動中」
+    static let movingDisplayWindow: TimeInterval = 5 * 60
 
     /// 手機是否仍在回報（＝即時圈是否可參與警報判斷）
     static func isReporting(lastReportedAt: Date?, now: Date = .now) -> Bool {
@@ -72,16 +72,24 @@ enum LiveLocationPresence {
         return previousStationarySince
     }
 
+    /// 這次寫入時的「開始停留時間」（已由 [MovementJudge] 判定是否確認移動）。
+    /// - moved：true＝確認移動；false＝沒移動；nil＝沒有可比較的上次紀錄
+    static func stationarySince(previousStationarySince: Date?, moved: Bool?, now: Date = .now) -> Date {
+        guard moved == false, let previousStationarySince, previousStationarySince <= now else { return now }
+        return previousStationarySince
+    }
+
     /// 給家人看的狀態句（純文字，不靠顏色）。
     /// - 失聯：「20 分鐘沒有回報（可能沒電、關機或沒有網路）」
     /// - 在守護地點內：「在家・從 08:30 起・2 分鐘前確認」
-    /// - 剛移動過（停留不滿 5 分鐘）：「移動中・3 分鐘前」
+    /// - 最近 5 分鐘內確認過實際位移（movedAt）：「移動中・3 分鐘前」
     /// - 停留：「停留 大安區・40 分鐘・5 分鐘前確認」（沒有行政區時「在同一地點 40 分鐘・…」）
     /// - 舊版文件（沒有 stationarySince）：「3 分鐘前更新位置」
     /// 所有分支都帶上最後回報時間（AGENTS 紅線：即時圈一律顯示最後更新）。
     static func statusText(
         lastReportedAt: Date?,
         stationarySince: Date?,
+        movedAt: Date? = nil,
         placeName: String? = nil,
         placeSince: Date? = nil,
         district: String? = nil,
@@ -99,15 +107,17 @@ enum LiveLocationPresence {
             }
             return "在\(placeName)・\(agoText(sinceReport))確認"
         }
+        // 「移動中」必須有實際位移的證據：最近 5 分鐘內確認過移動（movedAt）。
+        // 以前用「停留不滿 5 分鐘」推論移動，剛開始分享、App 重啟、GPS 漂移都會被誤顯示成移動中。
+        if let movedAt, movedAt <= now, now.timeIntervalSince(movedAt) < movingDisplayWindow {
+            return "移動中・\(agoText(sinceReport))"
+        }
         if let stationarySince {
             let stayed = max(0, now.timeIntervalSince(stationarySince))
-            if stayed >= stationaryDisplayThreshold {
-                if let district, !district.isEmpty, district != Districts.unspecified {
-                    return "停留 \(district)・\(durationText(stayed))・\(agoText(sinceReport))確認"
-                }
-                return "在同一地點 \(durationText(stayed))・\(agoText(sinceReport))確認"
+            if let district, !district.isEmpty, district != Districts.unspecified {
+                return "停留 \(district)・\(durationText(stayed))・\(agoText(sinceReport))確認"
             }
-            return "移動中・\(agoText(sinceReport))"
+            return "在同一地點 \(durationText(stayed))・\(agoText(sinceReport))確認"
         }
         return "\(agoText(sinceReport))更新位置"
     }

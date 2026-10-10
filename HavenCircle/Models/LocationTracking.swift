@@ -9,24 +9,69 @@ struct LocationSample: Equatable {
     let time: Date
     let latitude: Double
     let longitude: Double
+    /// 水平定位精度（公尺）；負值＝未知
+    let accuracy: Double
+    /// 瞬時速度（公尺／秒）；負值＝系統沒給（基地台定位、剛開始定位時常見）
+    let speed: Double
 
-    init(time: Date, latitude: Double, longitude: Double) {
+    init(time: Date, latitude: Double, longitude: Double, accuracy: Double = -1, speed: Double = -1) {
         self.time = time
         self.latitude = latitude
         self.longitude = longitude
+        self.accuracy = accuracy
+        self.speed = speed
     }
 
     init(_ location: CLLocation) {
         self.init(
             time: location.timestamp,
             latitude: location.coordinate.latitude,
-            longitude: location.coordinate.longitude
+            longitude: location.coordinate.longitude,
+            accuracy: location.horizontalAccuracy,
+            speed: location.speed
         )
     }
 
     func distance(to other: LocationSample) -> Double {
         CLLocation(latitude: latitude, longitude: longitude)
             .distance(from: CLLocation(latitude: other.latitude, longitude: other.longitude))
+    }
+}
+
+// MARK: - 移動判定（共用：靜止偵測與上傳端的「開始停留時間」）
+
+/// 「這筆定位算不算真的移動」。GPS 在室內／桌上也會漂移數十到上百公尺，單看位移會把靜止誤判成移動，所以：
+/// - 位移必須大於「定位精度」與 50 公尺兩者較大值（精度差時漂移本來就大）；
+/// - 系統給了速度且 <= 1 公尺／秒，視為漂移（除非是遠距離跳點）；速度未知（負值）時只看位移；
+/// - 必須連續 2 筆都符合才確認移動；單筆極大跳點（> max(500 公尺, 3 倍精度)）例外，視為確實換了地方。
+enum MovementJudge {
+    static let minDisplacement: Double = 50
+    static let movingSpeed: Double = 1.0
+    static let confirmCount = 2
+    static let definiteJumpFloor: Double = 500
+
+    static func threshold(accuracy: Double) -> Double { max(minDisplacement, max(0, accuracy)) }
+
+    /// 單筆：與基準點相距 displacement、精度 accuracy、速度 speed，是否像在移動
+    static func isMovedSample(displacement: Double, accuracy: Double, speed: Double) -> Bool {
+        guard displacement > threshold(accuracy: accuracy) else { return false }
+        if speed >= 0, speed <= movingSpeed {
+            return isDefiniteJump(displacement: displacement, accuracy: accuracy)
+        }
+        return true
+    }
+
+    static func isDefiniteJump(displacement: Double, accuracy: Double) -> Bool {
+        displacement > max(definiteJumpFloor, 3 * max(0, accuracy))
+    }
+
+    /// 餵入單筆判斷結果與目前連續次數，回傳「是否確認移動」與新的連續次數
+    static func advance(
+        isMovedSample: Bool, displacement: Double, accuracy: Double, streak: Int
+    ) -> (confirmed: Bool, streak: Int) {
+        guard isMovedSample else { return (false, 0) }
+        let next = streak + 1
+        return (next >= confirmCount || isDefiniteJump(displacement: displacement, accuracy: accuracy), next)
     }
 }
 
@@ -43,18 +88,19 @@ enum MotionState: String, Equatable {
 /// - 移動中 → 靜止：往前找「至少 [stationaryWindow]（4 分鐘）以前」的最後一筆取樣當基準，
 ///   基準與其後所有取樣都在 [stationaryRadius]（50 公尺）內，才判定靜止。
 ///   （靜止時 distanceFilter 放大、定位很少回呼，所以允許用心跳那一筆跟 4 分鐘前的取樣比。）
-/// - 靜止 → 移動：離開靜止錨點超過 [resumeMovingRadius]（100 公尺）。
-///   半徑比進入靜止大，避免 GPS 抖動造成來回切換。
+/// - 靜止 → 移動：離開靜止錨點的位移大於 max(定位精度, 50 公尺)、速度不是明確的低速，
+///   且連續 2 筆（見 [MovementJudge]），避免 GPS 漂移造成來回切換。
 struct MotionDetector {
     static let stationaryWindow: TimeInterval = 4 * 60
     static let stationaryRadius: Double = 50
-    static let resumeMovingRadius: Double = 100
     /// 緩衝只保留這麼久的取樣，避免無限成長
     private static let retention: TimeInterval = 15 * 60
 
     private(set) var state: MotionState = .moving
     private var samples: [LocationSample] = []
     private var stationaryAnchor: LocationSample?
+    /// 靜止中連續「像在移動」的筆數
+    private var movedStreak = 0
 
     init() {}
 
@@ -69,15 +115,30 @@ struct MotionDetector {
             let cutoff = sample.time.addingTimeInterval(-Self.stationaryWindow)
             guard let baseIndex = samples.lastIndex(where: { $0.time <= cutoff }) else { return state }
             let span = samples[baseIndex...]
-            if span.allSatisfy({ $0.distance(to: sample) < Self.stationaryRadius }) {
+            // 精度差時漂移本來就大：靜止半徑隨精度放寬
+            let radius = max(Self.stationaryRadius, sample.accuracy)
+            if span.allSatisfy({ $0.distance(to: sample) < radius }) {
                 state = .stationary
                 stationaryAnchor = sample
+                movedStreak = 0
             }
         case .stationary:
-            if let anchor = stationaryAnchor, anchor.distance(to: sample) >= Self.resumeMovingRadius {
-                state = .moving
-                stationaryAnchor = nil
-                samples = [sample]
+            if let anchor = stationaryAnchor {
+                let displacement = anchor.distance(to: sample)
+                let moved = MovementJudge.isMovedSample(
+                    displacement: displacement, accuracy: sample.accuracy, speed: sample.speed
+                )
+                let result = MovementJudge.advance(
+                    isMovedSample: moved, displacement: displacement,
+                    accuracy: sample.accuracy, streak: movedStreak
+                )
+                movedStreak = result.streak
+                if result.confirmed {
+                    state = .moving
+                    stationaryAnchor = nil
+                    movedStreak = 0
+                    samples = [sample]
+                }
             }
         }
         return state
@@ -87,6 +148,7 @@ struct MotionDetector {
         state = .moving
         samples = []
         stationaryAnchor = nil
+        movedStreak = 0
     }
 }
 

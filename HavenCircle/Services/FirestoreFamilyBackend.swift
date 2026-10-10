@@ -482,6 +482,7 @@ enum FirestoreFamilyBackend {
         radiusMeters: Int,
         district: String,
         stationarySince: Date,
+        movedAt: Date?,
         placeName: String?,
         placeSince: Date?,
         trailPoint: TrailPointInput? = nil
@@ -493,11 +494,14 @@ enum FirestoreFamilyBackend {
             "latitude": latitude,
             "longitude": longitude,
             "radiusMeters": radiusMeters,
-            "district": district,
             "updatedAt": Timestamp(date: Date()),
             "stationarySince": Timestamp(date: stationarySince),
             "isSharing": true
         ]
+        // 行政區：解析不到就刪欄位（不寫「未指定」字樣）
+        payload["district"] = district.isEmpty || district == Districts.unspecified ? FieldValue.delete() : district
+        // 最近一次確認移動的時間（「移動中」的證據）；從沒移動過就不寫
+        payload["movedAt"] = movedAt.map { Timestamp(date: $0) } ?? FieldValue.delete()
         // 名字：有真名才寫；沒有就刪欄位（merge 寫入會一併清掉舊版留下的「我」「家人」）
         let cleanName = FamilyNaming.clean(displayName)
         payload["displayName"] = cleanName.isEmpty ? FieldValue.delete() : cleanName
@@ -956,6 +960,7 @@ enum FirestoreFamilyBackend {
             updatedAt: updatedAt,
             // 舊版 App 寫的文件沒有這欄：nil 時文案退回「N 分鐘前更新位置」
             stationarySince: (data["stationarySince"] as? Timestamp)?.dateValue(),
+            movedAt: (data["movedAt"] as? Timestamp)?.dateValue(),
             placeName: (data["placeName"] as? String).flatMap { $0.isEmpty ? nil : $0 },
             placeSince: (data["placeSince"] as? Timestamp)?.dateValue(),
             isSharing: data["isSharing"] as? Bool ?? false
