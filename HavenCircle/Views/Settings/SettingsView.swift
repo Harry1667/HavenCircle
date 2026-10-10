@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import UIKit
+import PhotosUI
 import AuthenticationServices
 import UserNotifications
 
@@ -26,43 +27,27 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
-                // 頂部帳號卡：名稱＋email（Sign in with Apple 授權後）＋登入狀態
+                // 頂端帳號列：仿系統設定的 Apple 帳號列（頭像＋名字＋說明＋chevron），不再包成卡片
                 Section {
                     NavigationLink {
                         AppleAccountView()
                     } label: {
                         HStack(spacing: HCSpacing.x3) {
-                            avatar
-                            VStack(alignment: .leading, spacing: HCSpacing.x1) {
-                                // 這張卡導到 AppleAccountView，職責是登入狀態/登出/刪號，不是改名，
-                                // 文案不能再暗示「點進去能設定名稱」（真正改名在下方「個人資訊」row）
-                                Text(displayName.isEmpty
-                                     ? (sync.state == .noAccount ? "登入 Apple 帳號" : "Apple 帳號")
-                                     : displayName)
-                                    .font(.title3.weight(.bold))
-                                if !appleEmail.isEmpty {
-                                    Text(appleEmail)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Text(accountStatusText)
-                                    .font(.caption)
+                            ProfileAvatar(name: accountName, size: 60)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(accountTitle)
+                                    .font(.title3.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                Text(accountSubtitle)
+                                    .font(.footnote)
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        .contentShape(Rectangle())
-                        .hcCard()
+                        .padding(.vertical, 6)
+                        .accessibilityElement(children: .combine)
                     }
+                    .accessibilityIdentifier("settings.accountRow")
                 }
-                .listRowInsets(
-                    EdgeInsets(
-                        top: HCSpacing.x1,
-                        leading: HCSpacing.x4,
-                        bottom: HCSpacing.x1,
-                        trailing: HCSpacing.x4
-                    )
-                )
-                .listRowBackground(Color.clear)
 
                 Section {
                     Button {
@@ -465,6 +450,7 @@ struct SettingsView: View {
                     SettingsKeys.feedLocationDeniedShown, SettingsKeys.hasOpenedEventDetail] {
             UserDefaults.standard.removeObject(forKey: key)
         }
+        ProfilePhotoStore.shared.remove()
         EventVisibility.reset()
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
@@ -481,25 +467,20 @@ struct SettingsView: View {
         dismiss()
     }
 
-    /// 頭像：取顯示名稱第一個字，沒設名稱用預設盾牌
-    private var avatar: some View {
-        ZStack {
-            Circle()
-                .fill(HCColor.brand.opacity(0.10))
-            Circle()
-                .stroke(HCColor.brand.opacity(0.18), lineWidth: HCSpacing.x1 / 2)
-            if let initial = displayName.first {
-                Text(String(initial))
-                    .font(.title2.weight(.bold))
-                    .foregroundStyle(HCColor.brand)
-            } else {
-                Image(systemName: "shield.lefthalf.filled")
-                    .font(.title3.weight(.medium))
-                    .foregroundStyle(HCColor.brand)
-            }
-        }
-        .frame(width: 56, height: 56)
-        .accessibilityHidden(true)
+    /// 頭像用的真名（沒有任何來源時為 nil，頭像改顯示 person.fill）
+    private var accountName: String? {
+        ProfileIdentity.resolvedName(local: displayName, email: appleEmail)
+    }
+
+    private var accountTitle: String {
+        if sync.state == .noAccount { return "登入" }
+        return accountName ?? "Apple 帳號"
+    }
+
+    private var accountSubtitle: String {
+        sync.state == .noAccount
+            ? "用 Apple 帳號登入，與家人互報平安"
+            : "Apple 帳號、家庭圈與個人資料"
     }
 
     /// 仿系統設定的列：低彩度語意圖示＋標題＋副標。
@@ -532,19 +513,6 @@ struct SettingsView: View {
             .foregroundStyle(color)
             .frame(width: HCSpacing.x6 + HCSpacing.x2, height: HCSpacing.x6 + HCSpacing.x2)
             .background(color.opacity(0.14), in: RoundedRectangle(cornerRadius: HCRadius.badge))
-    }
-
-    private var accountStatusText: String {
-        switch sync.state {
-        case .ready, .sharing:
-            "Apple 帳號已登入"
-        case .noAccount:
-            "尚未登入 Apple 帳號"
-        case .error:
-            "帳號服務暫時無法使用"
-        case .unknown:
-            "正在檢查登入狀態"
-        }
     }
 }
 
@@ -673,23 +641,48 @@ private struct AppleAccountView: View {
     @State private var signInError: String?
     @State private var showLogoutConfirm = false
     @State private var showSignIn = false
+    @State private var showEditDialog = false
+    @State private var showPhotoPicker = false
+    @State private var pickedItem: PhotosPickerItem?
+    @State private var photoError: String?
+
+    private var accountName: String? {
+        ProfileIdentity.resolvedName(local: displayName, email: appleEmail)
+    }
 
     var body: some View {
         List {
-            Section("Apple 帳號資訊") {
-                if sync.state != .noAccount {
-                    // 已登入：顯示現況，不能同時又冒出一顆登入按鈕（真機回報過這個自相矛盾）
-                    LabeledContent("名稱", value: displayName.isEmpty ? "未設定" : displayName)
+            // 仿系統「Apple 帳號」頁：置中大頭像、編輯、名字、email
+            Section {
+                VStack(spacing: HCSpacing.x2) {
+                    ProfileAvatar(name: accountName, size: 90)
+                    Button("編輯") { showEditDialog = true }
+                        .font(.subheadline)
+                        .accessibilityIdentifier("account.editPhoto")
+                    Text(accountName ?? "Apple 帳號")
+                        .font(.title2.weight(.bold))
+                        .multilineTextAlignment(.center)
                     if !appleEmail.isEmpty {
-                        LabeledContent("Email", value: appleEmail)
+                        Text(appleEmail)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
-                    Text("已用 Apple 帳號登入安心圈，家人回報平安與即時位置會同步給家庭圈。")
+                    Text("照片只存在這支手機，不會上傳給家人或伺服器。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                } else {
-                    // 未登入：維持原本的登入按鈕與說明
-                    // 真登入：nonce/scopes 由 AuthService 統一設定，換到 Firebase uid 才是家庭圈能用的身份
-                    // （原本這顆按鈕只寫本機 @AppStorage，從不呼叫 AuthService，是一顆假登入按鈕）
+                        .multilineTextAlignment(.center)
+                        .padding(.top, HCSpacing.x1)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, HCSpacing.x2)
+                .listRowBackground(Color.clear)
+            }
+
+            if sync.state == .noAccount {
+                // 未登入：維持原本的登入按鈕與說明
+                // 真登入：nonce/scopes 由 AuthService 統一設定，換到 Firebase uid 才是家庭圈能用的身份
+                // （原本這顆按鈕只寫本機 @AppStorage，從不呼叫 AuthService，是一顆假登入按鈕）
+                Section {
                     SignInWithAppleButton(.continue) { request in
                         AuthService.shared.prepareAppleRequest(request)
                     } onCompletion: { result in
@@ -702,38 +695,80 @@ private struct AppleAccountView: View {
                             .font(.caption)
                             .foregroundStyle(HCColor.danger)
                     }
+                } footer: {
                     Text("用 Apple 帳號登入安心圈：免費，只用來讓家人找到彼此、同步安否回報與即時位置。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             }
 
-            Section("登入狀態") {
+            Section("個人資料") {
+                NavigationLink {
+                    PersonalProfileView()
+                } label: {
+                    LabeledContent("名字與家庭身分", value: displayName.isEmpty ? "未設定" : displayName)
+                }
+            }
+
+            Section {
                 LabeledContent("目前狀態", value: statusTitle)
                 Text(statusDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } header: {
+                Text("家庭圈")
+            } footer: {
+                Text("Apple 帳號登入用於同步家人安否回報與即時位置給家庭圈。警戒圈與事件資料仍保存在此裝置。")
+            }
+
+            Section("登入與安全") {
+                if sync.state != .noAccount {
+                    // 已登入：顯示現況，不能同時又冒出一顆登入按鈕（真機回報過這個自相矛盾）
+                    if !appleEmail.isEmpty {
+                        LabeledContent("Email", value: appleEmail)
+                    }
+                    Text("已用 Apple 帳號登入安心圈，家人回報平安與即時位置會同步給家庭圈。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                LabeledContent("Apple 登入", value: sync.state == .noAccount ? "尚未登入" : "已登入")
                 Button("重新檢查帳號狀態", systemImage: "arrow.clockwise") {
                     Task { await sync.refreshAccountStatus() }
                 }
             }
 
-            Section("資料範圍") {
-                Text("Apple 帳號登入用於同步家人安否回報與即時位置給家庭圈。警戒圈與事件資料仍保存在此裝置。")
-                    .font(.footnote)
-            }
-
-            Section {
-                Button("登出", role: .destructive) {
-                    showLogoutConfirm = true
+            if sync.state != .noAccount {
+                Section {
+                    Button(role: .destructive) {
+                        showLogoutConfirm = true
+                    } label: {
+                        Text("登出").frame(maxWidth: .infinity)
+                    }
+                } footer: {
+                    Text("登出會登出 Apple 帳號並清除此裝置顯示的名稱與 email；警戒圈與事件資料不受影響。請先在家人頁停止即時位置分享。")
                 }
-            } footer: {
-                Text("登出會登出 Apple 帳號並清除此裝置顯示的名稱與 email；警戒圈與事件資料不受影響。請先在家人頁停止即時位置分享。")
             }
         }
         .navigationTitle("Apple 帳號")
         .navigationBarTitleDisplayMode(.inline)
         .task { await sync.refreshAccountStatus() }
+        .confirmationDialog("大頭照", isPresented: $showEditDialog, titleVisibility: .visible) {
+            Button("選擇照片") { showPhotoPicker = true }
+            if ProfilePhotoStore.shared.image != nil {
+                Button("移除照片", role: .destructive) { ProfilePhotoStore.shared.remove() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("照片只存在這支手機，不會上傳給家人或伺服器。")
+        }
+        .photosPicker(isPresented: $showPhotoPicker, selection: $pickedItem, matching: .images)
+        .onChange(of: pickedItem) { _, item in
+            guard let item else { return }
+            Task { await loadPhoto(item) }
+        }
+        .alert("無法設定照片", isPresented: Binding(get: { photoError != nil }, set: { if !$0 { photoError = nil } })) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(photoError ?? "")
+        }
         .confirmationDialog("確定要登出嗎？", isPresented: $showLogoutConfirm, titleVisibility: .visible) {
             Button("登出", role: .destructive) {
                 Task {
@@ -747,6 +782,7 @@ private struct AppleAccountView: View {
                     AuthService.shared.signOut()
                     appleEmail = ""
                     displayName = ""
+                    ProfilePhotoStore.shared.remove()
                     await sync.refreshAccountStatus()
                     showSignIn = true
                 }
@@ -757,6 +793,21 @@ private struct AppleAccountView: View {
         }
         .fullScreenCover(isPresented: $showSignIn) {
             AppleSignInSheet()
+        }
+    }
+
+    private func loadPhoto(_ item: PhotosPickerItem) async {
+        defer { pickedItem = nil }
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self) else {
+                photoError = ProfilePhotoStore.PhotoError.unreadable.localizedDescription
+                return
+            }
+            try ProfilePhotoStore.shared.save(imageData: data)
+        } catch {
+            AppLog.dataError("載入頭像失敗：\(error.localizedDescription)")
+            photoError = (error as? ProfilePhotoStore.PhotoError)?.localizedDescription
+                ?? "照片載入失敗，請確認網路（iCloud 照片）後再試。"
         }
     }
 
@@ -772,7 +823,7 @@ private struct AppleAccountView: View {
                 appleEmail = email
             }
             if let components = credential.fullName {
-                let formatted = PersonNameComponentsFormatter().string(from: components)
+                let formatted = ProfileIdentity.formattedName(from: components)
                 // 名稱只在使用者還沒自己設定時帶入，不覆蓋現有稱呼
                 if !formatted.isEmpty && displayName.isEmpty {
                     displayName = formatted

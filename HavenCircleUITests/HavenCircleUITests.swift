@@ -876,6 +876,18 @@ final class HavenCircleUITests: XCTestCase {
         attach(text: "收起後仍存在=\(app.buttons["收起示範與開發"].exists)", name: "收起結果")
     }
 
+    /// 設定頂端帳號列（仿原生 Apple 帳號列）與帳號頁截圖
+    func testAccountHeader() throws {
+        app.buttons["設定"].firstMatch.tap(); sleep(2)
+        shot("設定頂端列")
+        let row = app.buttons["settings.accountRow"].firstMatch
+        guard row.waitForExistence(timeout: 5) else { attach(text: app.debugDescription, name: "設定結構"); XCTFail("找不到帳號列"); return }
+        row.tap(); sleep(2)
+        shot("帳號頁")
+        app.swipeUp(); sleep(1)
+        shot("帳號頁-下方")
+    }
+
     /// 只送一次「我平安」（雙機互傳測試用），並截已送出狀態
     func testQuickSafeOnce() throws {
         app.tabBars.buttons["動態"].firstMatch.tap(); sleep(2); app.swipeDown(); sleep(1)
