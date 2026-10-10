@@ -35,6 +35,9 @@ final class FamilySyncService {
     /// 目前邀請碼的到期時間（C4：InviteOptionsView 顯示「效期至」用）。
     /// nil 代表「舊邀請碼沒有 expiresAt 欄位」（長期有效）或尚未讀到，兩者 UI 上顯示同一種文案。
     private(set) var currentInviteCodeExpiresAt: Date?
+    /// 自動換新碼進行中／失敗訊息（家人頁與邀請頁共用，過期時畫面據此顯示進度或重試）
+    private(set) var isRenewingInviteCode = false
+    private(set) var inviteRenewError: String?
     /// 目前家庭圈的名稱（A4 header 用）；未在家庭圈或尚未讀到時為 nil
     private(set) var familyName: String?
     /// 目前家庭圈的成員 uid 清單（雲端真相）；未在家庭圈時為空陣列。
@@ -49,6 +52,8 @@ final class FamilySyncService {
     private var lastPublishedLocation: CLLocation?
     private var lastPublishedAt: Date?
     private var lastPublishedRadius: Int?
+    /// 上次寫入的「開始停留時間」；與 lastPublishedLocation（停留錨點座標）一起決定這次是否算移動
+    private var lastStationarySince: Date?
     /// MainActor 在 await 期間仍可重入；只允許一筆位置寫入在途，避免重複建立同一 doc
     private var liveLocationPublishInFlight = false
 
@@ -157,11 +162,32 @@ final class FamilySyncService {
     /// 用 8 碼邀請碼加入家庭圈。context 有給的話，加入成功立即刷新成員清單（A2 呼叫點）。
     func joinFamily(code: String, context: ModelContext? = nil) async throws {
         guard let uid else { throw FamilyBackendError.notSignedIn }
+        // 已有家庭圈時加入另一個＝「換家庭圈」。舊版沒處理這件事：只把本機指標改指向新家庭，
+        // 雲端舊家庭的 memberUids 仍留著自己（幽靈成員、舊家人還看得到我）。
+        // 這裡先記下舊家庭狀態，新家庭加入成功後才退出舊的（先加入再退出：加入失敗時原家庭完好）。
+        let previousFamilyID = currentFamilyID
+        let previousWasSoloOwner = isFamilyOwner && memberUids.count <= 1
         let familyID = try await FirestoreFamilyBackend.joinFamily(
             code: code,
             uid: uid,
             displayName: displayName.isEmpty ? "家人" : displayName
         )
+        if let previousFamilyID, previousFamilyID != familyID {
+            do {
+                if previousWasSoloOwner {
+                    try await FirestoreFamilyBackend.deleteFamily(familyId: previousFamilyID, uid: uid)
+                } else {
+                    try await FirestoreFamilyBackend.leaveFamily(familyId: previousFamilyID, uid: uid)
+                }
+            } catch {
+                // 新家庭已加入成功，不回頭擋流程；殘留的舊成員資格只記 log
+                AppLog.cloud.error("換家庭圈時退出舊家庭失敗：\(error.localizedDescription)")
+            }
+            if let context { purgeSyncedFamilyProjection(context: context) }
+            pings = []
+            liveLocations = []
+            UserDefaults.standard.removeObject(forKey: SettingsKeys.knownFamilyMemberUids)
+        }
         currentFamilyID = familyID
         if let family = try? await FirestoreFamilyBackend.fetchFamily(familyId: familyID) {
             await applyFamily(family)
@@ -182,6 +208,29 @@ final class FamilySyncService {
         let result = try await FirestoreFamilyBackend.regenerateInviteCode(familyId: familyID)
         currentInviteCode = result.code
         currentInviteCodeExpiresAt = result.expiresAt
+    }
+
+    /// 目前邀請碼的效期狀態（純函式判斷，見 InviteCodeExpiry）
+    var inviteCodeExpiry: InviteCodeExpiry {
+        InviteCodeExpiry.evaluate(expiresAt: currentInviteCodeExpiresAt)
+    }
+
+    /// 邀請碼已過期或剩不到 24 小時就自動換新碼；不需要換就什麼都不做。
+    /// 任何家庭成員都能換（rules：成員可更新家庭根文件、任何登入者可建立 inviteCodes；
+    /// 只有刪舊碼需圈主，且該步驟本來就是盡力而為）。
+    /// 失敗不吞：寫進 [inviteRenewError]，畫面顯示人話錯誤與重試鈕；
+    /// 已過期的碼在失敗期間仍不可分享（見 InviteCodeExpiry.isShareable）。
+    func renewInviteCodeIfNeeded() async {
+        guard currentFamilyID != nil, inviteCodeExpiry.needsRenewal, !isRenewingInviteCode else { return }
+        isRenewingInviteCode = true
+        inviteRenewError = nil
+        defer { isRenewingInviteCode = false }
+        do {
+            try await regenerateInviteCode()
+        } catch {
+            inviteRenewError = "邀請碼已過期，自動換新碼失敗。請檢查網路後按「重試」。"
+            AppLog.cloudError("自動換新邀請碼失敗：\(error.localizedDescription)")
+        }
     }
 
     /// 確保有家庭圈可寫入；沒有就自動建一個（給「還沒建家庭圈就發位置／回報」的情境）。回傳 familyId。
@@ -280,6 +329,11 @@ final class FamilySyncService {
 
     /// 把這台手機最新的位置寫進家庭圈的 locations 子集合。
     /// 100 公尺內且 30 秒內的重複更新會合併，避免寫入風暴。
+    ///
+    /// 心跳：LocationService 每 5 分鐘會送來一筆新定位（即使沒移動），這裡照常寫入，
+    /// 讓 updatedAt（最後回報時間）持續刷新；30 秒去抖不會擋到 5 分鐘一次的心跳。
+    /// 沒移動（距離停留錨點 < 100 公尺）時寫回錨點座標並沿用 stationarySince，
+    /// 家人看到的是「同一地點 N 分鐘・M 分鐘前確認」，而不是 GPS 抖動造成的假移動。
     func publishLiveLocation(
         _ location: CLLocation,
         displayName: String,
@@ -318,18 +372,43 @@ final class FamilySyncService {
                 $0.isFollowMe && $0.member?.isCurrentUser == true
             }?.district ?? Districts.unspecified
 
+            // 停留錨點：優先用本次執行期間記住的；App 被系統重啟後記憶體清空，
+            // 退回家庭圈上自己那筆（雲端真相），避免每次重啟都把「停留時間」歸零。
+            let previousAnchor: CLLocation?
+            let previousStationarySince: Date?
+            if let lastPublishedLocation {
+                previousAnchor = lastPublishedLocation
+                previousStationarySince = lastStationarySince
+            } else if let own = ownLiveLocation {
+                previousAnchor = CLLocation(latitude: own.latitude, longitude: own.longitude)
+                previousStationarySince = own.stationarySince
+            } else {
+                previousAnchor = nil
+                previousStationarySince = nil
+            }
+            let movedMeters = previousAnchor.map { location.distance(from: $0) }
+            let stationarySince = LiveLocationPresence.stationarySince(
+                previousStationarySince: previousStationarySince,
+                movedMeters: movedMeters
+            )
+            // 沒移動：寫回錨點座標（同座標、新的 updatedAt）；移動了：錨點換成新位置
+            let isStationary = movedMeters.map { $0 < LiveLocationPresence.stationaryRadiusMeters } ?? false
+            let anchor = (isStationary ? previousAnchor : nil) ?? location
+
             // 隱私與救援的取捨：寫入原始座標，不加雜訊模糊化——這是家人要據以趕去救人的位置。
             // 降低暴露改用其他手段：擷取端 ~100m 精度、預設關閉且可隨時停止、Security Rules 限同家庭可讀。
             try await FirestoreFamilyBackend.publishLocation(
                 familyId: familyID,
                 uid: uid,
                 displayName: trimmedName,
-                latitude: location.coordinate.latitude,
-                longitude: location.coordinate.longitude,
+                latitude: anchor.coordinate.latitude,
+                longitude: anchor.coordinate.longitude,
                 radiusMeters: max(300, min(radiusMeters, 3_000)),
-                district: district
+                district: district,
+                stationarySince: stationarySince
             )
-            lastPublishedLocation = location
+            lastPublishedLocation = anchor
+            lastStationarySince = stationarySince
             lastPublishedAt = .now
             lastPublishedRadius = radiusMeters
             liveLocationError = nil
@@ -371,6 +450,7 @@ final class FamilySyncService {
         lastPublishedLocation = nil
         lastPublishedAt = nil
         lastPublishedRadius = nil
+        lastStationarySince = nil
         liveLocationError = nil
 
         guard let uid, let familyID = currentFamilyID else { return }
@@ -466,11 +546,13 @@ final class FamilySyncService {
                 || circle.longitude != location.longitude
                 || circle.radiusMeters != location.radiusMeters
                 || circle.locationUpdatedAt != location.updatedAt
+                || circle.locationStationarySince != location.stationarySince
                 || circle.district != location.district {
                 circle.latitude = location.latitude
                 circle.longitude = location.longitude
                 circle.radiusMeters = location.radiusMeters
                 circle.locationUpdatedAt = location.updatedAt
+                circle.locationStationarySince = location.stationarySince
                 circle.district = location.district
                 changed = true
             }

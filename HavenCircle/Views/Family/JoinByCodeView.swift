@@ -45,7 +45,7 @@ struct JoinByCodeView: View {
                 }
             }
             .listSectionSpacing(HCSpacing.x6)
-            .navigationTitle(preview == nil ? "用邀請碼加入" : "確認加入")
+            .navigationTitle(preview == nil ? "輸入邀請碼加入" : "確認加入")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 Button("取消") { dismiss() }
@@ -93,6 +93,13 @@ struct JoinByCodeView: View {
                 TextField("例如 AB12CD34", text: $code)
                     .textInputAutocapitalization(.characters)
                     .autocorrectionDisabled()
+                    .accessibilityIdentifier("join.codeField")
+                    // 鍵盤的 Return 直接送出：iPad 上鍵盤會蓋住「下一步」
+                    .submitLabel(.next)
+                    .onSubmit {
+                        guard isCodeValid, !isLookingUp else { return }
+                        Task { await lookupCode() }
+                    }
                     .font(.system(.title2, design: .monospaced, weight: .bold))
                     .kerning(HCSpacing.x1)
                     .multilineTextAlignment(.center)
@@ -129,6 +136,7 @@ struct JoinByCodeView: View {
             .tint(HCColor.brand)
             .controlSize(.large)
             .disabled(!isCodeValid || isLookingUp)
+            .accessibilityIdentifier("join.nextButton")
             if let lookupError {
                 Label(lookupError, systemImage: "exclamationmark.circle.fill")
                     .font(.caption)
@@ -173,6 +181,19 @@ struct JoinByCodeView: View {
                         .multilineTextAlignment(.center)
                 }
 
+                // 已有家庭圈時，說清楚加入的後果（會自動退出目前的家庭圈）
+                if let notice = switchFamilyNotice {
+                    Label(notice, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(HCColor.attention)
+                        .multilineTextAlignment(.leading)
+                        .padding(HCSpacing.x2)
+                        .background(
+                            HCColor.attention.opacity(0.10),
+                            in: RoundedRectangle(cornerRadius: HCRadius.chip, style: .continuous)
+                        )
+                }
+
                 if isJoining {
                     ProgressView()
                         .padding(.vertical, HCSpacing.x2)
@@ -180,13 +201,14 @@ struct JoinByCodeView: View {
                     Button {
                         Task { await join(familyId: preview.familyId) }
                     } label: {
-                        Text("加入")
+                        Text(sync.isInFamilyCircle ? "退出目前家庭圈並加入" : "加入")
                             .font(.body.weight(.medium))
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(HCColor.brand)
                     .controlSize(.large)
+                    .accessibilityIdentifier("join.confirmButton")
 
                     Button("取消") {
                         self.preview = nil
@@ -221,6 +243,19 @@ struct JoinByCodeView: View {
             )
         )
         .listRowBackground(Color.clear)
+    }
+
+    /// 已在家庭圈時的後果說明；未入圈回傳 nil。
+    /// 實際行為見 FamilySyncService.joinFamily：新家庭加入成功後會自動退出舊家庭
+    /// （只剩自己的圈主則一併解散舊家庭圈）。
+    private var switchFamilyNotice: String? {
+        guard sync.isInFamilyCircle else { return nil }
+        let current = sync.familyName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let currentName = current.isEmpty ? "目前的家庭圈" : "「\(current)」"
+        if sync.isFamilyOwner, sync.memberUids.count <= 1 {
+            return "你已在\(currentName)，且只有你一人。加入新的家庭圈後，\(currentName)會被解散。"
+        }
+        return "你已在\(currentName)。加入新的家庭圈後會自動退出\(currentName)，原本的家人將看不到你，你也看不到他們。"
     }
 
     /// C2 標題優先序：自訂家庭名（非預設值「我的家庭」）優先；否則用「○○的家庭圈」；

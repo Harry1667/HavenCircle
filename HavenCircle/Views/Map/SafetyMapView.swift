@@ -1288,7 +1288,7 @@ struct SafetyMapView: View {
                                         member.displayName
                                     )
                                 }
-                                legendRow(Color.gray.opacity(0.8), "即時位置已過期")
+                                legendRow(Color.gray.opacity(0.8), "即時位置超過 15 分鐘沒有回報")
                             }
                             if showsSeverity {
                                 Text("警報區").font(.caption2.bold())

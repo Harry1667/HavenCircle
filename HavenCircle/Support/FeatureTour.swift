@@ -85,7 +85,7 @@ struct FeatureTourView: View {
 
     private static let allSteps: [TourStep] = [
         .init(target: .statusHero, tab: TabRouter.homeTab, title: "一眼看到全家狀態",
-              message: "打開 App 第一眼就會用文字告訴你：警戒圈是否平安、是否有事件靠近，以及即時位置是否超過 15 分鐘未更新。"),
+              message: "打開 App 第一眼就會用文字告訴你：警戒圈是否平安、是否有事件靠近，以及即時位置是否超過 15 分鐘沒有回報。"),
         // 背景看守列已被安心頁事件串取代，2026-07-23：這一步整步移除，不再介紹「背景看守」，
         // 事件串本身用途夠直覺（點列開詳情），不需要專門一步導覽
         .init(target: .historyRow, tab: TabRouter.homeTab, title: "回顧過去 30 天",

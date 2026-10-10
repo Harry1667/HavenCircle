@@ -6,6 +6,13 @@
 	<array>
 		<string>com.gomiigo.CamMenuApp.HavenCircle.refresh</string>
 	</array>
+	<!-- 宣告 App 支援繁體中文：系統元件（貼上鈕 PasteButton、分享面板等）依 App 宣告的語系
+	     決定顯示語言；沒宣告就只有 en，中文裝置上會顯示英文「Paste」。 -->
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>zh-Hant</string>
+	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

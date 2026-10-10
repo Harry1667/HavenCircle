@@ -20,22 +20,39 @@ private func roleEmoji(for name: String) -> String {
     FamilyRole.all.first(where: { $0.label == name })?.emoji ?? FamilyRole.customEmoji
 }
 
-/// 這位家人最新的安否回報時間（比對署名；還沒回報過就明講，不是留白讓人猜）
+/// 這位家人最新的安否回報時間（比對署名）。分項標示「平安回報：」，
+/// 還沒回報過就明講「尚未回報」，不是留白讓人猜。
 private func lastPingText(_ member: LocalFamilyMember, pings: [SafetyPing]) -> String {
     guard let ping = pings
         .filter({ $0.senderName == member.name })
         .max(by: { $0.createdAt < $1.createdAt }) else {
-        return "尚未回報"
+        return "平安回報：尚未回報"
     }
-    return ping.createdAt.formatted(.relative(presentation: .named))
+    return "平安回報：\(ping.createdAt.formatted(.relative(presentation: .named)))"
 }
 
-/// 位置狀態：分享中／過期／未開啟——三態直接對應即時圈是否存在、是否仍在有效時效內。
+/// 位置狀態（分項標示「位置：」，不只靠顏色）：
+/// 未分享（對方沒開即時位置）／分享中（15 分鐘內有更新，含沒移動時的心跳）／超過 15 分鐘未更新（視為過時）。
 private func locationStatusText(_ member: LocalFamilyMember) -> String {
     guard let live = member.lifeCircles.first(where: { $0.kind == .live }) else {
-        return "未開啟"
+        return "位置：未分享"
     }
-    return live.isActiveForAlerts ? "分享中" : "過期"
+    return live.isActiveForAlerts ? "位置：分享中" : "位置：超過 15 分鐘未更新"
+}
+
+/// 成員列的兩行狀態文字（平安回報／位置各一行），FamilyListView 與總覽頁共用
+private struct MemberStatusLines: View {
+    let member: LocalFamilyMember
+    let pings: [SafetyPing]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(lastPingText(member, pings: pings))
+            Text(locationStatusText(member))
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
 }
 
 /// #15 本名/身分分離：家人清單「自己」那列的主標題——本名優先，
@@ -86,6 +103,11 @@ struct FamilyListView: View {
     /// B2：deep link（QR／havencircle://join）帶進來的邀請碼，交給 JoinByCodeView 預填並自動查詢
     @State private var prefilledJoinCode: String?
 
+    /// 家人頁頂部「回報平安」區塊開的回報 sheet（沿用 SafetyCheckInView）
+    @State private var showCheckIn = false
+    /// 已有家庭圈時，點「輸入邀請碼加入」先說明後果的確認框
+    @State private var showJoinSwitchConfirm = false
+
     // 退出／解散家庭圈
     @State private var showLeaveConfirm = false
     @State private var isLeavingFamily = false
@@ -97,6 +119,16 @@ struct FamilyListView: View {
     private var isCircleSolo: Bool { sync.isSolo(localMembers: members) }
     /// D2：是否已用 Apple 帳號登入（沿用 LiveCircleSharingSection 同款判法）
     private var isSignedIn: Bool { sync.state != .noAccount }
+
+    /// 回報平安的署名：與 AppTabs.myName 同一規則（postPing 的 senderName 就是它），
+    /// 才能用署名比對出「我最後一次回報」。
+    private var myPingName: String {
+        if !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return displayName }
+        return members.first { $0.relationship == "擁有者" }?.name ?? members.first?.name ?? "我"
+    }
+    private var myLastPing: SafetyPing? {
+        sync.pings.filter { $0.senderName == myPingName }.max(by: { $0.createdAt < $1.createdAt })
+    }
 
     private var me: LocalFamilyMember? { members.first(where: \.isCurrentUser) }
     /// 家人清單（#4：含「自己」，排在最前面）——memberRow 會依 isCurrentUser 特判顯示方式。
@@ -138,22 +170,25 @@ struct FamilyListView: View {
                 // 單人也能用：這正是使用者要的「我的即時圈」——純本地，不用登入
                 FollowCircleToggleSection()
             } else if isCircleSolo {
+                checkInSection
                 familyCircleHeaderSection
                 waitingForFamilyCard
-                joinByCodeSection
                 InviteFamilySection()
                 placesSection
                 FollowCircleToggleSection(disambiguateFromSharing: true)
                 LiveCircleSharingSection()
+                // 已有家庭圈：「輸入邀請碼加入」降級到危險區上方的小字入口（會退出目前家庭圈）
+                joinByCodeSection
                 leaveFamilySection
             } else {
+                checkInSection
                 familyCircleHeaderSection
                 familyMembersSection
                 InviteFamilySection()
-                joinByCodeSection
                 placesSection
                 FollowCircleToggleSection(disambiguateFromSharing: true)
                 LiveCircleSharingSection()
+                joinByCodeSection
                 leaveFamilySection
             }
         }
@@ -191,6 +226,9 @@ struct FamilyListView: View {
                 // iPad 會忽略隱含尺寸而放大成整頁 sheet，這裡收斂成 form 尺寸
                 .formPresentationSizing()
         }
+        .sheet(isPresented: $showCheckIn) {
+            NavigationStack { SafetyCheckInView(myName: myPingName) }
+        }
         .sheet(isPresented: $showJoinByCode, onDismiss: { prefilledJoinCode = nil }) {
             JoinByCodeView(prefilledCode: prefilledJoinCode)
                 .formPresentationSizing()
@@ -211,10 +249,15 @@ struct FamilyListView: View {
         .task {
             await sync.refreshAccountStatus()
             await sync.refreshFamilyMembers(context: context)
+            await sync.fetchPings()
+            // 開啟家人頁時邀請碼已過期／剩不到 24 小時 → 自動換新碼
+            await sync.renewInviteCodeIfNeeded()
         }
         .refreshable {
             await sync.refreshAccountStatus()
             await sync.refreshFamilyMembers(context: context)
+            await sync.fetchPings()
+            await sync.renewInviteCodeIfNeeded()
         }
         // B2：deep link 帶碼進來（QR 掃描／havencircle://join）——切到本頁後這裡接手，
         // 未登入先走登入預告卡，登入完成才開加入流程；消耗式旗標，用過就清空避免重觸發。
@@ -225,6 +268,17 @@ struct FamilyListView: View {
                 prefilledJoinCode = code
                 showJoinByCode = true
             }
+        }
+        .confirmationDialog("要加入另一個家庭圈嗎？", isPresented: $showJoinSwitchConfirm, titleVisibility: .visible) {
+            Button("繼續輸入邀請碼") {
+                signInGate.perform {
+                    prefilledJoinCode = nil
+                    showJoinByCode = true
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text(joinSwitchMessage)
         }
         .confirmationDialog(leaveDialogTitle, isPresented: $showLeaveConfirm, titleVisibility: .visible) {
             Button(isCircleSolo && sync.isFamilyOwner ? "解散家庭圈" : "退出家庭圈", role: .destructive) {
@@ -336,6 +390,7 @@ struct FamilyListView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(isInviting)
+                .accessibilityIdentifier("family.inviteButton")
                 if !isSignedIn {
                     Text("用 Apple 帳號，約 10 秒完成")
                         .font(.caption)
@@ -369,6 +424,7 @@ struct FamilyListView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
+                .accessibilityIdentifier("family.joinByCodeButton")
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, HCSpacing.x2)
@@ -433,34 +489,132 @@ struct FamilyListView: View {
                 }
                 Text("等待家人加入")
                     .font(.title3.weight(.bold))
-                if let code = sync.currentInviteCode {
-                    Text(code)
-                        .font(.system(.title2, design: .monospaced).weight(.bold))
-                        .tracking(HCSpacing.x1)
-                        .padding(.horizontal, HCSpacing.x4)
-                        .padding(.vertical, HCSpacing.x2)
-                        .background(
-                            .primary.opacity(0.06),
-                            in: RoundedRectangle(cornerRadius: HCRadius.control, style: .continuous)
-                        )
+                if sync.currentInviteCode != nil, !sync.inviteCodeExpiry.isShareable {
+                    // 過期：不顯示舊碼、不給分享鈕，只顯示換新碼進度或錯誤＋重試
+                    expiredInviteBlock
+                } else {
+                    if let code = sync.currentInviteCode {
+                        Text(code)
+                            .font(.system(.title2, design: .monospaced).weight(.bold))
+                            .tracking(HCSpacing.x1)
+                            .accessibilityIdentifier("invite.code")
+                            .padding(.horizontal, HCSpacing.x4)
+                            .padding(.vertical, HCSpacing.x2)
+                            .background(
+                                .primary.opacity(0.06),
+                                in: RoundedRectangle(cornerRadius: HCRadius.control, style: .continuous)
+                            )
+                        Label(sync.inviteCodeExpiry.displayText, systemImage: "clock")
+                            .font(.caption)
+                            .foregroundStyle(sync.inviteCodeExpiry.needsRenewal ? HCColor.danger : .secondary)
+                        if sync.isRenewingInviteCode {
+                            ProgressView()
+                        } else if let error = sync.inviteRenewError {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(HCColor.danger)
+                                .multilineTextAlignment(.center)
+                        }
+                    }
+                    Text("把邀請碼給家人，或讓他們掃你畫面上的 QR code 就能加入。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button {
+                        showInviteOptions = true
+                    } label: {
+                        // #9：同上，改用 HCCenteredLabel 保留 icon
+                        HCCenteredLabel("再次分享", systemImage: "square.and.arrow.up")
+                            .font(.body.weight(.medium))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
                 }
-                Text("把邀請碼給家人，或讓他們掃你畫面上的 QR code 就能加入。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                Button {
-                    showInviteOptions = true
-                } label: {
-                    // #9：同上，改用 HCCenteredLabel 保留 icon
-                    HCCenteredLabel("再次分享", systemImage: "square.and.arrow.up")
-                        .font(.body.weight(.medium))
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, HCSpacing.x2)
             .hcCard()
+        }
+        .listRowInsets(
+            EdgeInsets(
+                top: HCSpacing.x1,
+                leading: HCSpacing.x4,
+                bottom: HCSpacing.x1,
+                trailing: HCSpacing.x4
+            )
+        )
+        .listRowBackground(Color.clear)
+    }
+
+    /// 邀請碼過期時取代「碼＋再次分享」的內容
+    @ViewBuilder
+    private var expiredInviteBlock: some View {
+        if sync.isRenewingInviteCode {
+            ProgressView()
+            Text("邀請碼已過期，正在產生新邀請碼⋯")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Label(sync.inviteCodeExpiry.displayText, systemImage: "clock.badge.exclamationmark")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(HCColor.danger)
+            Text(sync.inviteRenewError ?? "邀請碼已過期，需要換一組新的才能邀請家人。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button {
+                Task { await sync.renewInviteCodeIfNeeded() }
+            } label: {
+                HCCenteredLabel("重試", systemImage: "arrow.clockwise")
+                    .font(.body.weight(.medium))
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .accessibilityIdentifier("family.renewInviteRetry")
+        }
+    }
+
+    // MARK: - 回報平安（家人頁頂部）
+
+    /// 家人頁頂部的「回報平安」入口：沿用 SafetyCheckInView（我平安／需要協助、附位置、送出都在裡面），
+    /// 這裡只放入口與「我最後一次回報」時間，不重寫回報邏輯。
+    private var checkInSection: some View {
+        Section {
+            VStack(spacing: HCSpacing.x3) {
+                Button {
+                    showCheckIn = true
+                } label: {
+                    HCCenteredLabel("回報平安／需要協助", systemImage: "checkmark.shield.fill")
+                        .font(.body.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(HCColor.brand)
+                .controlSize(.large)
+                .accessibilityIdentifier("family.checkInButton")
+                if let ping = myLastPing {
+                    Text("我最後一次回報：\(ping.status.rawValue)，\(ping.createdAt.formatted(date: .abbreviated, time: .shortened))（\(ping.createdAt.formatted(.relative(presentation: .named)))）")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                } else {
+                    Text("我最後一次回報：尚未回報")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if isCircleSolo {
+                    Text("目前只有你一人，家人加入後才會收到你的回報。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Text("非緊急服務；遇到危險請直接撥 110 / 119。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, HCSpacing.x2)
+            .hcCard()
+        } header: {
+            Text("回報平安")
         }
         .listRowInsets(
             EdgeInsets(
@@ -557,9 +711,7 @@ struct FamilyListView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text("\(lastPingText(member, pings: sync.pings)) · \(locationStatusText(member))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                MemberStatusLines(member: member, pings: sync.pings)
             }
             Spacer()
             Text("\(circleCount) 圈")
@@ -615,21 +767,32 @@ struct FamilyListView: View {
         }
     }
 
-    // MARK: - B：輸入邀請碼加入（#16＋#4輸碼：已入圈狀態下的次要入口）
+    // MARK: - B：輸入邀請碼加入（已入圈時降級為次要入口）
 
-    /// 已入圈（單人等待／多人）狀態下仍要摸得到「輸入邀請碼加入」——例如手機同時要加入
-    /// 另一個家庭圈邀請碼的情境；未入圈時的主要入口在 emptyStateSection。
+    /// 已入圈（單人等待／多人）時的次要入口：小字、放在危險區上方，不跟「邀請家人」搶位置。
+    /// 實際行為（FamilySyncService.joinFamily）：加入新家庭圈成功後會自動退出目前的家庭圈，
+    /// 所以按下去先跳確認框把後果講清楚；未入圈時的主要入口在 emptyStateSection，不經過這裡。
     private var joinByCodeSection: some View {
         Section {
             Button {
-                signInGate.perform {
-                    prefilledJoinCode = nil
-                    showJoinByCode = true
-                }
+                showJoinSwitchConfirm = true
             } label: {
                 Label("輸入邀請碼加入", systemImage: "number.square")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
+        } footer: {
+            Text("想換到另一個家庭圈時使用。加入後會退出目前的家庭圈。")
         }
+    }
+
+    private var joinSwitchMessage: String {
+        let current = sync.familyName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let name = current.isEmpty ? "目前的家庭圈" : "「\(current)」"
+        if sync.isFamilyOwner, isCircleSolo {
+            return "你已在\(name)且只有你一人。加入新的家庭圈後，\(name)會被解散。"
+        }
+        return "你已在\(name)。加入新的家庭圈後會自動退出\(name)，原本的家人將看不到你，你也看不到他們。如果只是要邀請家人，請改用「邀請更多家人」。"
     }
 
     // MARK: - C：退出／解散家庭圈
@@ -804,9 +967,7 @@ private struct FamilyMembersOverviewView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text("\(lastPingText(member, pings: sync.pings)) · \(locationStatusText(member))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                MemberStatusLines(member: member, pings: sync.pings)
             }
             Spacer()
             Text("\(member.lifeCircles.count) 圈")

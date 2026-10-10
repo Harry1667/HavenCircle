@@ -3,7 +3,7 @@ import CoreImage.CIFilterBuiltins
 import UIKit
 
 /// 邀請方式：顯示家庭圈的 8 碼邀請碼——可唸、可抄、可拷貝、可掃 QR、可用系統分享。
-/// 家人在「用邀請碼加入家庭圈」輸入這組碼即可加入，跨 iCloud 帳號都適用。
+/// 家人在「家人」分頁點「輸入邀請碼加入」輸入這組碼即可加入，跨 iCloud 帳號都適用。
 struct InviteOptionsView: View {
     @Environment(FamilySyncService.self) private var sync
     @Environment(\.dismiss) private var dismiss
@@ -18,7 +18,10 @@ struct InviteOptionsView: View {
     var body: some View {
         NavigationStack {
             List {
-                if let code = inviteCode {
+                if inviteCode != nil, !sync.inviteCodeExpiry.isShareable {
+                    // 過期的碼絕不顯示、不可分享：只顯示換新碼的進度或錯誤＋重試
+                    expiredSection
+                } else if let code = inviteCode {
                     codeSection(code: code)
                     expirySection
                     qrSection(code: code)
@@ -54,23 +57,56 @@ struct InviteOptionsView: View {
                 Button("完成") { dismiss() }
             }
             .analyticsScreen("invite_options")
+            // 開啟邀請頁時，碼已過期或剩不到 24 小時就自動換新碼
+            .task { await sync.renewInviteCodeIfNeeded() }
         }
     }
 
-    /// C4：顯示邀請碼效期；nil（舊碼沒有 expiresAt 欄位，或尚未讀到）一律顯示長期有效文案。
+    /// 邀請碼已過期：不顯示舊碼；換新碼進行中顯示進度，失敗顯示原因與重試。
+    private var expiredSection: some View {
+        Section {
+            if sync.isRenewingInviteCode {
+                HStack {
+                    ProgressView()
+                    Text("邀請碼已過期，正在產生新邀請碼⋯")
+                }
+            } else {
+                Label(sync.inviteCodeExpiry.displayText, systemImage: "clock.badge.exclamationmark")
+                    .foregroundStyle(HCColor.danger)
+                Text(sync.inviteRenewError ?? "邀請碼已過期，需要換一組新的才能邀請家人。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button {
+                    Task { await sync.renewInviteCodeIfNeeded() }
+                } label: {
+                    HCCenteredLabel("重試", systemImage: "arrow.clockwise")
+                        .font(.body.weight(.medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(HCColor.brand)
+                .accessibilityIdentifier("invite.renewRetry")
+            }
+        }
+    }
+
+    /// C4：顯示邀請碼效期（含年份與剩餘天數）；舊碼沒有 expiresAt 顯示長期有效文案。
+    /// 剩不到 24 小時但自動換新碼失敗時，一併顯示錯誤，不 silent fail。
     private var expirySection: some View {
         Section {
-            if let expiresAt = sync.currentInviteCodeExpiresAt {
-                Label(
-                    "效期至\(Self.expiryDateFormatter.string(from: expiresAt))",
-                    systemImage: "clock"
-                )
+            Label(sync.inviteCodeExpiry.displayText, systemImage: "clock")
                 .font(.caption)
-                .foregroundStyle(.secondary)
-            } else {
-                Label("長期有效（建議重新產生）", systemImage: "clock")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(sync.inviteCodeExpiry.needsRenewal ? HCColor.danger : .secondary)
+            if sync.isRenewingInviteCode {
+                HStack {
+                    ProgressView()
+                    Text("正在更換新邀請碼⋯").font(.caption)
+                }
+            } else if let error = sync.inviteRenewError {
+                Label(error, systemImage: "exclamationmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(HCColor.danger)
+                Button("重試") { Task { await sync.renewInviteCodeIfNeeded() } }
+                    .font(.caption.weight(.semibold))
             }
         }
         .listRowBackground(Color.clear)
@@ -120,13 +156,6 @@ struct InviteOptionsView: View {
         }
     }
 
-    private static let expiryDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "M 月 d 日"
-        formatter.locale = Locale(identifier: "zh_TW")
-        return formatter
-    }()
-
     private func codeSection(code: String) -> some View {
         Section("你的家庭邀請碼") {
             VStack(spacing: HCSpacing.x4) {
@@ -135,6 +164,7 @@ struct InviteOptionsView: View {
                     .kerning(HCSpacing.x1)
                     .multilineTextAlignment(.center)
                     .minimumScaleFactor(0.8)
+                    .accessibilityIdentifier("invite.code")
                 Button {
                     UIPasteboard.general.string = code
                 } label: {
@@ -147,7 +177,7 @@ struct InviteOptionsView: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, HCSpacing.x4)
             .hcCard()
-            Text("家人在「家人」分頁點「用邀請碼加入家庭圈」輸入這組碼即可加入。")
+            Text("家人在「家人」分頁點「輸入邀請碼加入」輸入這組碼即可加入。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -206,7 +236,7 @@ struct InviteOptionsView: View {
     private func shareText(code: String) -> String {
         "來加入我們的安心圈，災害來的時候互相知道平安。邀請碼：\(code)。" +
         "已裝 App 的話，用相機掃我畫面上的 QR code 就能直接加入；" +
-        "或在 App 的「家人」分頁點「我收到了邀請碼」輸入。"
+        "或在 App 的「家人」分頁點「輸入邀請碼加入」輸入。"
     }
 
     /// 用 CoreImage 產生 QR code（放大 12 倍再轉點陣，避免模糊）

@@ -48,6 +48,10 @@ final class LocalLifeCircle {
     var isFollowMe: Bool = false
     /// 即時圈的位置時效與 CloudKit 來源。固定圈兩欄皆為 nil。
     var locationUpdatedAt: Date?
+    /// 即時圈「開始停留在這個位置」的時間（座標最後一次移動超過 100 公尺）。
+    /// 與 locationUpdatedAt（最後回報時間）分開：人沒動但手機持續回報，不算過期。
+    /// 新增的可選欄位，SwiftData 輕量遷移即可；本機跟隨圈與舊資料為 nil。
+    var locationStationarySince: Date?
     var sharedLocationID: String?
     var member: LocalFamilyMember?
 
@@ -78,26 +82,24 @@ extension LocalLifeCircle {
         set { kindRawValue = newValue.rawValue }
     }
 
-    /// 即時位置超過 15 分鐘未更新，就不能再用來觸發安全判斷。
-    /// 圈仍保留在畫面上並明示過期，避免把舊座標冒充現在位置。
+    /// 即時圈超過 15 分鐘「沒有回報」，就不能再用來觸發安全判斷。
+    /// 圈仍保留在畫面上並明示失聯，避免把舊座標冒充現在位置。
     ///
-    /// 本人與家人的即時圈都遵守相同規則：沒有更新時間或超過 15 分鐘就不參與
-    /// 警報判斷。不能因為「警報跟著我」而把數小時前的位置當成現在位置。
+    /// locationUpdatedAt 是「最後回報時間」：分享中的手機沒移動也會每 5 分鐘心跳一次，
+    /// 所以待在原地的人不會被誤判過期；只有手機沒電、關機、斷網或停止回報才會過期。
+    /// 本人與家人的即時圈都遵守相同規則：沒有回報時間或超過 15 分鐘就不參與警報判斷。
     var isActiveForAlerts: Bool {
         guard kind == .live else { return true }
-        guard let locationUpdatedAt else { return false }
-        return locationUpdatedAt > Date.now.addingTimeInterval(-15 * 60)
+        return LiveLocationPresence.isReporting(lastReportedAt: locationUpdatedAt)
     }
 
+    /// 狀態文案（純文字、不靠顏色）：在同一地點多久・多久前確認／多久沒有回報
     var locationFreshnessText: String {
         guard kind == .live else { return "固定位置" }
-        guard let locationUpdatedAt else { return "尚未取得位置" }
-        guard isActiveForAlerts else { return "位置已過期" }
-        // 相對時間鎖定繁中：App 字串全是寫死的中文，系統格式器卻跟著裝置語言跑，
-        // 英文系統會拼出「1 minute ago 更新」這種中英混雜句
-        var style = Date.RelativeFormatStyle(presentation: .named)
-        style.locale = Locale(identifier: "zh_TW")
-        return "\(locationUpdatedAt.formatted(style))更新"
+        return LiveLocationPresence.statusText(
+            lastReportedAt: locationUpdatedAt,
+            stationarySince: locationStationarySince
+        )
     }
 
     /// 事件發生時間是否落在這個生活圈的提醒時段內

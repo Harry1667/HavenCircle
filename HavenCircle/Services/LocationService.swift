@@ -7,6 +7,12 @@ import os // Swift 6.2 MemberImportVisibility：用 os.Logger 插值的檔案必
 /// (1) 地圖藍點與一次性取位；(2) 本機即時圈更新；(3) 使用者主動開啟的家庭位置分享。
 /// 家庭分享開啟時使用約 100 公尺精度／距離門檻，並允許背景更新；關閉後立即停止標準定位。
 /// 顯著位置變更保留作為省電喚醒與本機即時圈的降級路徑。
+///
+/// 心跳（分享中才有）：distanceFilter 只在「移動 100 公尺」時回報，人待在原地就完全沒有回呼，
+/// 家人端會誤判成「超過 15 分鐘沒更新」。所以分享期間每分鐘檢查一次，距離上一筆送出的
+/// 定位超過 [heartbeatDueInterval] 就暫時把 distanceFilter 放開，取一筆新定位走同一條
+/// onLiveLocationUpdate 寫入路徑（同座標、新的最後回報時間），拿到後立刻恢復 100 公尺門檻。
+/// 用「真的新定位」而不是重送舊座標，是為了讓心跳同時證明「定位還在運作」。
 @Observable
 @MainActor
 final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate {
@@ -23,13 +29,28 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
     var onLiveLocationUpdate: ((CLLocation) -> Void)?
     private var hasFollowCircle = false
     private var liveSharingEnabled = false
+    /// 心跳排程：分享期間每分鐘醒來檢查一次是否該補一筆「仍在此處」
+    private var heartbeatTask: Task<Void, Never>?
+    /// 心跳取位等待中：distanceFilter 暫時放開，下一筆定位到手就恢復
+    private var heartbeatAwaitingFix = false
+    private var heartbeatFixTimeout: Task<Void, Never>?
+    /// 最後一次送給 onLiveLocationUpdate 的時間（移動回報與心跳都算）
+    private var lastLiveDeliveryAt: Date?
+    /// 平常的移動門檻（公尺）：心跳負責時間，distanceFilter 負責移動
+    private static let movementDistanceFilter: CLLocationDistance = 100
+    /// 距離上次送出超過這麼久就補心跳；比 5 分鐘短 30 秒，吸收每分鐘檢查與取位耗時的誤差
+    private static let heartbeatDueInterval: TimeInterval = LiveLocationPresence.heartbeatInterval - 30
 
     override private init() {
         super.init()
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        manager.distanceFilter = 100
+        manager.distanceFilter = Self.movementDistanceFilter
         manager.activityType = .other
-        manager.pausesLocationUpdatesAutomatically = true
+        // 不讓 iOS 自動暫停：自動暫停的觸發條件正是「一段時間沒移動」，暫停後背景 App 會被掛起、
+        // 不會自動恢復，靜止的人就再也送不出心跳，被家人端判成失聯。
+        // 標準定位只在使用者開啟家庭分享時運作（見 reconcileMonitoring），關閉分享即停止，
+        // 所以這個設定不影響沒開分享的使用者耗電。
+        manager.pausesLocationUpdatesAutomatically = false
         manager.delegate = self
         authorization = manager.authorizationStatus
     }
@@ -121,7 +142,11 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
         oneShot?.resume(returning: latest)
         oneShot = nil
         onFollowLocationUpdate?(latest)
+        if heartbeatAwaitingFix {
+            finishHeartbeatFix()
+        }
         if liveSharingEnabled {
+            lastLiveDeliveryAt = .now
             onLiveLocationUpdate?(latest)
         }
     }
@@ -136,6 +161,7 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
 
     private func reconcileMonitoring() {
         guard isAuthorized else {
+            stopHeartbeat()
             manager.stopUpdatingLocation()
             manager.stopMonitoringSignificantLocationChanges()
             manager.allowsBackgroundLocationUpdates = false
@@ -143,12 +169,14 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
         }
 
         if liveSharingEnabled {
+            startHeartbeatIfNeeded()
             manager.allowsBackgroundLocationUpdates = authorization == .authorizedAlways
             // Always 授權下可在背景更新而不常駐藍色狀態膠囊；When In Use 的顯示仍由系統決定。
             // 隱私透明度由家人頁的「即時圈分享中」文字、最後更新時間與停止按鈕承擔。
             manager.showsBackgroundLocationIndicator = false
             manager.startUpdatingLocation()
         } else {
+            stopHeartbeat()
             manager.stopUpdatingLocation()
             manager.allowsBackgroundLocationUpdates = false
             manager.showsBackgroundLocationIndicator = false
@@ -159,5 +187,68 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
         } else {
             manager.stopMonitoringSignificantLocationChanges()
         }
+    }
+
+    // MARK: - 心跳（只在家庭分享期間運作）
+
+    /// iOS 背景限制下的實際保證：
+    /// - 前景：Task 正常排程，保證約每 5 分鐘一筆。
+    /// - 背景＋「永遠允許」：標準定位持續運作（allowsBackgroundLocationUpdates、且不自動暫停），
+    ///   App 不會被掛起，這個 Task 會繼續醒來，原則上同樣約每 5 分鐘一筆。
+    /// - 背景＋「使用 App 期間」：App 進背景就被掛起，心跳停止；家人端 15 分鐘後會如實顯示「沒有回報」。
+    /// - 使用者滑掉 App、系統因記憶體回收終止、低電量關機：標準定位停止，心跳停止（同樣如實顯示失聯）；
+    ///   顯著位置變更在移動約 500 公尺時會重新喚醒 App 並恢復分享。
+    private func startHeartbeatIfNeeded() {
+        guard heartbeatTask == nil else { return }
+        heartbeatTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(60))
+                } catch {
+                    return
+                }
+                guard let self else { return }
+                self.heartbeatTickIfDue()
+            }
+        }
+    }
+
+    private func stopHeartbeat() {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        lastLiveDeliveryAt = nil
+        if heartbeatAwaitingFix {
+            finishHeartbeatFix()
+        }
+    }
+
+    private func heartbeatTickIfDue(now: Date = .now) {
+        guard liveSharingEnabled, isAuthorized, !heartbeatAwaitingFix else { return }
+        if let lastLiveDeliveryAt, now.timeIntervalSince(lastLiveDeliveryAt) < Self.heartbeatDueInterval {
+            return
+        }
+        // 放開距離門檻後，正在運作的標準定位會在數秒內送來下一筆（多半來自 Wi-Fi／基地台，百米精度不必等 GPS）
+        heartbeatAwaitingFix = true
+        manager.distanceFilter = kCLDistanceFilterNone
+        manager.startUpdatingLocation() // 已在運作時不會重複啟動；保險起見確保定位沒被停掉
+        heartbeatFixTimeout?.cancel()
+        heartbeatFixTimeout = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(30))
+            } catch {
+                return
+            }
+            guard let self, self.heartbeatAwaitingFix else { return }
+            // 取不到定位就不送心跳：寧可讓家人看到「沒有回報」，也不拿舊座標假裝確認過
+            AppLog.data.error("心跳取位逾時，這一輪不回報")
+            self.finishHeartbeatFix()
+        }
+    }
+
+    private func finishHeartbeatFix() {
+        heartbeatAwaitingFix = false
+        heartbeatFixTimeout?.cancel()
+        heartbeatFixTimeout = nil
+        manager.distanceFilter = Self.movementDistanceFilter
     }
 }

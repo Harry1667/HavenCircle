@@ -359,6 +359,8 @@ enum FirestoreFamilyBackend {
     // MARK: - 即時位置（同意式：只有開啟分享的人才會被寫入 locations 子集合）
 
     /// 寫入／更新這個成員的即時位置。merge 讓重複更新只改動座標欄位。
+    /// updatedAt＝最後回報時間（位置變動與心跳都會刷新）；stationarySince＝開始停留時間。
+    /// 兩者都只是時間戳，沒有新增任何個資或軌跡（文件仍只存「最新一筆」，覆寫不累積）。
     static func publishLocation(
         familyId: String,
         uid: String,
@@ -366,7 +368,8 @@ enum FirestoreFamilyBackend {
         latitude: Double,
         longitude: Double,
         radiusMeters: Int,
-        district: String
+        district: String,
+        stationarySince: Date
     ) async throws {
         let db = FirestoreConfig.store()
         try await db.collection(FirestoreConfig.Path.families).document(familyId)
@@ -377,6 +380,7 @@ enum FirestoreFamilyBackend {
                 "radiusMeters": radiusMeters,
                 "district": district,
                 "updatedAt": Timestamp(date: Date()),
+                "stationarySince": Timestamp(date: stationarySince),
                 "isSharing": true
             ], merge: true)
     }
@@ -523,6 +527,8 @@ enum FirestoreFamilyBackend {
             radiusMeters: (data["radiusMeters"] as? Int) ?? 1_000,
             district: data["district"] as? String ?? Districts.unspecified,
             updatedAt: updatedAt,
+            // 舊版 App 寫的文件沒有這欄：nil 時文案退回「N 分鐘前更新位置」
+            stationarySince: (data["stationarySince"] as? Timestamp)?.dateValue(),
             isSharing: data["isSharing"] as? Bool ?? false
         )
     }

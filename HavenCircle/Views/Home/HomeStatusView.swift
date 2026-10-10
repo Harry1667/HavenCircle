@@ -203,13 +203,13 @@ struct HomeStatusView: View {
                 // 單人態不能說「全家」——這行只顯示一個人的警戒圈，說「全家」是謊言；
                 // 待更新那句沒有「全家」字眼，兩態文字相同即可
                 VStack(spacing: HCSpacing.x2) {
-                    Text(needsLocationUpdate ? "部分即時圈待更新" : (isSoloUser ? "守護中：你" : "警戒圈一切平安"))
+                    Text(needsLocationUpdate ? "部分即時圈沒有回報" : (isSoloUser ? "守護中：你" : "警戒圈一切平安"))
                         .font(.title2.weight(.bold))
                         .multilineTextAlignment(.center)
                     // 單人副句跟著事件串的口徑走：串裡有事件卻說「附近無事件」是自打嘴巴，
                     // 有事件時改說「你的圈平安」——附近有事 ≠ 圈被影響，兩件事分開講才誠實
                     Text(needsLocationUpdate
-                         ? "\(staleLiveCircleCount) 個即時圈超過 15 分鐘未更新，舊位置不會用來判斷警報。"
+                         ? "\(staleLiveCircleCount) 個即時圈超過 15 分鐘沒有回報（可能沒電、關機或沒有網路），舊位置不會用來判斷警報。待在原地不動的家人會定時回報，不會出現在這裡。"
                          : (isSoloUser
                             ? (eventFeed.isEmpty ? "附近 24 小時無事件" : "附近有 \(eventFeed.count) 件事件，你的警戒圈平安")
                             : "目前沒有需要注意的事件，安心圈持續看守中。"))

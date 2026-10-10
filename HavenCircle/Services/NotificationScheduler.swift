@@ -184,9 +184,11 @@ enum NotificationScheduler {
         } else {
             interaction = .none // 地點類成員（倉庫等）不會回報平安
         }
+        // 非官方確認的事件（新聞報導）一律在通知內文標明，避免被當成官方警報
+        let newsDisclaimer = event.trustStatus == TrustStatus.officialConfirmed ? "" : "新聞報導，未經官方確認。"
         await scheduleAlert(
             title: "\(prefix)\(event.title)",
-            body: "\(decision.reason)。\(callToAction)",
+            body: "\(decision.reason)。\(newsDisclaimer)\(callToAction)",
             id: event.eventKey,
             eventKey: event.eventKey,
             interaction: interaction,
