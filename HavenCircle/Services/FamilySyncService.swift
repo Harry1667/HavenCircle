@@ -334,34 +334,50 @@ final class FamilySyncService {
     /// 讓 updatedAt（最後回報時間）持續刷新；30 秒去抖不會擋到 5 分鐘一次的心跳。
     /// 沒移動（距離停留錨點 < 100 公尺）時寫回錨點座標並沿用 stationarySince，
     /// 家人看到的是「同一地點 N 分鐘・M 分鐘前確認」，而不是 GPS 抖動造成的假移動。
+    ///
+    /// 回傳 true＝這筆位置已確認送達（或 30 秒內重複而合併）；false＝沒送出，原因會寫進
+    /// [liveLocationError]（不再靜默吞掉），呼叫端與心跳排程會在下一輪自動重試。
+    @discardableResult
     func publishLiveLocation(
         _ location: CLLocation,
         displayName: String,
         radiusMeters: Int,
         context: ModelContext
-    ) async {
+    ) async -> Bool {
         guard AuthService.shared.isSignedIn, let uid else {
             liveLocationError = "請先用 Apple 帳號登入，才能把即時位置分享給家人"
-            return
+            return false
         }
-        let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        var trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedName.isEmpty {
+            // 顯示名稱沒設時退回本機「本人」成員的名字，避免因為名字空白整條上傳路徑卡死
+            let members = (try? context.fetch(FetchDescriptor<LocalFamilyMember>())) ?? []
+            trimmedName = members.first(where: \.isCurrentUser)?.name
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
         guard !trimmedName.isEmpty else {
             liveLocationError = "請先設定你的顯示名稱"
-            return
+            return false
         }
+        // 過舊（> 2 分鐘）或精度太差（> 1000 公尺）的定位不上傳，但要讓使用者看到原因而不是無聲略過：
+        // 先前門檻 500 公尺，剛開 GPS 的第一筆常是基地台定位（數百至上千公尺），被默默丟掉後
+        // 要等移動 100 公尺才會有下一筆，畫面就一直卡在「等待第一次位置更新」。
         let locationAge = max(0, -location.timestamp.timeIntervalSinceNow)
         guard locationAge <= 120,
               location.horizontalAccuracy >= 0,
-              location.horizontalAccuracy <= 500 else {
-            return
+              location.horizontalAccuracy <= 1_000 else {
+            if lastPublishedAt == nil {
+                liveLocationError = "定位訊號還不夠準，正在重新取得位置…"
+            }
+            return false
         }
         if let lastPublishedLocation, let lastPublishedAt,
            location.distance(from: lastPublishedLocation) < 100,
            lastPublishedRadius == radiusMeters,
            lastPublishedAt > Date.now.addingTimeInterval(-30) {
-            return
+            return true
         }
-        guard !liveLocationPublishInFlight else { return }
+        guard !liveLocationPublishInFlight else { return false }
         liveLocationPublishInFlight = true
         defer { liveLocationPublishInFlight = false }
 
@@ -413,10 +429,45 @@ final class FamilySyncService {
             lastPublishedRadius = radiusMeters
             liveLocationError = nil
             state = .sharing
+            // 告訴定位服務「這次確實送達」：心跳計時只認成功上傳，失敗時下一輪（15 秒內）就重試
+            LocationService.shared.noteLiveLocationDelivered()
+            // 先把剛送出的位置投影到本機（本人的圈與「分享中・剛剛更新」立刻出現），
+            // 不必等下面這次完整讀取往返；讀取失敗也不會讓畫面卡在「等待」。
+            projectOwnPublishedLocation(
+                uid: uid, name: trimmedName, anchor: anchor, radiusMeters: radiusMeters,
+                district: district, stationarySince: stationarySince, context: context
+            )
             await fetchLiveLocations(context: context)
+            return true
         } catch {
             liveLocationError = "即時位置同步失敗：\(error.localizedDescription)"
             AppLog.cloud.error("即時位置同步失敗：\(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// 上傳成功後立刻把本人那筆放進 liveLocations 並投影成本機即時圈（樂觀更新，之後由讀取校正）。
+    private func projectOwnPublishedLocation(
+        uid: String, name: String, anchor: CLLocation, radiusMeters: Int,
+        district: String, stationarySince: Date, context: ModelContext
+    ) {
+        let own = FamilyLiveLocation(
+            id: uid,
+            participantID: uid,
+            displayName: name,
+            latitude: anchor.coordinate.latitude,
+            longitude: anchor.coordinate.longitude,
+            radiusMeters: max(300, min(radiusMeters, 5_000)),
+            district: district,
+            updatedAt: .now,
+            stationarySince: stationarySince,
+            isSharing: true
+        )
+        var updated = liveLocations.filter { $0.id != uid }
+        updated.append(own)
+        liveLocations = updated.sorted { $0.displayName < $1.displayName }
+        if applyLiveLocationSnapshots(liveLocations, context: context) {
+            context.saveReporting()
         }
     }
 
@@ -427,15 +478,32 @@ final class FamilySyncService {
     /// 要自己先擋，這裡不重複判斷——入圈後的激活頁在呼叫這裡之前必然已登入（joinFamily 前提）。
     func enableLiveLocationSharing(radiusMeters: Int, context: ModelContext) async {
         UserDefaults.standard.set(true, forKey: SettingsKeys.liveLocationSharingEnabled)
+        liveLocationError = nil
         LocationService.shared.requestAlwaysPermission()
         LocationService.shared.syncLiveLocationSharing(isEnabled: true)
-        guard let location = await LocationService.shared.currentLocation() else { return }
-        await publishLiveLocation(
-            location,
-            displayName: displayName,
-            radiusMeters: radiusMeters,
-            context: context
-        )
+        // 權限對話框還沒按完時 currentLocation() 會立刻回 nil（舊版就是在這裡默默 return，
+        // 之後只能靠使用者移動 100 公尺才有下一筆）。先等使用者做完授權決定再取位。
+        let authorized = await LocationService.shared.waitForAuthorizationDecision()
+        guard authorized else {
+            liveLocationError = "沒有定位權限：請到 iOS 設定 > 隱私權 > 定位服務 > 安心圈，允許「使用 App 期間」或「永遠」"
+            return
+        }
+        // 最多嘗試 3 次（取位逾時 8 秒＋短暫間隔），整體約 10 秒內完成第一次上傳
+        for attempt in 0..<3 {
+            if let location = await LocationService.shared.currentLocation(),
+               await publishLiveLocation(
+                location,
+                displayName: displayName,
+                radiusMeters: radiusMeters,
+                context: context
+               ) {
+                return
+            }
+            if attempt < 2 { try? await Task.sleep(for: .seconds(1)) }
+        }
+        if liveLocationError == nil {
+            liveLocationError = "暫時取不到目前位置，會在背景持續重試"
+        }
     }
 
     /// 警戒範圍可選值（公尺）：設定→提醒設定的選項，也是唯一調整警戒半徑的地方

@@ -29,18 +29,21 @@ struct LiveCircleSharingSection: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                HStack {
-                    Label(
-                        sync.ownLiveLocation?.freshnessText ?? "等待第一次位置更新",
-                        systemImage: sync.ownLiveLocation?.isFresh == true
-                            ? "location.fill"
-                            : "clock.badge.exclamationmark"
-                    )
-                    .foregroundStyle(sync.ownLiveLocation?.isFresh == true ? HCColor.safe : HCColor.attention)
-                    Spacer()
-                    if isWorking { ProgressView() }
+                // 每 15 秒重算一次，「剛剛」會自己變成「1 分鐘前」，不靠重新整理
+                TimelineView(.periodic(from: .now, by: 15)) { timeline in
+                    HStack {
+                        Label(
+                            statusText(now: timeline.date),
+                            systemImage: sync.ownLiveLocation?.isFresh == true
+                                ? "location.fill"
+                                : "clock.badge.exclamationmark"
+                        )
+                        .foregroundStyle(sync.ownLiveLocation?.isFresh == true ? HCColor.safe : HCColor.attention)
+                        Spacer()
+                        if isWorking { ProgressView() }
+                    }
+                    .font(.caption)
                 }
-                .font(.caption)
             } else {
                 Label(
                     iCloudUnavailable ? "尚未登入 Apple 帳號，分享功能目前不可用" : "即時位置分享已停止",
@@ -69,6 +72,13 @@ struct LiveCircleSharingSection: View {
             }
             await publishCurrentLocation()
         }
+    }
+
+    /// 「分享中・剛剛更新」／「等待第一次位置更新」／失聯文案
+    private func statusText(now: Date) -> String {
+        guard let own = sync.ownLiveLocation else { return "等待第一次位置更新" }
+        guard own.isFresh else { return own.freshnessText }
+        return "分享中・\(LiveLocationPresence.agoText(max(0, now.timeIntervalSince(own.updatedAt))))更新"
     }
 
     private func updateSharing(_ enabled: Bool) async {

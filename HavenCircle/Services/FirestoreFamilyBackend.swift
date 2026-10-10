@@ -68,6 +68,12 @@ struct SafetyPingTimeoutError: LocalizedError {
     }
 }
 
+/// 即時位置寫入逾時：Firestore 的 setData 只在「伺服器確認」後才完成，離線或網路卡住時會一直懸著，
+/// 若不設上限，FamilySyncService 的「只允許一筆在途」旗標會永遠不釋放，之後所有上傳都被擋掉（靜默失效）。
+struct LiveLocationTimeoutError: LocalizedError {
+    var errorDescription: String? { "網路不穩，位置尚未送出，稍後會自動重試" }
+}
+
 // MARK: - Firestore 家庭圈後端
 
 /// 家庭圈的 Firestore 資料層（無狀態的操作集合）。
@@ -372,17 +378,28 @@ enum FirestoreFamilyBackend {
         stationarySince: Date
     ) async throws {
         let db = FirestoreConfig.store()
-        try await db.collection(FirestoreConfig.Path.families).document(familyId)
-            .collection(FirestoreConfig.Path.locations).document(uid).setData([
-                "displayName": displayName,
-                "latitude": latitude,
-                "longitude": longitude,
-                "radiusMeters": radiusMeters,
-                "district": district,
-                "updatedAt": Timestamp(date: Date()),
-                "stationarySince": Timestamp(date: stationarySince),
-                "isSharing": true
-            ], merge: true)
+        let ref = db.collection(FirestoreConfig.Path.families).document(familyId)
+            .collection(FirestoreConfig.Path.locations).document(uid)
+        let payload: [String: Any] = [
+            "displayName": displayName,
+            "latitude": latitude,
+            "longitude": longitude,
+            "radiusMeters": radiusMeters,
+            "district": district,
+            "updatedAt": Timestamp(date: Date()),
+            "stationarySince": Timestamp(date: stationarySince),
+            "isSharing": true
+        ]
+        // 與逾時計時器賽跑：10 秒沒收到伺服器確認就丟出逾時（寫入仍在 Firestore 離線佇列，連線後會補送）
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { try await ref.setData(payload, merge: true) }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 10_000_000_000)
+                throw LiveLocationTimeoutError()
+            }
+            _ = try await group.next()
+            group.cancelAll()
+        }
     }
 
     /// 停止分享：標記 isSharing=false（家人下次刷新會移除此人的即時圈）。

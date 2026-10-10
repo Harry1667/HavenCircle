@@ -29,7 +29,7 @@ enum LiveLocationPresence {
     /// 「沒分享」與「分享了但過期」是兩回事，不能都說成過期：
     /// - 本人沒開分享：「未分享給家人」（中性，不是警告）；本人有開分享才依最後上傳時間判斷
     /// - 家人沒有即時圈：「未分享位置」
-    /// - 有分享、15 分鐘內有回報：「分享中」；超過 15 分鐘：「超過 15 分鐘未更新」
+    /// - 有分享、15 分鐘內有回報：「分享中・剛剛更新」；超過 15 分鐘：「超過 15 分鐘未更新」
     static func memberLocationLine(
         isCurrentUser: Bool,
         sharingEnabled: Bool,
@@ -42,8 +42,11 @@ enum LiveLocationPresence {
         } else {
             guard hasLiveCircle else { return "位置：未分享位置" }
         }
-        return isReporting(lastReportedAt: lastReportedAt, now: now)
-            ? "位置：分享中" : "位置：超過 15 分鐘未更新"
+        guard isReporting(lastReportedAt: lastReportedAt, now: now), let lastReportedAt else {
+            return "位置：超過 15 分鐘未更新"
+        }
+        // 分享中一併顯示最後更新時間（AGENTS 紅線：live circle 一律顯示最後更新）
+        return "位置：分享中・\(agoText(max(0, now.timeIntervalSince(lastReportedAt))))更新"
     }
 
     /// 這次寫入時的「開始停留時間」。

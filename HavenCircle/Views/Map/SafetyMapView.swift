@@ -159,6 +159,8 @@ struct SafetyMapView: View {
     /// 家人一多還是會挑到相近色，名字是唯一保證不會誤讀的通道。
     private func circleLabelText(_ circle: LocalLifeCircle) -> String {
         guard let member = circle.member, !member.isCurrentUser else { return circle.name }
+        // 家人的即時圈：標籤直接是人名（下一行是最後更新時間），不再重複「媽媽．媽媽的即時圈」
+        if circle.kind == .live { return member.name }
         return "\(member.name)．\(circle.name)"
     }
 

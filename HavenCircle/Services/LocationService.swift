@@ -29,7 +29,7 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
     var onLiveLocationUpdate: ((CLLocation) -> Void)?
     private var hasFollowCircle = false
     private var liveSharingEnabled = false
-    /// 心跳排程：分享期間每分鐘醒來檢查一次是否該補一筆「仍在此處」
+    /// 心跳排程：分享期間每 15 秒醒來檢查一次是否該補一筆「仍在此處」（到期才真的取位，平常不耗電；15 秒是為了上傳失敗時能快速重試）
     private var heartbeatTask: Task<Void, Never>?
     /// 心跳取位等待中：distanceFilter 暫時放開，下一筆定位到手就恢復
     private var heartbeatAwaitingFix = false
@@ -116,7 +116,7 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
             manager.requestLocation()
             oneShotTimeout = Task { [weak self] in
                 do {
-                    try await Task.sleep(for: .seconds(12))
+                    try await Task.sleep(for: .seconds(8))
                 } catch {
                     return
                 }
@@ -125,6 +125,27 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
                 waiting.resume(returning: nil)
             }
         }
+    }
+
+    /// 等使用者做完定位授權決定（按了允許／不允許，或本來就已決定）；回傳是否已授權。
+    /// 最多等 60 秒（要留時間給使用者讀系統對話框）。授權通過後的取位逾時另計。
+    func waitForAuthorizationDecision(timeout: TimeInterval = 60) async -> Bool {
+        let deadline = Date.now.addingTimeInterval(timeout)
+        while authorization == .notDetermined, Date.now < deadline {
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        return isAuthorized
+    }
+
+    /// 家庭位置確實送達雲端後由 FamilySyncService 呼叫，心跳計時以此為準：
+    /// 只有「真的上傳成功」才算一次回報，上傳失敗時下一個檢查週期就會重試。
+    func noteLiveLocationDelivered() {
+        lastLiveDeliveryAt = .now
+    }
+
+    /// 回到前景時立刻檢查心跳是否到期（背景被掛起期間 Task 不會跑，回來要補一筆）
+    func kickHeartbeat() {
+        heartbeatTickIfDue()
     }
 
     // MARK: - CLLocationManagerDelegate（manager 建立在主執行緒，回呼也在主執行緒）
@@ -145,8 +166,9 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
         if heartbeatAwaitingFix {
             finishHeartbeatFix()
         }
+        // 注意：不在這裡記 lastLiveDeliveryAt——收到定位不等於上傳成功，
+        // 由 noteLiveLocationDelivered() 在實際送達後才記，上傳失敗的話心跳會盡快補送。
         if liveSharingEnabled {
-            lastLiveDeliveryAt = .now
             onLiveLocationUpdate?(latest)
         }
     }
@@ -203,7 +225,7 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
         heartbeatTask = Task { [weak self] in
             while !Task.isCancelled {
                 do {
-                    try await Task.sleep(for: .seconds(60))
+                    try await Task.sleep(for: .seconds(15))
                 } catch {
                     return
                 }
@@ -231,6 +253,7 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
         heartbeatAwaitingFix = true
         manager.distanceFilter = kCLDistanceFilterNone
         manager.startUpdatingLocation() // 已在運作時不會重複啟動；保險起見確保定位沒被停掉
+        manager.requestLocation() // 人沒動時 distanceFilter 放開也不一定有回呼，主動要一筆保證有新定位
         heartbeatFixTimeout?.cancel()
         heartbeatFixTimeout = Task { [weak self] in
             do {

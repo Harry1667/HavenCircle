@@ -93,6 +93,8 @@ struct HavenCircleApp: App {
                 .environment(familySync)
                 .environment(entitlementStore)
                 .task {
+                    // 以環境實際使用的實例為準（AppDelegate 回呼與定位回呼都經由 AppRuntime 找它）
+                    AppRuntime.familySync = familySync
                     // StoreKit 2 交易長聽：先判定目前權益，再開 Transaction.updates 監聽
                     // （續訂／退款／家庭共享成員的權益變化都要在 App 存活期間即時反映）
                     entitlementStore.start()
@@ -139,13 +141,19 @@ struct HavenCircleApp: App {
                         )
                     }
                     await familySync.fetchLiveLocations(context: modelContainer.mainContext)
+                }
+                // 家人位置輪詢：前景才跑，每 20 秒讀一次（對方 App 在前景時 1 分鐘內一定看得到），
+                // 回前景立刻讀一次。放在獨立 task 而非接在上面那串啟動流程後面——
+                // 舊版輪詢排在資料管線、遠端設定、定位等一長串 await 之後，任何一步卡住就永遠不輪詢。
+                .task(id: scenePhase) {
+                    guard scenePhase == .active else { return }
                     while !Task.isCancelled {
+                        await familySync.fetchLiveLocations(context: modelContainer.mainContext)
                         do {
-                            try await Task.sleep(for: .seconds(30))
+                            try await Task.sleep(for: .seconds(20))
                         } catch {
                             return
                         }
-                        await familySync.fetchLiveLocations(context: modelContainer.mainContext)
                     }
                 }
                 // App 停在前景時不能只靠「打開／切回來」才更新：使用者會把安心圈
@@ -172,6 +180,8 @@ struct HavenCircleApp: App {
             if phase == .background {
                 BackgroundRefresh.schedule()
             } else if phase == .active {
+                // 分享中回到前景：心跳若已到期，立刻補一筆最新位置
+                if liveLocationSharingEnabled { LocationService.shared.kickHeartbeat() }
                 Task {
                     // #11：回前景複查一次 Apple 授權狀態（雙重保險的第二層；通知能送達時這裡多查一次
                     // 沒有壞處，通知没送達時這裡是唯一能及時發現撤銷的地方）。
