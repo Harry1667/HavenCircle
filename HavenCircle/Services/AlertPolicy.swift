@@ -151,12 +151,23 @@ enum AlertPolicy {
     /// 取不到再用座標做邊界內判
     static func district(of event: LocalSafetyEvent) -> String? {
         let text = event.approximateLocation + event.title
+        // 效能：結果只取決於文字與座標，動態頁／地圖每次重繪都會對每個事件問一次，快取起來
+        let cacheKey = "\(text)|\(event.latitude),\(event.longitude)"
+        if let hit = districtCache[cacheKey] { return hit.value }
+        let result: String?
         if let name = Districts.all.dropFirst().filter({ text.contains($0) }).max(by: { $0.count < $1.count }) {
-            return name
+            result = name
+        } else {
+            result = DistrictBoundaries.shared
+                .district(at: CLLocationCoordinate2D(latitude: event.latitude, longitude: event.longitude))?.town
         }
-        return DistrictBoundaries.shared
-            .district(at: CLLocationCoordinate2D(latitude: event.latitude, longitude: event.longitude))?.town
+        if districtCache.count > 1_000 { districtCache.removeAll() }
+        districtCache[cacheKey] = .init(value: result)
+        return result
     }
+
+    private struct CachedDistrict { let value: String? }
+    private static var districtCache: [String: CachedDistrict] = [:]
 
     /// 1 公里以下用公尺，以上用公里並保留一位小數（5500 公尺 -> 5.5 公里）
     static func distanceText(_ meters: Int) -> String {

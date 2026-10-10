@@ -44,7 +44,7 @@ struct DistrictBoundaries {
     private let indexed: [(district: District, bbox: BBox)]
 
     /// 全國鄉鎮市區名清單（排序去重），供生活圈行政區選單與警報比對使用
-    var allTownNames: [String] { byTown.keys.sorted() }
+    let allTownNames: [String]
 
     private init() {
         guard let url = Bundle.main.url(forResource: "TaiwanDistricts", withExtension: "json"),
@@ -53,6 +53,7 @@ struct DistrictBoundaries {
             AppLog.dataError("TaiwanDistricts.json 載入失敗，區域警報塗層停用")
             byTown = [:]
             indexed = []
+            allTownNames = []
             return
         }
         var index: [String: [District]] = [:]
@@ -80,6 +81,7 @@ struct DistrictBoundaries {
         }
         byTown = index
         indexed = flat
+        allTownNames = index.keys.sorted()
     }
 
     /// 依區名找邊界（可能對到多個縣市的同名區）

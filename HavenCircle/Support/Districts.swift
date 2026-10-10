@@ -6,7 +6,9 @@ import Foundation
 enum Districts {
     static let unspecified = "未指定"
     /// 「未指定」＋全國 375 個鄉鎮市區（排序）
-    static var all: [String] { [unspecified] + DistrictBoundaries.shared.allTownNames }
+    /// 效能：以前是計算屬性，每次讀取都對 375 個區名重新排序（動態頁每個事件、每次重繪都讀，
+    /// 實測佔主執行緒約 75%），改成只算一次的 static let。邊界資料是內嵌資源、執行期不會變。
+    static let all: [String] = [unspecified] + DistrictBoundaries.shared.allTownNames
 
     /// 從地址文字比對全國鄉鎮市區（供區域型警報使用）；找不到就標「未指定」
     static func guess(from text: String) -> String {
