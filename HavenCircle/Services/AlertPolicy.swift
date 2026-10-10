@@ -102,12 +102,26 @@ enum AlertPolicy {
         guard let best = inSchedule.min(by: { $0.distanceMeters < $1.distanceMeters }) else {
             return AlertDecision(shouldPush: false, matches: matches, reason: "相關警戒圈都在提醒時段外，僅在 App 內顯示")
         }
-        // 本人圈說「你的」，家人／地點圈說名字——避免使用者名字填成「1」時出現「1的『住家』」
-        let subject = best.isCurrentUser ? "你" : best.memberName
+        // 文字只講「距離誰、多遠」，不重複地點名稱與警戒圈（地點成員與圈常同名）：
+        // 本人跟隨圈「距離你約 X」；守護地點「距離你的守護地點「名稱」約 X」；家人「距離家人「名稱」約 X」
+        let distanceText = Self.distanceText(best.distanceMeters)
+        let phrase: String
+        if best.isCurrentUser {
+            phrase = "距離你約 \(distanceText)"
+        } else if best.isPlace {
+            phrase = "距離你的守護地點「\(best.memberName)」約 \(distanceText)"
+        } else {
+            phrase = "距離家人「\(best.memberName)」約 \(distanceText)"
+        }
         return AlertDecision(
             shouldPush: true,
             matches: matches,
-            reason: "事件位於\(subject)的「\(best.circleName)」警戒圈約 \(best.distanceMeters) 公尺內，\(event.trustStatus)"
+            reason: "\(phrase)，\(event.trustStatus)"
         )
+    }
+
+    /// 1 公里以下用公尺，以上用公里並保留一位小數（5500 公尺 -> 5.5 公里）
+    static func distanceText(_ meters: Int) -> String {
+        meters < 1_000 ? "\(meters) 公尺" : String(format: "%.1f 公里", Double(meters) / 1_000)
     }
 }
