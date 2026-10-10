@@ -32,7 +32,8 @@ final class HavenCircleUITests: XCTestCase {
         }
         app.launch()
         sleep(2)
-        app.tap() // 觸發 interruption monitor
+        // 點頂端空白處觸發 interruption monitor；不可點正中央（會點到首頁避難所／動態列而換頁）
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.02)).tap()
     }
 
     override func tearDownWithError() throws {
