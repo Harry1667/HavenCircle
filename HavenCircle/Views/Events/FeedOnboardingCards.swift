@@ -7,7 +7,7 @@ import UserNotifications
 /// - 定位邀請卡：定位尚未決定時出現；拒絕後換成「新增守護地點／前往設定」的出路（拒絕定位也有路）。
 /// - 通知邀請卡：使用者看過內容之後才出現（首次渲染 3 秒後，或已點開過任一事件），含示範橫幅與非緊急服務聲明。
 /// - 邀請碼列：還沒加入家庭圈的前 3 次啟動，給「家人傳了邀請碼給你」的人一個入口。
-/// 同時符合條件時最多顯示兩張：定位優先、通知次之、邀請碼列第三。
+/// 一次只顯示一張引導卡：定位卡處理掉（允許、拒絕或關閉）後才輪到通知卡；邀請碼列是一行小列，可與卡片並存。
 
 /// 三張卡共用的旗標重置（設定「重新顯示引導卡」、DEBUG 的 --demo-firstrun、重跑新手流程共用）。
 enum FeedOnboardingFlags {
@@ -48,10 +48,14 @@ struct FeedOnboardingCards: View {
         location.authorization == .denied || location.authorization == .restricted
     }
 
-    private var showLocation: Bool {
-        guard !locationDismissed else { return false }
-        if location.authorization == .notDetermined { return true }
-        return authorizationDenied && deniedVisibleThisSession && !hasCircle
+    /// 定位邀請尚未處理：還沒做決定且沒按關閉。決定（允許／拒絕）或關閉後視為處理掉，才輪到通知卡
+    private var locationPending: Bool {
+        !locationDismissed && location.authorization == .notDetermined
+    }
+
+    /// 拒絕後的出路卡：只在沒有其他卡片佔位時才顯示，避免與通知卡疊在一起
+    private var showLocationDenied: Bool {
+        !locationDismissed && authorizationDenied && deniedVisibleThisSession && !hasCircle
     }
 
     private var showNotification: Bool {
@@ -63,13 +67,18 @@ struct FeedOnboardingCards: View {
         currentFamilyID.isEmpty && launchCount <= 3 && !inviteDismissed
     }
 
-    /// 最多兩張：定位優先、通知次之、邀請碼列第三
+    /// 一次一張：定位邀請 > 通知邀請 > 定位拒絕出路；邀請碼列另外附在後面（一行小列）
     private var visibleKinds: [Kind] {
         var kinds: [Kind] = []
-        if showLocation { kinds.append(.location) }
-        if showNotification { kinds.append(.notification) }
+        if locationPending {
+            kinds.append(.location)
+        } else if showNotification {
+            kinds.append(.notification)
+        } else if showLocationDenied {
+            kinds.append(.location)
+        }
         if showInvite { kinds.append(.invite) }
-        return Array(kinds.prefix(2))
+        return kinds
     }
 
     private enum Kind: Hashable { case location, notification, invite }
@@ -114,7 +123,7 @@ struct FeedOnboardingCards: View {
 
     private var locationCard: some View {
         let denied = authorizationDenied
-        return VStack(alignment: .leading, spacing: HCSpacing.x3) {
+        return VStack(alignment: .leading, spacing: HCSpacing.x2) {
             HStack(alignment: .top) {
                 Image(systemName: denied ? "location.slash.fill" : "location.fill")
                     .foregroundStyle(HCColor.brand)
@@ -135,7 +144,7 @@ struct FeedOnboardingCards: View {
                     Image(systemName: "xmark")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .frame(width: 44, height: 44)
+                        .frame(width: 32, height: 32)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -168,7 +177,7 @@ struct FeedOnboardingCards: View {
     // MARK: - 通知邀請卡
 
     private var notificationCard: some View {
-        VStack(alignment: .leading, spacing: HCSpacing.x3) {
+        VStack(alignment: .leading, spacing: HCSpacing.x2) {
             HStack(alignment: .top) {
                 Image(systemName: "bell.badge.fill")
                     .foregroundStyle(HCColor.brand)
@@ -176,19 +185,11 @@ struct FeedOnboardingCards: View {
                 VStack(alignment: .leading, spacing: HCSpacing.x1) {
                     Text("圈內有狀況時要通知你嗎？")
                         .font(.headline)
-                    Text("附近有警報、家人回報平安時提醒你。")
-                        .font(.subheadline)
+                    Text("附近有警報、家人回報平安時提醒你。安心圈不是緊急服務，遇到危險請直接撥 110／119。")
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
-            // 示範橫幅：App 內繪製，不發真通知（標明「此為示範」）
-            DemoNotificationBanner()
-                .padding(.horizontal, -12)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("示範通知：火災，距你的警戒圈 800 公尺。此為示範。")
-            Text("安心圈不是緊急服務；遇到危險請直接撥 110／119。")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
             HStack(spacing: HCSpacing.x2) {
                 Button("開啟通知") {
                     Task {
@@ -206,10 +207,7 @@ struct FeedOnboardingCards: View {
         }
         .hcCard()
         .cardRow()
-        .onAppear {
-            Analytics.track("notify_prompt_shown")
-            Analytics.track("notify_demo_viewed")
-        }
+        .onAppear { Analytics.track("notify_prompt_shown") }
     }
 
     // MARK: - 邀請碼列
