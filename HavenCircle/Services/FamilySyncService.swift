@@ -2,6 +2,7 @@ import Foundation
 import CoreLocation
 import SwiftData
 import UIKit
+import FirebaseFirestore
 import os
 
 /// 登入 / 家庭圈狀態，供 UI 呈現對應提示
@@ -566,6 +567,7 @@ final class FamilySyncService {
             return
         }
         GeofenceSync.sync(context: context)
+        startLocationRequestListener()
         // 最多嘗試 3 次（取位逾時 8 秒＋短暫間隔），整體約 10 秒內完成第一次上傳
         for attempt in 0..<3 {
             if let location = await LocationService.shared.currentLocation(),
@@ -626,6 +628,7 @@ final class FamilySyncService {
         lastTrailSample = nil
         lastTrailCleanupAt = nil
         liveLocationError = nil
+        stopLocationRequestListener()
 
         guard let uid, let familyID = currentFamilyID else { return }
         do {
@@ -857,6 +860,88 @@ final class FamilySyncService {
         }
         await work()
         if taskID != .invalid { UIApplication.shared.endBackgroundTask(taskID) }
+    }
+
+    // MARK: - 家人主動「更新位置」
+
+    private var requestListener: ListenerRegistration?
+    private var isAnsweringRequest = false
+    /// 這台手機最近一次對各家人送出請求的時間（冷卻用，只在記憶體）
+    private var lastRequestSentAt: [String: Date] = [:]
+    private static let lastRequestHandledKey = "hc.locationRequest.lastHandled"
+
+    enum LocationRequestOutcome: Equatable {
+        case sent
+        case cooldown(seconds: Int)
+        case failed(String)
+    }
+
+    /// 請某位家人的手機立刻回報位置。對方沒開分享就不會回應（尊重 opt-in），
+    /// 這個請求只是「請你現在更新一次」，不會讓對方的手機偷偷開始分享。
+    func requestLocationUpdate(forUid targetUid: String, requesterName: String) async -> LocationRequestOutcome {
+        guard AuthService.shared.isSignedIn, let uid, let familyID = currentFamilyID else {
+            return .failed("請先登入並加入家庭圈")
+        }
+        let remaining = LocationRequestPolicy.cooldownRemaining(lastRequestAt: lastRequestSentAt[targetUid])
+        if remaining > 0 { return .cooldown(seconds: Int(remaining.rounded(.up))) }
+        do {
+            try await FirestoreFamilyBackend.requestLocationUpdate(
+                familyId: familyID, targetUid: targetUid, requesterUid: uid,
+                requesterName: requesterName.isEmpty ? "家人" : requesterName
+            )
+            lastRequestSentAt[targetUid] = .now
+            return .sent
+        } catch {
+            AppLog.cloud.error("送出更新位置請求失敗：\(error.localizedDescription)")
+            return .failed("請求沒有送出，請確認網路後再試一次")
+        }
+    }
+
+    /// 開始監聽發給自己的請求（位置分享開啟、已登入且在家庭圈時）。重複呼叫會先移除舊的監聽。
+    func startLocationRequestListener() {
+        requestListener?.remove()
+        requestListener = nil
+        guard UserDefaults.standard.bool(forKey: SettingsKeys.liveLocationSharingEnabled),
+              AuthService.shared.isSignedIn, let uid, let familyID = currentFamilyID else { return }
+        requestListener = FirestoreFamilyBackend.listenLocationRequest(familyId: familyID, uid: uid) { requestedAt in
+            Task { @MainActor in
+                guard let context = AppRuntime.container?.mainContext else { return }
+                await AppRuntime.familySync?.answerLocationRequest(requestedAt: requestedAt, context: context)
+            }
+        }
+    }
+
+    func stopLocationRequestListener() {
+        requestListener?.remove()
+        requestListener = nil
+    }
+
+    /// 前景輪詢／推播喚醒時主動查一次有沒有請求（監聽失效時的保底）
+    func checkLocationRequest(context: ModelContext) async {
+        guard UserDefaults.standard.bool(forKey: SettingsKeys.liveLocationSharingEnabled),
+              AuthService.shared.isSignedIn, let uid, let familyID = currentFamilyID else { return }
+        guard let requestedAt = try? await FirestoreFamilyBackend.fetchLocationRequest(familyId: familyID, uid: uid) else { return }
+        await answerLocationRequest(requestedAt: requestedAt, context: context)
+    }
+
+    /// 回應請求：立即定位並上傳（force），成功後刪掉請求。
+    /// 位置分享沒開就完全不回應；過期（> 10 分鐘）或已處理過的請求略過。
+    func answerLocationRequest(requestedAt: Date, context: ModelContext) async {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: SettingsKeys.liveLocationSharingEnabled), !isAnsweringRequest,
+              let uid, let familyID = currentFamilyID else { return }
+        let lastHandled = defaults.object(forKey: Self.lastRequestHandledKey) as? Date
+        guard LocationRequestPolicy.shouldAnswer(requestedAt: requestedAt, lastHandledAt: lastHandled) else {
+            return
+        }
+        isAnsweringRequest = true
+        defer { isAnsweringRequest = false }
+        await withBackgroundTask(name: "location-request") {
+            if await self.uploadLocationNow(context: context) {
+                defaults.set(requestedAt, forKey: Self.lastRequestHandledKey)
+                await FirestoreFamilyBackend.clearLocationRequest(familyId: familyID, uid: uid)
+            }
+        }
     }
 
     // MARK: - 安否回報

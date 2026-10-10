@@ -82,6 +82,17 @@ service cloud.firestore {
           && (resource.data.uid == request.auth.uid || isOwner(familyId));
       }
 
+      // 家人要求「更新位置」：locationRequests/{被請求者 uid}，每人最多一筆。
+      // 家庭成員可讀、可以自己的身分發出請求（requesterUid 必須是自己）；
+      // 被請求者（或發出者／圈主）處理完可刪除。請求只是請對方「現在更新一次」，
+      // 對方沒開位置分享就不會回應，不會因此開始分享。文件帶 expireAt，建議設 TTL policy。
+      match /locationRequests/{targetUid} {
+        allow read: if isMember(familyId);
+        allow create, update: if isMember(familyId) && request.resource.data.requesterUid == request.auth.uid;
+        allow delete: if isMember(familyId)
+          && (request.auth.uid == targetUid || resource.data.requesterUid == request.auth.uid || isOwner(familyId));
+      }
+
       // 安否回報：家庭成員可讀、可發、可標記已讀（更新）；一般情況下不開放刪除，
       // 只有圈主解散家庭圈時能刪（避免解散後留下永久孤兒資料）。
       match /pings/{pingId} {

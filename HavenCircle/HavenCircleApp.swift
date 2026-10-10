@@ -142,6 +142,7 @@ struct HavenCircleApp: App {
                         )
                     }
                     await familySync.fetchLiveLocations(context: modelContainer.mainContext)
+                    familySync.startLocationRequestListener()
                 }
                 // 家人位置輪詢：前景才跑，每 20 秒讀一次（對方 App 在前景時 1 分鐘內一定看得到），
                 // 回前景立刻讀一次。放在獨立 task 而非接在上面那串啟動流程後面——
@@ -151,6 +152,7 @@ struct HavenCircleApp: App {
                     while !Task.isCancelled {
                         await familySync.fetchLiveLocations(context: modelContainer.mainContext)
                         await familySync.pollArrivals()
+                        await familySync.checkLocationRequest(context: modelContainer.mainContext)
                         do {
                             try await Task.sleep(for: .seconds(20))
                         } catch {

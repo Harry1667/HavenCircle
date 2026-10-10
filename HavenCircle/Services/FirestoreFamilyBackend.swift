@@ -239,6 +239,9 @@ enum FirestoreFamilyBackend {
             if batchSnapshot.documents.count < 400 { break }
         }
 
+        let requestSnapshot = try await familyRef.collection(FirestoreConfig.Path.locationRequests).getDocuments()
+        for doc in requestSnapshot.documents { try await doc.reference.delete() }
+
         // ②pings：分頁批次刪，每批最多 400 筆（Firestore WriteBatch 上限），
         // 反覆抓下一批直到抓不到為止，避免安否回報量大時一次性操作逾時。
         while true {
@@ -527,6 +530,7 @@ enum FirestoreFamilyBackend {
         do {
             try await deleteOwnTrail(familyId: familyId, uid: uid)
             try await pruneOwnArrivals(familyId: familyId, uid: uid, olderThan: nil)
+            await clearLocationRequest(familyId: familyId, uid: uid)
         } catch {
             AppLog.cloud.error("停止分享時清除軌跡失敗：\(error.localizedDescription)")
         }
@@ -633,6 +637,58 @@ enum FirestoreFamilyBackend {
             _ = try await group.next()
             group.cancelAll()
         }
+    }
+
+    // MARK: - 家人要求「更新位置」
+
+    /// 對某位家人發出更新位置請求：families/{id}/locationRequests/{targetUid}（每人最多一筆，新請求覆蓋舊的）。
+    /// requestedAt 用伺服器時間，被請求方用它判斷是否過期（10 分鐘）。
+    static func requestLocationUpdate(
+        familyId: String, targetUid: String, requesterUid: String, requesterName: String
+    ) async throws {
+        let ref = FirestoreConfig.store().collection(FirestoreConfig.Path.families).document(familyId)
+            .collection(FirestoreConfig.Path.locationRequests).document(targetUid)
+        let data: [String: Any] = [
+            "requesterUid": requesterUid,
+            "requesterName": requesterName,
+            "requestedAt": FieldValue.serverTimestamp(),
+            "expireAt": Timestamp(date: Date().addingTimeInterval(LocationRequestPolicy.maxAge * 3))
+        ]
+        try await withWriteDeadline(seconds: 8) { try await ref.setData(data) }
+    }
+
+    /// 被請求方讀取自己的請求時間；沒有請求回 nil
+    static func fetchLocationRequest(familyId: String, uid: String) async throws -> Date? {
+        let doc = try await FirestoreConfig.store().collection(FirestoreConfig.Path.families).document(familyId)
+            .collection(FirestoreConfig.Path.locationRequests).document(uid).getDocument()
+        guard doc.exists else { return nil }
+        return (doc.data(with: .estimate)?["requestedAt"] as? Timestamp)?.dateValue() ?? Date()
+    }
+
+    static func clearLocationRequest(familyId: String, uid: String) async {
+        do {
+            try await FirestoreConfig.store().collection(FirestoreConfig.Path.families).document(familyId)
+                .collection(FirestoreConfig.Path.locationRequests).document(uid).delete()
+        } catch {
+            AppLog.cloud.error("清除更新位置請求失敗：\(error.localizedDescription)")
+        }
+    }
+
+    /// 即時監聽自己的請求（App 在前景或因背景定位而存活時，家人按下「更新位置」幾秒內就能收到）
+    static func listenLocationRequest(
+        familyId: String, uid: String, onRequest: @escaping @Sendable (Date) -> Void
+    ) -> ListenerRegistration {
+        FirestoreConfig.store().collection(FirestoreConfig.Path.families).document(familyId)
+            .collection(FirestoreConfig.Path.locationRequests).document(uid)
+            .addSnapshotListener { snapshot, error in
+                if let error {
+                    AppLog.cloud.error("監聽更新位置請求失敗：\(error.localizedDescription)")
+                    return
+                }
+                guard let snapshot, snapshot.exists, !snapshot.metadata.hasPendingWrites else { return }
+                let at = (snapshot.data(with: .estimate)?["requestedAt"] as? Timestamp)?.dateValue() ?? Date()
+                onRequest(at)
+            }
     }
 
     // MARK: - 安否回報

@@ -80,6 +80,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, MessagingDelegate {
                 isEnabled: UserDefaults.standard.bool(forKey: SettingsKeys.liveLocationSharingEnabled)
             )
             GeofenceSync.sync(context: container.mainContext)
+            // 背景啟動時也要能收到家人的「更新位置」請求
+            Task { @MainActor in AppRuntime.familySync?.startLocationRequestListener() }
             // 前景啟動即校正一次跟隨圈：顯著位置變更（SLC）要走約 500 公尺才觸發，
             // 只靠它的話「出遠門後第一次開 App」圈還停在舊位置，警報比對用錯地點。
             // 開 App 當下主動取一次位（已授權才會有結果），把圈先搬到人所在的地方。
@@ -148,6 +150,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate, MessagingDelegate {
 
     // MARK: - 無聲推播喚醒
 
+    /// 最多等 seconds 秒：工作先完成就立刻返回，逾時就放棄等待（工作仍可能在背景繼續）
+    @MainActor
+    private static func runWithDeadline(seconds: Double, _ work: @escaping @MainActor () async -> Void) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await work() }
+            group.addTask { try? await Task.sleep(for: .seconds(seconds)) }
+            _ = await group.next()
+            group.cancelAll()
+        }
+    }
+
     /// 伺服器偵測到新官方警報 → 廣播 {content-available:1} → 系統在背景叫醒 App 走到這裡。
     /// 喚醒後跑一次完整資料管線：抓最新警報、比對生活圈、相關才發本機通知——
     /// 事件伺服器只做廣播喚醒，警報比對仍在裝置上完成；家庭位置存在 Firebase Firestore，不會送到這台事件伺服器。
@@ -163,6 +176,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate, MessagingDelegate {
         Analytics.track("silent_wake_received")
         guard let container = AppRuntime.container else {
             completionHandler(.noData)
+            return
+        }
+        // 家人按「更新位置」→ 伺服器送 data message（type=locationRequest, content-available=1）喚醒這裡：
+        // 定位＋上傳必須在系統給的約 30 秒內做完並呼叫 completion，這裡自訂 25 秒上限。
+        if (userInfo["type"] as? String) == "locationRequest" {
+            Task { @MainActor in
+                await Self.runWithDeadline(seconds: 25) {
+                    guard let sync = AppRuntime.familySync else { return }
+                    await sync.checkLocationRequest(context: container.mainContext)
+                    // 推播本身就是請求：就算 Firestore 請求文件還沒讀到，也補傳一次位置
+                    await sync.uploadLocationNow(context: container.mainContext)
+                }
+                completionHandler(.newData)
+            }
             return
         }
         Task { @MainActor in
