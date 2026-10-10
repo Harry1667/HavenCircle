@@ -39,5 +39,8 @@ for test in json.load(open(mf)):
         if base.startswith("invite-code") or base.startswith("missing-elements"):
             print("== %s ==" % base); print(open(dst).read())
 PY
+# 測試會重裝 App 並在結束時關掉它；背景定位要 App 跑起來才會恢復，所以測完一律重新啟動
+xcrun devicectl device process launch --device "$UDID" com.gomiigo.HavenCircleApp >/dev/null 2>&1 \
+  || xcrun simctl launch "$UDID" com.gomiigo.HavenCircleApp >/dev/null 2>&1 || true
 echo "截圖目錄：${OUT}（$(ls "$OUT" | grep -c '\.png') 張 png）"
 exit $RC
