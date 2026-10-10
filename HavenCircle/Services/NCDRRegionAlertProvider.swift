@@ -4,12 +4,12 @@ import Foundation
 /// 只實作 RegionAlertProvider（行政區比對），不做點狀事件：
 /// 抽樣過的真實資料裡，CAP 幾乎不附精確經緯度（circle 值缺席機率極高），
 /// 套不進「事件點＋半徑」模型，硬套只會得到不精確的定位。
-struct NCDRRegionAlertProvider: RegionAlertProvider {
+nonisolated struct NCDRRegionAlertProvider: RegionAlertProvider {
     let sourceName = "NCDR 民生示警平台"
 
     private let endpoint = URL(string: "https://havencircle.looptw.com/crawler/api/latest.php")!
 
-    func fetchAlerts() async throws -> [RawRegionAlert] {
+    @concurrent func fetchAlerts() async throws -> [RawRegionAlert] {
         let (data, response) = try await URLSession.shared.data(from: endpoint)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw NCDRProviderError.badResponse
@@ -95,19 +95,19 @@ struct NCDRRegionAlertProvider: RegionAlertProvider {
     }
 }
 
-enum NCDRProviderError: Error {
+nonisolated enum NCDRProviderError: Error {
     case badResponse
 }
 
-private struct IngestEnvelope: Decodable {
+private nonisolated struct IngestEnvelope: Decodable {
     let data: NCDRPayload
 }
 
-private struct NCDRPayload: Decodable {
+private nonisolated struct NCDRPayload: Decodable {
     let events: [NCDRCapEvent]
 }
 
-private struct NCDRCapEvent: Decodable {
+private nonisolated struct NCDRCapEvent: Decodable {
     let identifier: String?
     let sender: String?
     let event: String?

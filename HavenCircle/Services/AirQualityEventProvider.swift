@@ -8,12 +8,16 @@ import Foundation
 ///   - 門檻預設 AQI ≥ 150（環境部「對所有族群不健康」紅色等級），可由 config/app.json 遠端調整
 ///   - 測站座標固定 → 去重簽名（類型＋500m 網格）穩定，每小時資料更新只會刷新同一筆事件
 ///   - 整個來源可用 features.aqiAlerts 遠端開關
-struct AirQualityEventProvider: EventProvider {
+nonisolated struct AirQualityEventProvider: EventProvider {
     let sourceName = "環境部空氣品質監測"
 
-    func fetchReports() async throws -> [RawEventReport] {
-        guard RemoteConfig.feature("aqiAlerts", default: true) else { return [] }
-        let threshold = Int(RemoteConfig.tuning("aqiAlertThreshold", default: 150))
+    @concurrent func fetchReports() async throws -> [RawEventReport] {
+        // RemoteConfig 的快取是主執行緒狀態：只回主執行緒讀兩個值，其餘解碼與轉換都在背景
+        let (enabled, threshold) = await MainActor.run {
+            (RemoteConfig.feature("aqiAlerts", default: true),
+             Int(RemoteConfig.tuning("aqiAlertThreshold", default: 150)))
+        }
+        guard enabled else { return [] }
 
         let stations = try await AirQualityService.fetchStations()
         return stations.filter { $0.aqi >= threshold }.map { station in

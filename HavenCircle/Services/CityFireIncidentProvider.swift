@@ -14,7 +14,7 @@ import Foundation
 /// 座標只到「縣市＋鄉鎮市區」精度（各站派遣系統本身不吐經緯度，僅台南比照官方個資
 /// 規範只留到行政區），沿用 NewsEventProvider.locate(county:district:) 同一份查表，
 /// 不重複造輪子（跟 NFAIncidentProvider 同一套做法）。
-struct CityFireIncidentProvider: EventProvider {
+nonisolated struct CityFireIncidentProvider: EventProvider {
     let sourceName = "縣市消防局"
 
     private let endpoint = URL(string: "https://havencircle.looptw.com/crawler/api/latest.php?dataset=cityfire")!
@@ -24,7 +24,7 @@ struct CityFireIncidentProvider: EventProvider {
     private static let resolvedTTLSeconds: TimeInterval = 2 * 3_600
     private static let ongoingTTLSeconds: TimeInterval = 12 * 3_600
 
-    func fetchReports() async throws -> [RawEventReport] {
+    @concurrent func fetchReports() async throws -> [RawEventReport] {
         let (data, response) = try await URLSession.shared.data(from: endpoint)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw NCDRProviderError.badResponse
@@ -159,15 +159,15 @@ struct CityFireIncidentProvider: EventProvider {
     }
 }
 
-private struct CityFireEnvelope: Decodable {
+private nonisolated struct CityFireEnvelope: Decodable {
     let data: CityFirePayload
 }
 
-private struct CityFirePayload: Decodable {
+private nonisolated struct CityFirePayload: Decodable {
     let events: [CityFireRecord]
 }
 
-private struct CityFireRecord: Decodable {
+private nonisolated struct CityFireRecord: Decodable {
     let county: String
     let district: String
     let location: String

@@ -161,7 +161,7 @@ extension LocalLifeCircle {
 /// 勾選的「類型」，而是「這件事具體是哪一種」，讓地圖/事件卡能顯示對的圖示而不是
 /// 一律套用「公共安全」的通用盾牌。細分類事件仍會被 publicSafety／disaster 等
 /// 既有 isDangerKind 判斷涵蓋是否推播（見 RemoteConfig.defaultDangerKinds）。
-enum EventCategory {
+nonisolated enum EventCategory {
     static let fire = "火災"
     static let traffic = "重大交通事故"
     static let disaster = "天災"
