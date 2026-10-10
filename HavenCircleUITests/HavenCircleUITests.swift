@@ -594,17 +594,6 @@ final class HavenCircleUITests: XCTestCase {
             if app.staticTexts[name].exists { shot("已存在-\(name)"); continue }
             guard let add = find("新增守護地點", timeout: 6) else { shot("找不到新增入口"); XCTFail("找不到新增守護地點"); return }
             add.tap(); sleep(2)
-            // 先跳「這是什麼地方？」預設選單：選「其他」再自己填名稱
-            let other = app.buttons.matching(NSPredicate(format: "label CONTAINS '其他'")).firstMatch
-            if other.waitForExistence(timeout: 3) {
-                shot("地點類型選單"); other.tap(); sleep(2)
-                // 「其他」會再跳一個輸入名稱的彈窗
-                let alertField = app.alerts.textFields.firstMatch
-                if alertField.waitForExistence(timeout: 3) {
-                    alertField.typeText(name); shot("名稱彈窗-\(name)")
-                    app.alerts.buttons["就用這個"].firstMatch.tap(); sleep(2)
-                }
-            }
             shot("編輯頁-\(idx + 1)")
             let nameField = app.textFields["地點名稱"].firstMatch
             guard nameField.waitForExistence(timeout: 5) else { shot("找不到名稱欄"); XCTFail("找不到名稱欄"); return }

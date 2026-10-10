@@ -44,8 +44,7 @@ struct CircleEditorView: View {
     /// 台灣地理中心概略座標（南投埔里一帶），地圖找不到任何座標線索時的墊底視野中心
     private static let taiwanFallbackCenter = CLLocationCoordinate2D(latitude: 23.6978, longitude: 120.9605)
 
-    /// 新增地點接續情境：從 PlaceSelectView 選完地點名稱、550ms 後直接接著開這裡建第一個固定圈。
-    /// 此時 member 名稱就是使用者剛選的地點名稱（住家／公司／⋯），標題與欄位預填據此客製化；
+    /// 新增守護地點情境：家人頁直接開這裡，member 是尚未落地的草稿，名稱、地址、儲存一頁完成；
     /// 編輯既有圈或替一般家人新增圈都不算，外觀維持原本樣子（見 body 內 districtSection 分支）。
     private let isNewPlaceCircle: Bool
     /// 是否已成功按過「儲存」：用來跟「未儲存就離開（取消／下滑關閉）」區分——
@@ -57,7 +56,8 @@ struct CircleEditorView: View {
         self.circle = circle
         let isNewPlaceCircle = member.isPlace && circle == nil
         self.isNewPlaceCircle = isNewPlaceCircle
-        _name = State(initialValue: circle?.name ?? (isNewPlaceCircle ? member.name : ""))
+        // 新增守護地點：名稱由使用者在頁內填寫或點頂端快捷鈕帶入，不預填占位名稱
+        _name = State(initialValue: circle?.name ?? "")
         _address = State(initialValue: circle?.addressText ?? "")
         _radius = State(initialValue: circle?.radiusMeters ?? 1_000)
         _district = State(initialValue: circle?.district ?? Districts.unspecified)
@@ -85,6 +85,7 @@ struct CircleEditorView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if isNewPlaceCircle { quickNameRow }
                 TextField("地點名稱", text: $name)
                 TextField("地址或地標", text: $address)
                     .onChange(of: address) { oldValue, newValue in
@@ -113,7 +114,7 @@ struct CircleEditorView: View {
                 }
                 .disabled(address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button {
-                    if member.name == "住家" {
+                    if name == "住家" {
                         // 住家不會是遠端地點，不必多問一次
                         Task { await useCurrentLocation() }
                     } else {
@@ -128,7 +129,7 @@ struct CircleEditorView: View {
                     }
                 }
                 .confirmationDialog(
-                    "你現在人在「\(member.name)」嗎？",
+                    "你現在人在「\(name.isEmpty ? "這個地點" : name)」嗎？",
                     isPresented: $showCurrentLocationConfirm,
                     titleVisibility: .visible
                 ) {
@@ -153,8 +154,8 @@ struct CircleEditorView: View {
                 Text("在地圖上長按或點一下任一點，可直接放大頭針選點；地址搜尋找不到、人又不在現場時最好用。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Stepper("通知範圍：\(radius) 公尺", value: $radius, in: 300...3000, step: 100)
-                Text("約走路 15 分鐘的範圍。地震、颱風等大範圍警報依行政區推播，不受這個範圍限制。")
+                radiusPicker
+                Text("守護地點的範圍獨立於「設定 > 提醒設定 > 警戒範圍」（那個只管跟著你移動的本人圈）。地震、颱風等大範圍警報依行政區推播，不受這個範圍限制。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 districtSection
@@ -189,17 +190,6 @@ struct CircleEditorView: View {
         // 未儲存就離開（取消按鈕／下滑手勢關閉 sheet）兩條路徑都會讓這個 View 從畫面消失，
         // 用同一個 .onDisappear 收斂判斷，不必分別在取消按鈕與下滑手勢各接一次
         .onDisappear { deleteOrphanPlaceIfNeeded() }
-        // #4：新增地點且是「住家」時，嘗試自動帶入目前位置——住家本來就是「不必多問一次」
-        // 的信任情境（見上方「把目前位置設為這個守護地點」按鈕同樣的判斷），減少卡住機率。
-        // 其餘地點名稱（爸媽家、公司⋯）刻意不自動帶入：使用者當下人多半不在那個地點，
-        // 靜默帶入目前位置反而會建出錯誤的警戒圈，安全風險比「多一步確認」更高。
-        // 沒有定位權限就安靜略過，不 crash、也不強制要求權限。
-        .task {
-            guard isNewPlaceCircle, member.name == "住家",
-                  picked == nil, found == nil,
-                  LocationService.shared.isAuthorized else { return }
-            await useCurrentLocation()
-        }
     }
 
     /// #4 常駐提示文案：清楚列出三種能解除「位置待確認」的動作，不只是抽象地說「請確認位置」。
@@ -222,8 +212,7 @@ struct CircleEditorView: View {
         }
     }
 
-    /// 新增地點兩段式流程的收尾：步驟 A（PlaceSelectView／FamilyHomeView／HomeStatusView
-    /// 建立 `LocalFamilyMember(kind: "place")` 並存檔）已經讓這個 member 落地，
+    /// 舊兩段式流程的防呆（現行草稿成員不會落地，通常不觸發）：若 member 已落地，
     /// 若使用者在這裡（步驟 B）沒儲存就離開，這個 member 會變成「0 個圈」的孤兒——
     /// 不只家人頁多一筆空地點，還會佔掉 `FreeTier.maxPlaces` 的免費額度，讓下次新增誤觸付費牆
     /// （`gateAddPlace` 數的是 `members.filter(\.isPlace).count`，孤兒 member 也算一個）。
@@ -234,14 +223,15 @@ struct CircleEditorView: View {
     /// - `member.lifeCircles.isEmpty`：這個 member 目前確實沒有任何圈——如果使用者是回來幫
     ///   已有圈的地點「加第二個圈」，中途取消也不該連累第一個圈，用這個條件排除
     private func deleteOrphanPlaceIfNeeded() {
-        guard isNewPlaceCircle, !didSave, member.lifeCircles.isEmpty else { return }
+        // 草稿成員（尚未寫入資料庫）取消時什麼都不會留下，不需清除
+        guard isNewPlaceCircle, !didSave, member.modelContext != nil, member.lifeCircles.isEmpty else { return }
         context.delete(member)
         context.saveReporting()
     }
 
     /// 導覽標題：新增地點接續情境講人話（帶出剛選的地點名稱），其餘情境沿用「守護地點」語彙
     private var navigationTitleText: String {
-        if isNewPlaceCircle { return "把「\(member.name)」放上地圖" }
+        if isNewPlaceCircle { return "新增守護地點" }
         return circle == nil ? "守護這個地點" : "編輯守護地點"
     }
 
@@ -449,6 +439,31 @@ struct CircleEditorView: View {
         }
     }
 
+    /// 頁頂類型快捷鈕：點了把名稱填入（之後仍可自行修改）
+    private var quickNameRow: some View {
+        HStack(spacing: HCSpacing.x2) {
+            ForEach(["住家", "公司", "學校", "爸媽家"], id: \.self) { preset in
+                Button(preset) { name = preset }
+                    .buttonStyle(.bordered)
+                    .tint(name == preset ? HCColor.brand : .gray)
+                    .font(.subheadline)
+                    .accessibilityLabel("名稱設為\(preset)")
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// 通知範圍：新增預設 1 公里；既有圈若半徑不在選項內，保留原值當額外選項（不強改）
+    private var radiusPicker: some View {
+        let options = Array(Set([500, 1000, 2000, 3000, radius])).sorted()
+        return Picker("通知範圍", selection: $radius) {
+            ForEach(options, id: \.self) { meters in
+                Text(meters >= 1000 ? String(format: "%g 公里", Double(meters) / 1000) : "\(meters) 公尺").tag(meters)
+            }
+        }
+        .pickerStyle(.menu)
+    }
+
     private func search() async {
         let query = address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
@@ -484,6 +499,13 @@ struct CircleEditorView: View {
             ?? found?.placemark.coordinate
             ?? circle.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
         guard let coordinate else { return }
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 一頁完成：地點成員在按下「儲存」時才建立（取消不留孤兒、不佔免費額度）
+        if isNewPlaceCircle, member.modelContext == nil {
+            member.name = trimmedName.isEmpty ? "守護地點" : trimmedName
+            context.insert(member)
+            Analytics.track("place_added")
+        }
         let target = circle ?? LocalLifeCircle(
             name: "守護地點",
             encryptedAddress: "",
