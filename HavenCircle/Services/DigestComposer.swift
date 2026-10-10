@@ -4,7 +4,7 @@ import Foundation
 enum DigestComposer {
     static func summary(events: [LocalSafetyEvent], members: [LocalFamilyMember]) -> String {
         let last24h = Date.now.addingTimeInterval(-86_400)
-        let recent = events.filter { $0.occurredAt >= last24h && !$0.isDrill }
+        let recent = events.filter { $0.occurredAt >= last24h && !$0.isDrill && !$0.isArchived }
         let attention = recent.filter { event in
             event.isActiveForAwareness
                 && event.isOfficiallyConfirmed

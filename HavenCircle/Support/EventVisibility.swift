@@ -9,6 +9,10 @@ enum EventVisibility {
         suppressedGroups.contains(event.deduplicationGroup)
     }
 
+    static func isGroupSuppressed(_ group: String) -> Bool {
+        suppressedGroups.contains(group)
+    }
+
     static func suppressSimilar(to event: LocalSafetyEvent) {
         var groups = suppressedGroups
         groups.insert(event.deduplicationGroup)

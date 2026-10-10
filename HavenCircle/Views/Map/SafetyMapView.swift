@@ -1400,7 +1400,7 @@ private struct EventClusterListSheet: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)
-                                    Text("\(event.trustStatus)・\(relativeTime(event.occurredAt))")
+                                    Text("\(event.trustStatus)・\(relativeTime(event.occurredAt))\(event.reportCountText.map { "・\($0)" } ?? "")")
                                         .font(.caption)
                                         .foregroundStyle(
                                             event.isOfficiallyConfirmed ? HCColor.danger : HCColor.attention

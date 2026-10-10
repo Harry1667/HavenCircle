@@ -112,7 +112,8 @@ struct HavenCircleApp: App {
                     // 註冊 APNs：權杖與通知權限互相獨立，先拿權杖存著（AppDelegate 回呼），
                     // AppDelegate 取得權杖後會上傳到中繼站；伺服器偵測新官方警報後用 APNs 喚醒。
                     UIApplication.shared.registerForRemoteNotifications()
-                    // 啟動即跑一次資料管線（mock 來源；階段 4 換成真實來源）
+                    // 啟動跑一次資料管線；延後 1 秒讓首屏先畫完，避免冷啟動與首屏渲染搶主執行緒
+                    try? await Task.sleep(for: .seconds(1))
                     await EventPipeline.refresh(context: modelContainer.mainContext)
                     // 匿名統計：記一次啟動並把累積佇列送出（斷網自動留到下次）
                     Analytics.track("app_open")

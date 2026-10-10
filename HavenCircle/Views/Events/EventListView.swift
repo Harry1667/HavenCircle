@@ -55,7 +55,7 @@ struct EventListView: View {
 
         @MainActor
         init(events: [LocalSafetyEvent], members: [LocalFamilyMember]) {
-            let visible = events.filter { !$0.isArchived && !EventVisibility.isSuppressed($0) }
+            let visible = events.filter { !$0.isArchived && $0.mergedIntoKey == nil && !EventVisibility.isSuppressed($0) }
             visibleEvents = visible
             let active = visible.filter(\.isActiveForAwareness)
             var attention: [(LocalSafetyEvent, Double)] = []
@@ -84,6 +84,54 @@ struct EventListView: View {
         }
     }
 
+    /// Feed 快取：分類要對每個事件跑 AlertPolicy，body 因無關狀態（展開收合、sheet）重算時不該重做。
+    /// 以「事件／成員／守護圈內容 + 分鐘」的指紋判斷輸入是否變動，沒變就沿用上次結果。
+    /// （class 而非 @State 值：在 body 裡更新快取不會再觸發一輪 body）
+    private final class FeedCache {
+        var fingerprint: Int?
+        var feed: Feed?
+    }
+    @State private var feedCache = FeedCache()
+
+    private func currentFeed() -> Feed {
+        var hasher = Hasher()
+        hasher.combine(events.count)
+        for e in events {
+            hasher.combine(e.eventKey)
+            hasher.combine(e.updatedAt)
+            hasher.combine(e.expiresAt)
+            hasher.combine(e.status)
+            hasher.combine(e.isOngoing)
+            hasher.combine(e.isArchived)
+            hasher.combine(e.trustStatus)
+            hasher.combine(e.reportCount)
+            hasher.combine(EventVisibility.isSuppressed(e))
+        }
+        hasher.combine(members.count)
+        for m in members {
+            hasher.combine(m.memberKey)
+            hasher.combine(m.kind)
+            for c in m.lifeCircles {
+                hasher.combine(c.circleKey)
+                hasher.combine(c.latitude)
+                hasher.combine(c.longitude)
+                hasher.combine(c.radiusMeters)
+                hasher.combine(c.alertTypes)
+                hasher.combine(c.district)
+                hasher.combine(c.isActiveForAlerts)
+                hasher.combine(c.scheduleEnabled)
+            }
+        }
+        // 事件到期是時間函數：每分鐘至多重算一次
+        hasher.combine(Int(Date.now.timeIntervalSince1970 / 60))
+        let fingerprint = hasher.finalize()
+        if feedCache.fingerprint == fingerprint, let feed = feedCache.feed { return feed }
+        let feed = Feed(events: events, members: members)
+        feedCache.fingerprint = fingerprint
+        feedCache.feed = feed
+        return feed
+    }
+
     /// 進行中的區域警報，依 kind＋title 去重取最新——NCDR 同一場警報常拆成多筆
     /// （鄉鎮清單不同、標題相同），全部列出會讓提醒中心看起來像同一則洗版
     private var activeRegionAlerts: [RegionAlert] {
@@ -99,7 +147,7 @@ struct EventListView: View {
     // 本頁是「動態」分頁的根內容，導航堆疊由 EventsTabView 提供，
     // 自己不再包 NavigationStack（巢狀堆疊會讓 push/pop 行為錯亂）
     var body: some View {
-        let feed = Feed(events: events, members: members)
+        let feed = currentFeed()
         List {
             // 零導覽引導：定位／通知／邀請碼三張情境卡（最多同時兩張）
             FeedOnboardingCards(hasCircle: !circles.isEmpty)
@@ -137,7 +185,7 @@ struct EventListView: View {
         .task(id: router.pendingEventKey) {
             guard let key = router.pendingEventKey else { return }
             router.pendingEventKey = nil
-            guard let match = Feed(events: events, members: members).visibleEvents.first(where: { $0.eventKey == key }) else { return }
+            guard let match = currentFeed().visibleEvents.first(where: { $0.eventKey == key }) else { return }
             // 等 push 導航動畫完成再出 sheet，避免兩種轉場互相打斷（同 DEBUG 自動開啟的考量）
             try? await Task.sleep(for: .milliseconds(450))
             selected = match
@@ -152,7 +200,7 @@ struct EventListView: View {
         .task(id: events.count) {
             guard !didOpenDebugDetail,
                   ProcessInfo.processInfo.arguments.contains("--open-first-event-detail") else { return }
-            let debugFeed = Feed(events: events, members: members)
+            let debugFeed = currentFeed()
             let target = debugFeed.attention.first { $0.eventKey.contains("NFA_Fire") }
                 ?? debugFeed.attention.first
                 ?? debugFeed.visibleEvents.first { $0.eventKey.contains("NFA_Fire") }

@@ -19,7 +19,7 @@ struct HistoryView: View {
     }
 
     private var recentEvents: [LocalSafetyEvent] {
-        events.filter { $0.occurredAt >= cutoff && !$0.isDrill }
+        events.filter { $0.occurredAt >= cutoff && !$0.isDrill && $0.mergedIntoKey == nil }
     }
 
     /// 免費方案且本機確實存在被 cutoff 擋掉的更早事件時才顯示升級提示；

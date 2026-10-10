@@ -64,17 +64,22 @@ struct EventRow: View {
         )
     }
 
+    /// 「 · N 則報導」（N>1 才有）：同一事件多篇報導合併後讓使用者知道背後有幾則
+    private var reportSuffix: String {
+        event.reportCountText.map { " · \($0)" } ?? ""
+    }
+
     /// 窄卡先保住來源與狀態，時間、距離則自動換行；避免「分鐘前」孤零零掉到下一行。
     private var standardMetadata: some View {
         ViewThatFits(in: .horizontal) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(event.sourceName) · \(event.statusText) · \(relativeTime(event.occurredAt))")
+                Text("\(event.sourceName)\(reportSuffix) · \(event.statusText) · \(relativeTime(event.occurredAt))")
                     .lineLimit(1)
                 Text(relativeDistance(event, members))
                     .lineLimit(1)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(event.sourceName) · \(event.statusText)")
+                Text("\(event.sourceName)\(reportSuffix) · \(event.statusText)")
                     .lineLimit(1)
                 Text("\(relativeTime(event.occurredAt)) · \(relativeDistance(event, members))")
                     .lineLimit(1)
@@ -112,7 +117,7 @@ struct EventRow: View {
     /// 寬度足夠時維持單行；窄機型自動拆成時間、距離兩行，不縮字也不截斷。
     private var compactMetadata: some View {
         ViewThatFits(in: .horizontal) {
-            Text("\(relativeTime(event.occurredAt))・\(relativeDistance(event, members))")
+            Text("\(relativeTime(event.occurredAt))・\(relativeDistance(event, members))\(reportSuffix.replacingOccurrences(of: " · ", with: "・"))")
                 .fixedSize(horizontal: true, vertical: false)
             VStack(alignment: .leading, spacing: 1) {
                 Text(relativeTime(event.occurredAt))

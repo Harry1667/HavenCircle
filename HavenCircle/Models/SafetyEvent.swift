@@ -3,7 +3,7 @@ import SwiftData
 import SwiftUI
 
 /// 可信度狀態（對外顯示一律用文字說明，不能只靠顏色）
-enum TrustStatus {
+nonisolated enum TrustStatus {
     static let officialConfirmed = "官方已確認"
     static let crossVerified = "多來源交叉驗證"
     /// 一線主流媒體單一報導即可升級到的等級（見 MainstreamMedia）。
@@ -17,7 +17,7 @@ enum TrustStatus {
 /// 一線媒體（中央社、公視、TVBS、聯合報、自由時報、ETtoday）採即時查證後即播出，
 /// 單一報導即可視為足夠可信，跳過交叉驗證直接升級為「主流媒體報導」；
 /// 二線媒體（Newtalk新聞、記者新聞網）不在名單內，維持原規則——仍需多來源交叉驗證才升級。
-enum MainstreamMedia {
+nonisolated enum MainstreamMedia {
     static let tier1: [String] = ["中央社", "公視", "TVBS", "聯合報", "自由時報", "ETtoday"]
 
     /// 比對方式：用「包含比對」而非精確相等。爬蟲跨來源合併同一事件時，
@@ -70,6 +70,12 @@ final class LocalSafetyEvent {
     var hasNotified: Bool = false
     /// 已封存（過期後保留供歷史回顧，不再出現在提醒中心）
     var isArchived: Bool = false
+    /// 同一事件的多篇報導合併後，被合併的那幾筆指向代表事件的 eventKey（代表事件本身為 nil）。
+    /// 被合併者同時標記 isArchived，所有清單／地圖／警報判斷自然排除；保留為墓碑而非刪除，
+    /// 是為了來源仍在回報同一篇報導時不會被當成新事件重建、重推播。
+    var mergedIntoKey: String? = nil
+    /// 代表事件涵蓋的報導則數（含自己；每次刷新由合併流程重算）
+    var reportCount: Int = 1
 
     init(
         eventKey: String,
@@ -140,7 +146,10 @@ extension LocalSafetyEvent {
     var isEnded: Bool { isResolved || isExpired }
 
     /// 可作為即時安全狀態、地圖與通知判斷的事件；不能僅以 TTL 推論「還在發生」。
-    var isActiveForAwareness: Bool { !isEnded && isOngoing }
+    var isActiveForAwareness: Bool { !isEnded && isOngoing && !isArchived }
+
+    /// 多則報導的標示文字（N>1 才有）；接在來源或狀態文字後面
+    var reportCountText: String? { reportCount > 1 ? "\(reportCount) 則報導" : nil }
 
     /// 對使用者顯示的狀態文字（不能只靠顏色）
     var statusText: String {
