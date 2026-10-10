@@ -106,39 +106,38 @@ class NewsCrawlerTests(unittest.TestCase):
         self.assertTrue(disable_for_run)
         self.assertIsNone(provider)
 
-    def test_proxy_prefers_claude_then_gemini_then_openai(self):
-        """優先序 claude → gemini → openai。
+    def test_proxy_prefers_gemini_then_claude_then_openai(self):
+        """優先序 gemini → claude → openai；最後一個才成功，驗證整條 fallback 鏈次序。
 
-        2026-08-02 實測 openai/gemini 皆需 20 秒以上、超過 PROXY_LLM_TIMEOUT 上限，
-        claude 只要 2 秒；舊的 openai 優先順序會讓每則新聞先撞兩次逾時而全滅。
-        這裡讓最後一個（openai）才成功，藉此驗證整條 fallback 鏈的先後次序。
+        gemini 不指定 model（空字串），避免被 proxy 靜默換成別家。
         """
-        providers = []
+        calls = []
 
-        def proxy_stub(*_args, **kwargs):
-            providers.append(kwargs["provider"])
-            if kwargs["provider"] != "openai":
+        def stub(_prompt, provider, model, _timeout):
+            calls.append((provider, model))
+            if provider != "openai":
                 raise TimeoutError("quota")
-            return "{\"is_incident\":false}"
+            return "{\"is_incident\":false}", "openai", "gpt-4o-mini"
 
-        with mock.patch.object(news, "_sdk_ai", side_effect=proxy_stub):
+        with mock.patch.object(news, "_proxy_rest_call", side_effect=stub):
             answer = news.call_proxy_llm("測試")
 
         self.assertEqual(answer, "{\"is_incident\":false}")
-        self.assertEqual(providers, ["claude", "gemini", "openai"])
+        self.assertEqual([c[0] for c in calls], ["gemini", "claude", "openai"])
+        self.assertEqual(calls[0][1], "")
 
-    def test_proxy_stops_at_claude_when_it_succeeds(self):
-        """claude 成功時不應再往下試——否則等於白等 openai 的 20 秒逾時。"""
+    def test_proxy_stops_at_gemini_when_it_succeeds(self):
+        """gemini 成功時不應再往下試。"""
         providers = []
 
-        def proxy_stub(*_args, **kwargs):
-            providers.append(kwargs["provider"])
-            return "{\"is_incident\":false}"
+        def stub(_prompt, provider, _model, _timeout):
+            providers.append(provider)
+            return "{\"is_incident\":false}", "gemini", "gemini-3.5-flash"
 
-        with mock.patch.object(news, "_sdk_ai", side_effect=proxy_stub):
+        with mock.patch.object(news, "_proxy_rest_call", side_effect=stub):
             news.call_proxy_llm("測試")
 
-        self.assertEqual(providers, ["claude"])
+        self.assertEqual(providers, ["gemini"])
 
     def test_free_pool_is_disabled_with_zero_daily_limit(self):
         with mock.patch.object(news, "FREE_GEMINI_ENABLED", True), \
@@ -853,6 +852,7 @@ class NewsCrawlerTests(unittest.TestCase):
         google = [f for f in news.FEEDS if f.get("format") == "google_news"]
         self.assertEqual(len(google), len(news.GOOGLE_NEWS_QUERIES))
         self.assertLessEqual(len(google), 6)
+        self.assertEqual([f['feed'] for f in google][:2], ['治安暴力', '治安犯罪'])
         self.assertTrue(all("news.google.com/rss/search" in f["url"] and f.get("extra") for f in google))
 
 
@@ -964,6 +964,313 @@ class NewsCrawlerTests(unittest.TestCase):
         self.assertEqual(items[0]["pubDate"], "2026-10-09T23:04:19+08:00")
         self.assertEqual(news.parse_tvbs_local("<html>舊版頁面</html>"), [])
 
+    # ------------------------------------------------------------------
+    # 治安暴力事件覆蓋
+    # ------------------------------------------------------------------
+
+    def test_crime_titles_classified_as_public_safety_with_location(self):
+        cases = [
+            ("台中市西屯區男子持刀砍人 路人報警", "台中市", "西屯區"),
+            ("高雄市三民區驚傳搶劫 超商店員遭刀抵脖", "高雄市", "三民區"),
+            ("新北市板橋區女子遭擄人 警方追查", "新北市", "板橋區"),
+            ("台北市士林區闖空門 住戶返家驚見遭翻箱", "台北市", "士林區"),
+            ("桃園市中壢區可疑男子徘徊校園 家長憂心", "桃園市", "中壢區"),
+            ("台南市安平區商場偷拍 男子當場被逮", "台南市", "安平區"),
+            ("台中持刀男駕車逃逸撞傷員警", "台中市", None),  # 「撞」不能搶走歸類
+        ]
+        for title, county, district in cases:
+            ok, category, _hit = news.rules_classify(title, "")
+            self.assertTrue(ok, title)
+            self.assertEqual(category, "公共安全", title)
+            self.assertEqual(news.county_from_text(title), county, title)
+            if district:
+                self.assertEqual(news.district_from_text_v2(title, county=county)[0], district, title)
+
+    def test_pure_fraud_is_not_an_incident_but_violent_fraud_is(self):
+        self.assertEqual(news.rules_classify("詐團車手落網 查扣贓款500萬", ""), (False, None, "純詐騙"))
+        self.assertEqual(news.rules_classify("假投資詐騙 民眾被騙百萬報案", "")[0], False)
+        self.assertTrue(news.rules_classify("詐騙集團持刀恐嚇討債 台中男被押走", "")[0])
+
+    def test_aftermath_reports_are_not_ongoing(self):
+        for t in ("台中砍人案嫌犯落網 警方到案說明", "新北搶劫犯已逮捕", "通緝犯躲藏民宅被逮 移送法辦"):
+            self.assertTrue(news.is_aftermath_report(t), t)
+        for t in ("台中持刀男逃逸 警方追捕中", "台北市大安區砍人 傷者送醫", "通緝犯持刀逃逸 警方圍捕"):
+            self.assertFalse(news.is_aftermath_report(t), t)
+
+    def test_gate_clears_ongoing_for_aftermath_even_when_llm_says_ongoing(self):
+        now = datetime.now(news.TZ_TAIPEI)
+        pub = now.strftime("%a, %d %b %Y %H:%M:%S +0800")
+        rows = [("砍人案嫌犯落網 警方稱持刀男已到案 - 某某報", "某某報", "c1", pub),
+                ("信義路持刀男仍在逃 警方追捕 - 某某報", "某某報", "c2", pub)]
+        feeds = [{"name": "Google新聞", "feed": "治安暴力", "url": "memory://google",
+                  "format": "google_news", "extra": True}]
+        llm = {"is_incident": True, "county": "台北市", "district": "信義區", "place": None,
+               "category": "公共安全", "confidence": 0.9, "severity": "high", "is_ongoing": True}
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(news, "AI_PROXY_TOKEN", "t"), \
+                mock.patch.object(news, "FREE_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "fetch_url", return_value=self.google_rss(rows)), \
+                mock.patch.object(news, "_llm_classify_safe", return_value=(llm, False, False, None)):
+            news.main(feeds=feeds, out_dir=directory)
+            output = json.loads(Path(directory, "latest.json").read_text())
+        by_id = {e["title"]: e["is_ongoing"] for e in output["events"]}
+        self.assertEqual(len(by_id), 2)
+        self.assertFalse([v for k, v in by_id.items() if "落網" in k][0])
+        self.assertTrue([v for k, v in by_id.items() if "仍在逃" in k][0])
+        self.assertEqual(output["pipelineHealth"]["aftermathOngoingCleared"], 1)
+
+    def test_foreign_shootings_are_dropped_from_crime_query(self):
+        now = datetime.now(news.TZ_TAIPEI)
+        pub = now.strftime("%a, %d %b %Y %H:%M:%S +0800")
+        rows = [("美國芝加哥發生槍擊 4死 - 某某報", "某某報", "f1", pub),
+                ("費城街頭驚傳開槍 警方封鎖 - 某某報", "某某報", "f2", pub),
+                ("高雄市前鎮區驚傳槍擊 警方到場 - 某某報", "某某報", "f3", pub)]
+        feeds = [{"name": "Google新聞", "feed": "治安暴力", "url": "memory://google",
+                  "format": "google_news", "extra": True}]
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(news, "AI_PROXY_TOKEN", ""), \
+                mock.patch.object(news, "FREE_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "PAID_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "fetch_url", return_value=self.google_rss(rows)):
+            news.main(feeds=feeds, out_dir=directory)
+            output = json.loads(Path(directory, "latest.json").read_text())
+        self.assertEqual(output["pipelineHealth"]["foreignDropped"], 2)
+        self.assertEqual([e["county"] for e in output["events"]], ["高雄市"])
+
+
+    def test_oracle_misjudgments_2026_10_10(self):
+        # 1. 砍樹不是暴力
+        self.assertFalse(news.rules_classify("士林美崙公園傳恐砍樹蓋停車場惹毛市民", "")[0])
+        # 2. 國慶車潮：描述夾帶「封閉」等泛用詞不得歸公共安全
+        ok, cat, _ = news.rules_classify("國慶連假第2天車潮湧現！國5北返恐塞到凌晨",
+                                         "國道5號部分車道封閉 南港系統交流道 警戒 疏散車流")
+        self.assertFalse(ok and cat == "公共安全")
+        # 3. 花蓮事件不得被描述裡的「中山區」拉到台北；聲押屬事後報導
+        title = "闖東大門夜市釀「大逃殺」！33歲男持刀隨機追砍遊客 晚間遭檢聲押"
+        self.assertTrue(news.is_aftermath_report(title))
+        now = datetime.now(news.TZ_TAIPEI)
+        pub = now.strftime("%a, %d %b %Y %H:%M:%S +0800")
+        rows = [(title + " - 某某報", "某某報", "o3", pub)]
+        feeds = [{"name": "Google新聞", "feed": "治安暴力", "url": "memory://google",
+                  "format": "google_news", "extra": True}]
+        raw = self.google_rss(rows).replace(b"</item>", "<description>台北市中山區 另案</description></item>".encode(), 1)
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(news, "AI_PROXY_TOKEN", ""), \
+                mock.patch.object(news, "FREE_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "PAID_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "fetch_url", return_value=raw):
+            news.main(feeds=feeds, out_dir=directory)
+            ev = json.loads(Path(directory, "latest.json").read_text())["events"]
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0]["county"], "花蓮縣")
+        self.assertNotEqual(ev[0]["district"], "中山區")
+        self.assertFalse(ev[0]["is_ongoing"])
+
+
+
+class LlmFailureReasonTests(unittest.TestCase):
+    """LLM 失敗原因要被分類彙總，且「回了但不採用」不可再被算成通道失敗。"""
+
+    def setUp(self):
+        news.reset_llm_reasons()
+
+    def test_describe_llm_error_labels(self):
+        import urllib.error
+        self.assertEqual(news.describe_llm_error(TimeoutError("x")), "timeout")
+        http = urllib.error.HTTPError("u", 429, "Too Many", {}, None)
+        self.assertEqual(news.describe_llm_error(http), "HTTP 429")
+        self.assertEqual(
+            news.describe_llm_error(RuntimeError("Bearer abcdef123456 失效")), "RuntimeError:<隱藏> 失效")
+        self.assertEqual(news.describe_llm_error(RuntimeError("StatusCode.DEADLINE_EXCEEDED")), "timeout")
+        wrapped = news.FreeGeminiUnavailable("免費 Gemini 呼叫失敗")
+        wrapped.__cause__ = http
+        self.assertEqual(news.describe_llm_error(wrapped), "HTTP 429")
+
+    def test_proxy_records_each_provider_error_and_message_has_reasons(self):
+        def stub(_prompt, provider, _model, _timeout):
+            if provider == "gemini":
+                raise RuntimeError("gemini 目前無法使用（授權已過期）")
+            raise TimeoutError("t")
+        with mock.patch.object(news, "_proxy_rest_call", side_effect=stub):
+            with self.assertRaises(RuntimeError) as ctx:
+                news.call_proxy_llm("測試")
+        self.assertIn("claude=timeout", str(ctx.exception))
+        self.assertIn("openai=timeout", str(ctx.exception))
+        self.assertEqual(news._LLM_PROVIDER_ERRORS["claude:timeout"], 1)
+
+    def test_provider_error_recorded_even_when_fallback_succeeds(self):
+        def stub(_prompt, provider, _model, _timeout):
+            if provider == "gemini":
+                raise TimeoutError("t")
+            return "{}", "claude", "claude-sonnet-5-5"
+        with mock.patch.object(news, "_proxy_rest_call", side_effect=stub):
+            self.assertEqual(news.call_proxy_llm("測試"), "{}")
+        self.assertEqual(news._LLM_PROVIDER_ERRORS, {"gemini:timeout": 1})
+        self.assertEqual(news._LLM_ACTUAL_MODELS, {"claude/claude-sonnet-5-5": 1})
+
+    def test_silent_substitution_is_recorded(self):
+        """proxy 回 ok:true 卻換成別家：內容照用，但要計入「靜默替換」。"""
+        def stub(_prompt, _provider, _model, _timeout):
+            return "{}", "openai", "gpt-6-astra"
+        with mock.patch.object(news, "_proxy_rest_call", side_effect=stub):
+            news.call_proxy_llm("測試")
+        self.assertEqual(news._LLM_PROVIDER_ERRORS, {"gemini→openai 靜默替換": 1})
+        self.assertEqual(news._LLM_ACTUAL_MODELS, {"openai/gpt-6-astra": 1})
+
+    def test_rest_call_omits_model_for_gemini_and_parses_actual(self):
+        sent = {}
+
+        class FakeResp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self):
+                return json.dumps({"ok": True, "content": "好", "actual_provider": "gemini",
+                                   "actual_model": "gemini-3.5-flash"}).encode("utf-8")
+
+        def fake_urlopen(req, timeout=None):
+            sent["body"] = json.loads(req.data.decode("utf-8"))
+            sent["timeout"] = timeout
+            return FakeResp()
+        with mock.patch.object(news.urllib.request, "urlopen", side_effect=fake_urlopen):
+            result = news._proxy_rest_call("p", "gemini", "", 20)
+        self.assertEqual(result, ("好", "gemini", "gemini-3.5-flash"))
+        self.assertNotIn("model", sent["body"])
+        self.assertEqual(sent["body"]["provider"], "gemini")
+        self.assertEqual(sent["timeout"], 20)
+
+    def test_rest_call_ok_false_raises_with_error_code(self):
+        class FakeResp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self):
+                return json.dumps({"ok": False, "error_code": "auth", "error": "授權已過期"}).encode("utf-8")
+        with mock.patch.object(news.urllib.request, "urlopen", return_value=FakeResp()):
+            with self.assertRaises(RuntimeError) as ctx:
+                news._proxy_rest_call("p", "gemini", "", 20)
+        self.assertIn("授權已過期", str(ctx.exception))
+
+    def test_provider_timeouts_are_passed_per_provider(self):
+        seen = {}
+
+        def stub(_prompt, provider, _model, timeout):
+            seen[provider] = timeout
+            raise TimeoutError("t")
+        with mock.patch.object(news, "_proxy_rest_call", side_effect=stub):
+            with self.assertRaises(RuntimeError):
+                news.call_proxy_llm("測試")
+        self.assertEqual(seen["gemini"], min(20, news.PROXY_LLM_TIMEOUT))
+        self.assertEqual(seen["claude"], min(30, news.PROXY_LLM_TIMEOUT))
+
+    def test_low_confidence_is_unusable_not_transport_failure(self):
+        answer = json.dumps({"is_incident": True, "category": "交通", "confidence": 0.2})
+        with mock.patch.object(news, "call_proxy_llm", return_value=answer):
+            result, retry_later, disable, provider = news.llm_classify("標題", "內文")
+        self.assertIsNone(result)
+        self.assertFalse(retry_later)
+        self.assertFalse(disable)
+        self.assertEqual(provider, "proxy")
+        self.assertEqual(sum(news._LLM_UNUSABLE_REASONS.values()), 1)
+        self.assertEqual(news._LLM_FAIL_REASONS, {})
+
+    def test_invalid_category_is_counted_not_silent(self):
+        answer = json.dumps({"is_incident": True, "category": "不存在", "confidence": 0.9})
+        with mock.patch.object(news, "call_proxy_llm", return_value=answer):
+            news.llm_classify("標題", "內文")
+        self.assertEqual(news._LLM_UNUSABLE_REASONS, {"分類不在白名單": 1})
+
+    def test_transport_failure_recorded_in_fail_reasons(self):
+        with mock.patch.object(news, "call_proxy_llm", side_effect=RuntimeError("ProxyCLI 分類路徑皆不可用：claude=timeout")), \
+                mock.patch.object(news, "FREE_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "PAID_GEMINI_ENABLED", False):
+            _r, retry_later, _d, _p = news.llm_classify("標題", "內文")
+        self.assertTrue(retry_later)
+        self.assertEqual(sum(news._LLM_FAIL_REASONS.values()), 1)
+        self.assertIn("claude=timeout", list(news._LLM_FAIL_REASONS)[0])
+
+    def test_main_logs_reason_summary_and_splits_counters(self):
+        now = datetime.now(news.TZ_TAIPEI)
+        titles = ["甲廠房火警濃煙密布", "乙路口車輛追撞多人受傷"]
+        feed_bytes = rss([
+            {"title": t, "description": "消防人員到場搶救", "link": f"https://example.test/r-{i}",
+             "guid": f"r-{i}", "pubDate": now.isoformat()}
+            for i, t in enumerate(titles)
+        ])
+        feeds = [{"name": "測試新聞", "feed": "社會", "url": "memory://feed"}]
+
+        def stub(prompt, **_kw):
+            if "甲廠房火警濃煙密布" in prompt:
+                raise TimeoutError("boom")
+            return json.dumps({"is_incident": True, "category": "交通", "confidence": 0.1})
+
+        logs = []
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(news, "AI_PROXY_TOKEN", "test-token"), \
+                mock.patch.object(news, "FREE_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "PAID_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "log", side_effect=logs.append), \
+                mock.patch.object(news, "fetch_url", return_value=feed_bytes), \
+                mock.patch.object(news, "call_proxy_llm", side_effect=stub):
+            news.main(feeds=feeds, out_dir=directory)
+            health = json.loads(Path(directory, "latest.json").read_text())["pipelineHealth"]
+
+        self.assertEqual(health["llmCalls"], 2)
+        self.assertEqual(health["llmFailed"], 1)
+        self.assertEqual(health["llmUnusable"], 1)
+        self.assertFalse(health["llmCircuitOpen"])
+        self.assertTrue(any(m.startswith("LLM 失敗原因：") for m in logs))
+        self.assertTrue(any(m.startswith("LLM 回應不採用原因：") and "低信心" in m for m in logs))
+
+
+class CrimePushGateTests(unittest.TestCase):
+    """治安新聞推播閘門：暴力且進行中才 is_ongoing=true"""
+
+    def run_one(self, title, age_hours=0.2, source="測試新聞"):
+        now = datetime.now(news.TZ_TAIPEI)
+        feed = rss([{
+            "title": title, "description": "", "link": "https://example.test/x",
+            "guid": "g-" + title, "pubDate": (now - timedelta(hours=age_hours)).isoformat(),
+        }])
+        feeds = [{"name": source, "feed": "社會", "url": "memory://feed"}]
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(news, "AI_PROXY_TOKEN", ""), \
+                mock.patch.object(news, "FREE_GEMINI_ENABLED", False), \
+                mock.patch.object(news, "fetch_url", return_value=feed):
+            news.main(feeds=feeds, out_dir=d, ptt_boards=[])
+            events = json.loads(Path(d, "latest.json").read_text())["events"]
+        return events[0] if events else None
+
+    def test_ongoing_knife_with_district_pushes(self):
+        e = self.run_one("台中市北屯區男子持刀砍人 警方趕赴")
+        self.assertTrue(e["is_ongoing"])
+        self.assertEqual(e["severity"], "high")
+        self.assertGreaterEqual(e["confidence"], 0.6)
+        self.assertEqual(e["category"], "公共安全")
+
+    def test_medium_violent_term(self):
+        e = self.run_one("台中市北屯區男子挾持路人 警方包圍")
+        self.assertTrue(e["is_ongoing"])
+        self.assertEqual(e["severity"], "medium")
+
+    def test_detained_not_pushed(self):
+        e = self.run_one("台中市北屯區持刀砍人男 檢聲押獲准")
+        self.assertTrue(e is None or not e["is_ongoing"])
+
+    def test_theft_not_pushed(self):
+        e = self.run_one("台中市北屯區竊盜 男子闖空門")
+        self.assertTrue(e is None or not e["is_ongoing"])
+
+    def test_three_hours_old_not_pushed(self):
+        e = self.run_one("台中市北屯區男子持刀砍人 警方趕赴", age_hours=3)
+        self.assertTrue(e is None or not e["is_ongoing"])
+
+    def test_no_district_not_pushed(self):
+        e = self.run_one("男子持刀砍人 警方趕赴")
+        self.assertTrue(e is None or not e["is_ongoing"])
+
+    def test_severity_helper(self):
+        self.assertEqual(news.violent_ongoing_severity("路人遭槍擊"), "high")
+        self.assertIsNone(news.violent_ongoing_severity("槍擊嫌落網"))
+        self.assertIsNone(news.violent_ongoing_severity("偷拍男被抓"))
 
 if __name__ == "__main__":
     unittest.main()

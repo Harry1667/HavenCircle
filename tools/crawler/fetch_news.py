@@ -31,7 +31,9 @@ import hashlib
 import json
 import os
 import re
+import socket
 import sys
+import threading
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -76,6 +78,8 @@ try:
     PROXY_LLM_TIMEOUT = max(3, min(60, int(os.environ.get("NEWS_PROXY_LLM_TIMEOUT", "60"))))
 except ValueError:
     PROXY_LLM_TIMEOUT = 60
+# ProxyCLI 傳輸方式：rest（預設，能讀 actual_provider/actual_model）或 sdk（gRPC）
+PROXY_TRANSPORT = os.environ.get("NEWS_PROXY_TRANSPORT", "rest").strip().lower()
 # 新聞分類的 ProxyCLI 優先序；模型名稱可由 .env 覆蓋，避免新模型推出時必須
 # 更新 App 或爬蟲程式。
 #
@@ -88,11 +92,23 @@ except ValueError:
 # 前兩條必定逾時，每則新聞都要先浪費兩次等待才輪到唯一能用的 claude；
 # 累積起來整輪 LLM 被判定全滅，日誌顯示「分類路徑皆不可用」。
 # 改為 claude 優先，另外兩條留作備援（真的復活時仍可接手）。
+#
+# 2026-10-10 依 hdw-proxycli 官方說明與實測改版：
+#   gemini（不指定 model）→ proxy 預設 gemini-3.5-flash，約 1.5 秒（claude-haiku-4-5
+#   在真實 prompt 要 9〜20 秒；舊路由的 gemini-2.5-flash 則回「授權已過期」）。
+#   指定 Gemini Pro 會被 proxy 靜默換成別家，所以 gemini 一律不送 model 欄位。
+# model 為空字串＝不送 model 欄位，交給 proxy 依 provider 選預設模型；
+# 可用 NEWS_PROXY_GEMINI_MODEL / NEWS_PROXY_CLAUDE_MODEL / NEWS_PROXY_OPENAI_MODEL 覆蓋。
+# 順序：gemini（便宜快）→ claude（不指定＝訂閱 CLI 預設，額度有日上限，只當備援）→ openai。
 PROXY_LLM_ROUTE = (
-    ("claude", os.environ.get("NEWS_PROXY_CLAUDE_MODEL", "claude-haiku-4-5").strip()),
-    ("gemini", os.environ.get("NEWS_PROXY_GEMINI_MODEL", "gemini-2.5-flash").strip()),
+    ("gemini", os.environ.get("NEWS_PROXY_GEMINI_MODEL", "").strip()),
+    ("claude", os.environ.get("NEWS_PROXY_CLAUDE_MODEL", "").strip()),
     ("openai", os.environ.get("NEWS_PROXY_OPENAI_MODEL", "gpt-4o-mini").strip()),
 )
+# 各 provider 的逾時（秒）。gemini 實測約 1.5 秒（真實 703 字 prompt 也只需數秒），
+# 20 秒已留 10 倍以上餘裕；再長只是替壞掉的通道多等，拖慢備援接手。
+# claude／openai 較慢（9〜24 秒），維持 30 秒。皆不超過全域上限 PROXY_LLM_TIMEOUT。
+PROXY_PROVIDER_TIMEOUT = {"gemini": 20, "claude": 30, "openai": 30}
 
 # Gemini 免費層也與 ProxyCLI、付費 Gemini 完全隔離。免費 key 必須屬於沒有啟用
 # Gemini 付費帳務的專案；程式不從環境變數讀 key、不會拿免費 key 放進付費池。
@@ -245,12 +261,15 @@ FEEDS = [
 # 用「OR」把關鍵字併成 5 組查詢（每輪 5 個 HTTP 請求，而非 10+ 個），並加 when:1d
 # 只取近 24 小時。Google 的 item 標題格式為「標題 - 媒體名」，媒體名同時放在 <source>。
 # 這些來源排在 FEEDS 最後面：既有 feed 先用掉 LLM 預算，新來源只能吃「額外預算」。
+# 治安暴力放最前面：extra 來源共用一份額外 LLM 預算，先掃的先花，家人最在意的治安優先。
+# 拆 2 組避免單組過長；不放「失蹤」「詐騙」（失蹤量大且多為協尋、詐騙無地點威脅）。
 GOOGLE_NEWS_QUERIES = [
+    ("治安暴力", "持刀 OR 砍人 OR 隨機傷人 OR 殺人 OR 槍擊 OR 開槍 OR 搶劫 OR 搶奪 OR 擄人 OR 綁架"),
+    ("治安犯罪", "可疑男子 OR 性騷擾 OR 偷拍 OR 竊盜 OR 入室 OR 闖空門 OR 縱火 OR 恐嚇 OR 鬥毆 OR 通緝犯"),
     ("火災爆炸", "火災 OR 失火 OR 氣爆 OR 爆炸"),
     ("交通事故", "車禍 OR 追撞 OR 翻車"),
     ("天災", "地震 OR 淹水 OR 土石流 OR 豪雨"),
     ("民生", "停電 OR 停水"),
-    ("公共安全", "隨機傷人 OR 槍擊 OR 持刀 OR 砍人"),
 ]
 GOOGLE_NEWS_ENABLED = os.environ.get("NEWS_GOOGLE_ENABLED", "1").strip() != "0"
 
@@ -294,7 +313,7 @@ if GOOGLE_NEWS_ENABLED:
     for _label, _query in GOOGLE_NEWS_QUERIES:
         FEEDS.append({
             "name": "Google新聞", "feed": _label, "url": google_news_url(_query),
-            "format": "google_news", "max_items": 40, "extra": True,
+            "format": "google_news", "max_items": 60 if _label.startswith("治安") else 40, "extra": True,
         })
 
 # ---------------------------------------------------------------------------
@@ -334,6 +353,8 @@ EXCLUDE_WORDS = [
     "彈劾", "質詢", "民調", "罷免",
     # 追悼紀念
     "追思", "紀念", "告別式", "公祭",
+    # 治安關鍵字會撈到的雜訊：政論節目、選舉、電玩試玩（「鬥毆」「偷拍」「恐嚇」常出現在這些標題）
+    "討論牆", "九合一", "TGS", "試玩",
 ]
 
 # 酒駕本身可能是剛發生的道路風險，但「罰鍰／轉介戒酒」是裁罰或後續輔導，
@@ -357,14 +378,83 @@ INCLUDE_CATEGORIES = [
     ("公共安全", ["坍塌", "倒塌", "崩塌", "溺水", "溺斃", "墜樓", "墜谷", "墜落",
                   "砍", "刺傷", "傷人", "槍擊", "開槍", "掃射", "衝鋒槍", "步槍", "手槍", "槍手", "亂槍", "開火", "持槍", "中彈", "挾持", "隨機",
                   "外洩", "毒氣", "命案", "失蹤", "尋獲", "疏散", "封閉",
-                  "警戒", "爆裂物", "鬥毆", "襲擊", "恐嚇", "獵殺", "獵捕", "槍枝", "通緝", "逮捕", "落網"]),
+                  "警戒", "爆裂物", "鬥毆", "襲擊", "恐嚇", "獵殺", "獵捕", "槍枝", "通緝", "逮捕", "落網",
+                  "持刀", "殺人", "行兇", "砍殺", "搶劫", "搶奪", "強盜", "擄人", "綁架", "可疑男子",
+                  "性騷擾", "偷拍", "竊盜", "入室", "闖空門", "分屍"]),
 ]
+
+# 治安強訊號：標題命中就直接歸「公共安全」，不讓「持刀砍人後駕車逃逸撞傷警」被「撞」搶成交通。
+# 縱火不放這裡（維持歸火災，需疏散）。
+CRIME_PRIORITY_TERMS = ["持刀", "砍人", "砍殺", "殺人", "行兇", "槍擊", "開槍", "持槍", "搶劫", "搶奪",
+                        "強盜", "擄人", "綁架", "挾持", "隨機傷人", "刺傷", "分屍"]
+
+# 這些公共安全詞即使只出現在描述也算（明確的暴力／犯罪詞）；其餘泛用詞須在標題出現
+CRIME_DESC_OK_TERMS = set(CRIME_PRIORITY_TERMS) | {"命案", "爆裂物", "亂槍", "中彈", "槍手", "掃射", "襲擊"}
+
+# 地標 → 縣市：標題只寫地標、沒寫縣市時用（Google 描述不可信，見 main 的地點抽取）
+LANDMARK_COUNTY = {"東大門夜市": "花蓮縣", "逢甲夜市": "台中市", "六合夜市": "高雄市", "花園夜市": "台南市",
+                   "士林夜市": "台北市", "饒河夜市": "台北市", "寧夏夜市": "台北市", "廟口夜市": "基隆市"}
+
+
+def county_from_landmark(text):
+    for k, v in LANDMARK_COUNTY.items():
+        if k in (text or ""):
+            return v
+    return None
+
+# 純金錢詐騙：沒有人身／地點威脅，標題帶這些詞且沒有暴力詞就不當事件（避免推播）。
+FRAUD_TERMS = ["詐騙", "詐欺", "詐團", "車手", "詐財", "詐貸", "釣魚簡訊", "假投資", "洗錢", "人頭帳戶"]
+VIOLENCE_TERMS = ["持刀", "砍", "槍", "擄", "綁架", "挾持", "刺傷", "傷人", "殺", "搶", "毆", "恐嚇", "命案"]
+
+# 事後報導詞：已逮捕／落網／到案等代表危險已解除，不得標 is_ongoing（規則層 clamp，LLM 也適用）。
+AFTERMATH_TERMS = ["逮捕", "落網", "逮獲", "逮到", "遭逮", "被捕", "遭捕", "到案", "歸案", "送辦", "移送",
+                   "查獲", "破獲", "起訴", "判刑", "判決", "羈押", "收押", "交保", "聲押", "聲請羈押", "具保", "地檢署", "認罪", "獲判", "偵結"]
+# 通緝本身是背景資訊；但「通緝犯持刀逃逸」這類現場仍在進行的不 clamp
+LIVE_DANGER_TERMS = ["逃逸", "逃亡", "追捕", "在逃", "持刀", "持槍", "挾持", "圍捕", "對峙", "擴大搜索", "搜捕"]
+
+
+def is_aftermath_report(title):
+    """True＝標題是事後報導（逮捕／落網／起訴…），不可標 is_ongoing"""
+    title = title or ""
+    if any(w in title for w in AFTERMATH_TERMS):
+        return True
+    return "通緝" in title and not any(w in title for w in LIVE_DANGER_TERMS)
+
+
+# 治安推播閘門（2026-10-10）：只有「暴力且進行中」才推。詞表刻意保守，竊盜／詐騙／偷拍／
+# 性騷擾等不在其中，一律維持 is_ongoing=False。
+VIOLENT_HIGH_TERMS = ["槍擊", "開槍", "持槍", "亂槍", "掃射", "槍手", "持刀", "揮刀", "揮砍", "追砍",
+                      "砍人", "砍殺", "隨機攻擊", "隨機傷人", "隨機砍人", "隨機殺人"]
+VIOLENT_MEDIUM_TERMS = ["擄人", "挾持", "縱火", "行兇", "刺傷", "砍傷", "搶劫", "強盜", "殺人"]
+# 回顧／司法／家屬後續報導（AFTERMATH_TERMS 之外，僅治安閘門使用）
+CRIME_RETROSPECT_TERMS = ["重建", "遺族", "悼念", "檢方", "檢察官", "法院", "被告", "嫌犯已", "訊後", "偵訊"]
+# 非暴力治安詞：即使 LLM 標了 is_ongoing 也壓回 False（除非同時命中暴力詞）
+NONVIOLENT_CRIME_TERMS = ["竊盜", "偷竊", "詐騙", "詐欺", "偷拍", "性騷擾", "入室", "闖空門", "可疑男子", "恐嚇"]
+CRIME_PUSH_CONFIDENCE = 0.6
+
+
+def violent_ongoing_severity(title):
+    """標題命中暴力詞且非事後報導 → 'high'／'medium'；否則 None"""
+    title = title or ""
+    if is_aftermath_report(title) or any(w in title for w in CRIME_RETROSPECT_TERMS):
+        return None
+    if any(w in title for w in VIOLENT_HIGH_TERMS):
+        return "high"
+    if any(w in title for w in VIOLENT_MEDIUM_TERMS):
+        return "medium"
+    return None
+
+
+def is_pure_fraud(title):
+    title = title or ""
+    return any(w in title for w in FRAUD_TERMS) and not any(w in title for w in VIOLENCE_TERMS)
+
 
 # 誤判防護：這些較短的納入詞若出現在下列慣用語中，不算命中
 # （例：「撞名」「砍價」不是事故）
 FALSE_HIT_GUARDS = {
     "撞": ["撞名", "撞臉", "撞衫", "撞期", "撞色"],
-    "砍": ["砍價", "砍單", "砍預算", "砍半", "砍掉重練"],
+    "砍": ["砍價", "砍單", "砍預算", "砍半", "砍掉", "砍樹", "砍伐", "砍除", "砍柴", "砍頭價"],
     "封閉": ["封閉式", "封閉性"],
 }
 
@@ -534,6 +624,70 @@ def log(msg):
     """統一 log 格式（stderr，帶台北時間戳），cron 可導向 log 檔"""
     ts = datetime.now(TZ_TAIPEI).strftime("%Y-%m-%d %H:%M:%S")
     print("[{}] {}".format(ts, msg), file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# LLM 失敗原因彙總（不再 silent fail）
+# ---------------------------------------------------------------------------
+# 2026-10-10 查證：log 長期顯示「LLM 呼叫 10（失敗 8）」，但爬蟲機實測 ProxyCLI
+# 與免費 Gemini 都正常。「失敗」其實是把「LLM 有回、但低信心／分類不在白名單／
+# 非 JSON」也算進去，且這些路徑多半不寫 log，看起來就像 80% 通道壞掉。
+# 現在：傳輸層失敗（逾時、HTTP、授權過期…）與「回了但不採用」分開計數，
+# 每輪結束各印一行彙總。_LLM_REASONS 為跨執行緒共用，以 lock 保護。
+_LLM_REASON_LOCK = threading.Lock()
+_LLM_FAIL_REASONS = {}      # 整則最終失敗（三條路徑都不通）的原因
+_LLM_UNUSABLE_REASONS = {}  # LLM 有回應、但內容不採用的原因
+_LLM_PROVIDER_ERRORS = {}   # 單一 provider 出錯的原因（即使後來由備援救回）；
+                            # 也記「gemini→openai 靜默替換」（proxy ok:true 卻換了別家）
+_LLM_ACTUAL_MODELS = {}     # 每輪實際回答的 provider/model 次數（每輪 log 一行）
+
+
+def _bump(table, reason):
+    with _LLM_REASON_LOCK:
+        table[reason] = table.get(reason, 0) + 1
+
+
+def reset_llm_reasons():
+    with _LLM_REASON_LOCK:
+        _LLM_FAIL_REASONS.clear()
+        _LLM_UNUSABLE_REASONS.clear()
+        _LLM_PROVIDER_ERRORS.clear()
+        _LLM_ACTUAL_MODELS.clear()
+
+
+def describe_llm_error(error):
+    """把例外壓成簡短、穩定、可彙總的標籤（逾時／HTTP 狀態碼／gRPC 狀態／訊息前 40 字）。"""
+    if error is None:
+        return "未知"
+    if isinstance(error, FreeGeminiUnavailable) and not error.__cause__:
+        return str(error)[:40]
+    cause = error.__cause__ if isinstance(error, FreeGeminiUnavailable) else error
+    if isinstance(cause, urllib.error.HTTPError):
+        return "HTTP {}".format(cause.code)
+    if isinstance(cause, (TimeoutError, socket.timeout)):
+        return "timeout"
+    if isinstance(cause, urllib.error.URLError):
+        reason = getattr(cause, "reason", None)
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return "timeout"
+        return "連線失敗:{}".format(type(reason).__name__ if reason else "URLError")
+    code = getattr(cause, "code", None)
+    if callable(code):  # grpc.RpcError：code() 回傳 StatusCode
+        try:
+            name = getattr(code(), "name", None)
+            if name:
+                return "gRPC {}".format(name).replace("DEADLINE_EXCEEDED", "timeout")
+        except Exception:
+            pass
+    text = re.sub(r"AIza[0-9A-Za-z_\-]{10,}|Bearer\s+\S+", "<隱藏>", str(cause)).strip()
+    text = re.sub(r"\s+", " ", text)
+    if "DEADLINE_EXCEEDED" in text or "timed out" in text.lower():
+        return "timeout"
+    return (type(cause).__name__ + ":" + text[:40]) if text else type(cause).__name__
+
+
+def format_llm_reasons(table):
+    return "、".join("{}×{}".format(k, v) for k, v in sorted(table.items(), key=lambda kv: -kv[1]))
 
 
 # ---------------------------------------------------------------------------
@@ -999,6 +1153,7 @@ FOREIGN_PLACES = [
     "埃及", "南非", "奈及利亞", "肯亞", "衣索比亞", "摩洛哥", "非洲", "歐洲", "中東", "南美", "中美洲", "北美",
     "印度", "巴基斯坦", "孟加拉", "尼泊爾", "斯里蘭卡", "阿富汗", "泰國", "曼谷", "越南", "河內", "胡志明",
     "菲律賓", "馬尼拉", "印尼", "雅加達", "峇里", "馬來西亞", "吉隆坡", "新加坡", "緬甸", "柬埔寨", "寮國",
+    "美軍", "全美", "麻州", "佛蒙特", "胡德堡", "五角大樓", "萬斯", "戰爭部", "琉球", "河北", "英男", "法輪功", "賓州", "俄亥俄", "密西根", "紐澤西", "德克薩斯", "芝加哥", "費城", "邁阿密", "底特律", "休士頓", "亞特蘭大", "拉斯維加斯", "西雅圖", "波特蘭", "奧蘭多", "曼徹斯特", "悉尼", "布里斯本", "德里", "孟買", "喀布爾",
     "蒙古", "澳洲", "雪梨", "墨爾本", "紐西蘭", "巴布亞", "斐濟", "東加", "萬那杜",
 ]
 # 「國際」頻道標記：只認明確的頻道格式，不認「國際機場」「國際賽事」這類內文用詞
@@ -1049,7 +1204,13 @@ def rules_classify(title, description):
         if word in title:
             return False, None, word
 
+    if is_pure_fraud(title):
+        return False, None, "純詐騙"
+
     haystack = title + " " + description
+    for word in CRIME_PRIORITY_TERMS:
+        if word in title:
+            return True, "公共安全", word
     for category, words in INCLUDE_CATEGORIES:
         for word in words:
             if word not in haystack:
@@ -1062,6 +1223,10 @@ def rules_classify(title, description):
                     stripped = stripped.replace(g, "")
                 if word not in stripped:
                     continue
+            # 公共安全的泛用詞（封閉／疏散／警戒／隨機…）只認標題：Google 的描述是
+            # 一串相關標題，國慶車潮稿的描述就曾夾帶「封閉」而被歸成公共安全。
+            if category == "公共安全" and word not in title and word not in CRIME_DESC_OK_TERMS:
+                continue
             if category == "交通" and word == "酒駕" and any(
                 term in title for term in TRAFFIC_AFTERCARE_TERMS
             ):
@@ -1086,7 +1251,7 @@ LLM_PROMPT_TEMPLATE = """你是災害事故新聞分類器。判斷下面這則�
 描述：{description}
 
 只回覆一行 JSON，不要任何其他文字，格式：
-{{"is_incident": true或false, "county": "縣市全名（如 台中市）或null", "district": "鄉鎮市區或null", "place": "地點簡述或null", "category": "火災|交通|天災|公共安全|民生 其中之一", "confidence": 0到1的數字, "severity": "high或medium或low 其中之一（high＝立即致命或需疏散，如大火困人、氣爆、槍擊或天災正在發生；medium＝局部危險需注意；low＝輕微、已受控或影響很小）", "is_ongoing": true或false（事件是否仍在發生或剛發生、需要人即時反應；已撲滅／已獲救／已落幕／純事後回顧或司法後續都為 false）}}"""
+{{"is_incident": true或false, "county": "縣市全名（如 台中市）或null", "district": "鄉鎮市區或null", "place": "地點簡述或null", "category": "火災|交通|天災|公共安全|民生 其中之一", "confidence": 0到1的數字, "severity": "high或medium或low 其中之一（high＝立即致命或需疏散，如大火困人、氣爆、槍擊或天災正在發生；medium＝局部危險需注意；low＝輕微、已受控或影響很小）", "is_ongoing": true或false（事件是否仍在發生或剛發生、需要人即時反應；已撲滅／已獲救／已落幕／純事後回顧或司法後續都為 false；嫌犯已逮捕／落網／到案／移送、通緝公告也為 false；純金錢詐騙無人身威脅則 is_incident 為 false）}}"""
 
 
 class PaidGeminiUnavailable(RuntimeError):
@@ -1253,7 +1418,7 @@ def call_free_gemini(prompt):
             result = json.loads(response.read().decode("utf-8"))
     except Exception as error:
         # 失敗請求保留額度，避免 quota/網路錯誤造成無限重試。
-        raise FreeGeminiUnavailable("免費 Gemini 呼叫失敗") from error
+        raise FreeGeminiUnavailable("免費 Gemini 呼叫失敗（{}）".format(describe_llm_error(error))) from error
 
     try:
         text = result["candidates"][0]["content"]["parts"][0]["text"]
@@ -1438,65 +1603,90 @@ def call_paid_gemini(prompt):
     return text
 
 
+def _proxy_rest_call(prompt, provider, model, timeout):
+    """
+    呼叫 ProxyCLI REST /api/chat，回傳 (文字, actual_provider, actual_model)。
+    走 REST 而非 gRPC SDK 的原因：SDK 的 ai() 只回文字、看不到 actual_provider /
+    actual_model，無法偵測 proxy「ok:true 卻悄悄換別家」；SDK 在 model 空白時還會
+    在本機自動路由挑模型，與「不指定 model」的意圖不符。
+    """
+    payload = {
+        "prompt": prompt,
+        "provider": provider,
+        "project": AI_PROXY_PROJECT,
+        "group": "news-crawler",  # ProxyCLI 儀表板依此分項統計用量
+    }
+    if model:  # 空字串＝不送 model 欄位，由 proxy 選該 provider 的預設模型
+        payload["model"] = model
+    req = urllib.request.Request(
+        AI_PROXY_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": "Bearer " + AI_PROXY_TOKEN,
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode("utf-8", errors="replace")
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return raw, None, None
+    if not isinstance(parsed, dict):
+        return (parsed if isinstance(parsed, str) else raw), None, None
+    if parsed.get("ok") is False:
+        # error_code 與 error 訊息都可能含「授權已過期」等可辨識字樣，不含 token
+        raise RuntimeError("{}：{}".format(parsed.get("error_code") or "proxy_error",
+                                          str(parsed.get("error") or "")[:60]))
+    actual_provider = parsed.get("actual_provider")
+    actual_model = parsed.get("actual_model")
+    for key in ("content", "response", "message", "text", "result", "answer", "output"):
+        val = parsed.get(key)
+        if isinstance(val, str) and val.strip():
+            return val, actual_provider, actual_model
+    return raw, actual_provider, actual_model  # dict 但找不到已知 key → 上層試著抽 JSON
+
+
+def _record_actual_model(provider, model, actual_provider, actual_model):
+    """彙總實際回答的模型；被 proxy 靜默換成別家（或換了指定的模型）要計入原因。"""
+    if actual_provider or actual_model:
+        _bump(_LLM_ACTUAL_MODELS, "{}/{}".format(actual_provider or "?", actual_model or "?"))
+    if actual_provider and actual_provider != provider:
+        _bump(_LLM_PROVIDER_ERRORS, "{}→{} 靜默替換".format(provider, actual_provider))
+    elif model and actual_model and actual_model != model:
+        _bump(_LLM_PROVIDER_ERRORS, "{}:{}→{} 模型被換".format(provider, model, actual_model))
+
+
 def call_proxy_llm(prompt):
     """
-    依 OpenAI → Gemini → Claude 優先序呼叫 ProxyCLI，取得純文字回應。
+    依 PROXY_LLM_ROUTE（gemini → claude → openai）呼叫 ProxyCLI，取得純文字回應。
     每個 provider 失敗才試下一個；三者皆不可用才交給獨立 Gemini 池／規則分類。
-    優先 gRPC SDK（443/TLS），沒有 SDK 才走 REST；不把 provider error 細節寫進 log。
+    預設走 REST（回應含 actual_provider/actual_model，可偵測靜默替換）；
+    NEWS_PROXY_TRANSPORT=sdk 才改用 gRPC SDK（看不到 actual_*）。
+    不把 provider error 細節寫進 log。
     """
-    attempted = []
+    failures = []
     for provider, model in PROXY_LLM_ROUTE:
-        if not model:
-            continue
-        attempted.append(provider)
+        timeout = min(PROXY_LLM_TIMEOUT, PROXY_PROVIDER_TIMEOUT.get(provider, PROXY_LLM_TIMEOUT))
         try:
-            if _sdk_ai is not None:
-                return _sdk_ai(
-                    prompt,
-                    provider=provider,
-                    model=model,
-                    project=AI_PROXY_PROJECT,
-                    group="news-crawler",  # ProxyCLI 儀表板依此分項統計用量
-                    timeout=PROXY_LLM_TIMEOUT,
-                )
-
-            body = json.dumps({
-                "prompt": prompt,
-                "provider": provider,
-                "model": model,
-                "project": AI_PROXY_PROJECT,
-                "group": "news-crawler",
-            }).encode("utf-8")
-            req = urllib.request.Request(
-                AI_PROXY_URL,
-                data=body,
-                headers={
-                    "Authorization": "Bearer " + AI_PROXY_TOKEN,
-                    "Content-Type": "application/json",
-                    "User-Agent": USER_AGENT,
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=PROXY_LLM_TIMEOUT) as resp:
-                raw = resp.read().decode("utf-8", errors="replace")
-
-            # 回應可能是 JSON 包裝（content/response/text…其中一個 key），也可能直接是文字
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, dict):
-                    for key in ("content", "response", "message", "text", "result", "answer", "output"):
-                        val = parsed.get(key)
-                        if isinstance(val, str) and val.strip():
-                            return val
-                    return raw  # dict 但找不到已知 key → 上層試著抽 JSON
-                if isinstance(parsed, str):
-                    return parsed
-            except (ValueError, TypeError):
-                pass
-            return raw
-        except Exception:
+            if PROXY_TRANSPORT == "sdk" and _sdk_ai is not None:
+                kwargs = dict(provider=provider, project=AI_PROXY_PROJECT,
+                              group="news-crawler", timeout=timeout)
+                if model:
+                    kwargs["model"] = model
+                return _sdk_ai(prompt, **kwargs)
+            text, actual_provider, actual_model = _proxy_rest_call(prompt, provider, model, timeout)
+            _record_actual_model(provider, model, actual_provider, actual_model)
+            return text
+        except Exception as provider_error:
+            label = describe_llm_error(provider_error)
+            _bump(_LLM_PROVIDER_ERRORS, "{}:{}".format(provider, label))
+            failures.append("{}={}".format(provider, label))
             continue
-    raise RuntimeError("ProxyCLI 分類路徑皆不可用：{}".format(",".join(attempted) or "未設定模型"))
+    raise RuntimeError("ProxyCLI 分類路徑皆不可用：{}".format(
+        "；".join(failures) or "未設定模型"))
 
 
 def llm_classify(title, description, skip_proxy=False):
@@ -1521,6 +1711,7 @@ def llm_classify(title, description, skip_proxy=False):
                 provider = "gemini-paid"
                 log("免費 LLM 路徑暫時失敗，本則改用受月費上限保護的 Gemini 付費池")
             except PaidGeminiUnavailable as paid_error:
+                _bump(_LLM_FAIL_REASONS, "免費池:{}".format(describe_llm_error(free_error)))
                 log("LLM 呼叫失敗（本輪停用並保留待重試）：免費池：{}；付費池：{}".format(
                     free_error, paid_error
                 ))
@@ -1540,6 +1731,8 @@ def llm_classify(title, description, skip_proxy=False):
                     provider = "gemini-paid"
                     log("免費 LLM 路徑暫時失敗，本則改用受月費上限保護的 Gemini 付費池")
                 except PaidGeminiUnavailable as paid_error:
+                    _bump(_LLM_FAIL_REASONS, "ProxyCLI全滅({})／免費池:{}".format(
+                        str(proxy_error).split("：", 1)[-1][:80], describe_llm_error(free_error)))
                     log("LLM 呼叫失敗（本輪停用並保留待重試）：ProxyCLI：{}；免費池：{}；付費池：{}".format(
                         proxy_error, free_error, paid_error
                     ))
@@ -1548,15 +1741,18 @@ def llm_classify(title, description, skip_proxy=False):
     # 從回應中抽第一段 {...}（LLM 偶爾會多話）
     m = re.search(r"\{.*\}", answer, re.DOTALL)
     if not m:
+        _bump(_LLM_UNUSABLE_REASONS, "回應無JSON")
         log("LLM 回應無 JSON（退回規則結果）：{}".format(answer[:120]))
         return None, False, False, provider
     try:
         result = json.loads(m.group(0))
     except ValueError:
+        _bump(_LLM_UNUSABLE_REASONS, "JSON解析失敗")
         log("LLM JSON 解析失敗（退回規則結果）：{}".format(m.group(0)[:120]))
         return None, False, False, provider
 
     if not isinstance(result, dict) or "is_incident" not in result:
+        _bump(_LLM_UNUSABLE_REASONS, "缺少is_incident")
         log("LLM 回應缺少 is_incident（退回規則結果）")
         return None, False, False, provider
 
@@ -1565,6 +1761,7 @@ def llm_classify(title, description, skip_proxy=False):
     except (TypeError, ValueError):
         confidence = 0.0
     if confidence < LLM_MIN_CONFIDENCE:
+        _bump(_LLM_UNUSABLE_REASONS, "低信心(<{})".format(LLM_MIN_CONFIDENCE))
         log("LLM confidence {} < {}（退回規則結果）".format(confidence, LLM_MIN_CONFIDENCE))
         return None, False, False, provider
 
@@ -1580,6 +1777,7 @@ def llm_classify(title, description, skip_proxy=False):
         result["county"] = None
     valid_categories = {c for c, _ in INCLUDE_CATEGORIES}
     if result.get("category") not in valid_categories:
+        _bump(_LLM_UNUSABLE_REASONS, "分類不在白名單")
         return None, False, False, provider  # 分類不在白名單 → 不可信，退回規則
     # 地點欄位過簡轉繁（LLM 抽的 district/place 也可能混簡體）；summary/detail 已不
     # 要求 LLM 產出（見 LLM_PROMPT_TEMPLATE 上方說明），這裡不再消毒這兩個欄位。
@@ -1608,8 +1806,9 @@ def _llm_classify_safe(title, description):
     try:
         return llm_classify(title, description)
     except Exception as error:  # noqa: BLE001 — 並行呼叫的最後防線，什麼例外都要接住
+        _bump(_LLM_FAIL_REASONS, "未預期例外:{}".format(describe_llm_error(error)))
         log("LLM 並行呼叫發生未預期例外（本則放棄，退回規則結果）：{}".format(error))
-        return None, False, False, None
+        return None, True, False, None
 
 
 # ---------------------------------------------------------------------------
@@ -1794,7 +1993,9 @@ def main(feeds=None, out_dir=None, ptt_boards=None):
     dropped_by_rules = 0
     dropped_by_llm = 0
     llm_calls = 0            # 實際送出的 LLM 呼叫數（只算「規則缺地點」的待補清單）
-    llm_failed = 0           # 呼叫了、但 ProxyCLI／免費／付費三條路徑全部失敗的則數
+    llm_failed = 0           # 呼叫了、但 ProxyCLI／免費／付費三條路徑全部失敗（傳輸層）的則數
+    llm_unusable = 0         # LLM 有回應、但低信心／非JSON／分類不合法而不採用的則數（不是通道故障）
+    reset_llm_reasons()
     llm_retry_pending = 0    # 超出單輪呼叫預算、完全沒機會呼叫、留給下一輪的則數
     stale_dropped = 0
     future_dropped = 0
@@ -1806,6 +2007,7 @@ def main(feeds=None, out_dir=None, ptt_boards=None):
     foreign_dropped = 0
     foreign_titles = []      # 供 dry-run 檢視被排除的國外事件（只留前 20 則標題）
     stale_ongoing_cleared = 0
+    aftermath_cleared = 0     # 事後報導（逮捕／落網…）被壓成非進行中的則數
 
     def mark_seen(item_id):
         if item_id in seen_set:
@@ -1908,9 +2110,12 @@ def main(feeds=None, out_dir=None, ptt_boards=None):
             # 舊版最大的差異：舊版只在縣市「還沒抓到」時才找行政區，等於放棄了
             # 「縣市已知、只缺行政區」這一大塊（行政區覆蓋率 13/83 → 25/83 的
             # 提升有一部分正是來自這裡）。
-            county = county_from_cna_dateline(description) or county_from_text(title)
+            county = county_from_cna_dateline(description) or county_from_text(title) \
+                or county_from_landmark(title)
             district, matched_county = district_from_text_v2(title, county=county)
-            if not district:
+            # Google 的 description 是一串「相關報導標題」，常夾帶別縣市地名（花蓮事件冒出
+            # 台北市中山區）；聚合來源的描述不用來推地點，缺的交給 LLM 或略過。
+            if not district and not is_extra:
                 district, matched_county = district_from_text_v2(description, county=county)
             if not county:
                 county = matched_county
@@ -1990,7 +2195,7 @@ def main(feeds=None, out_dir=None, ptt_boards=None):
                 pending,
             ))
 
-        for task, (llm, _retry_later, _disable_for_run, _transport_provider) in zip(pending, results):
+        for task, (llm, retry_later, _disable_for_run, _transport_provider) in zip(pending, results):
             event = task["event"]
             item_id = task["item_id"]
             title = task["title"]
@@ -2000,7 +2205,11 @@ def main(feeds=None, out_dir=None, ptt_boards=None):
                 # 不要因為個別失敗就停用整輪——舊邏輯是任一則失敗就整輪停用 LLM，
                 # 在實測 43% 的失敗率下等於每輪必熔斷，這正是新聞長期卡在「待
                 # 重試」、只能靠規則判讀的根本原因。
-                llm_failed += 1
+                # retry_later=True 才是真正的通道失敗；其餘是 LLM 有回、但內容不採用
+                if retry_later:
+                    llm_failed += 1
+                else:
+                    llm_unusable += 1
                 mark_seen(item_id)
             elif not llm.get("is_incident"):
                 # 改動 4：只有「因缺地點而呼叫 LLM」的則才會走到這個過濾——
@@ -2123,9 +2332,25 @@ def main(feeds=None, out_dir=None, ptt_boards=None):
     for e in events:
         published = parse_pubdate_datetime(e.get("publishedAt"))
         too_old = published is None or (gate_now - published) > timedelta(hours=ONGOING_MAX_AGE_HOURS)
-        if e.get("is_ongoing") and too_old:
+        if e.get("is_ongoing") and is_aftermath_report(e.get("title")):
+            e["is_ongoing"] = False
+            aftermath_cleared += 1
+        elif e.get("is_ongoing") and too_old:
             e["is_ongoing"] = False
             stale_ongoing_cleared += 1
+        elif e.get("is_ongoing") and any(w in (e.get("title") or "") for w in NONVIOLENT_CRIME_TERMS) \
+                and violent_ongoing_severity(e.get("title")) is None:
+            e["is_ongoing"] = False  # 竊盜／詐騙／偷拍等非暴力治安：不推
+        # 暴力且進行中治安事件升級（PTT 等非 media-report 來源永不升級）
+        if (e.get("trust") == "media-report" and not too_old
+                and e.get("category") in ("公共安全", "火災")
+                and e.get("county") and e.get("district")):
+            sev = violent_ongoing_severity(e.get("title"))
+            if sev and (e.get("category") == "公共安全" or "縱火" in (e.get("title") or "")):
+                e["is_ongoing"] = True
+                if e.get("severity") != "high":
+                    e["severity"] = sev
+                e["confidence"] = max(float(e.get("confidence") or 0), CRIME_PUSH_CONFIDENCE)
 
     # 是否「本輪 LLM 大規模失效」的健康指標：待補清單裡確實呼叫過、且全部失敗
     # 才算——單則失敗已經退回規則結果、不影響其他則，不算真正的降級。
@@ -2150,6 +2375,11 @@ def main(feeds=None, out_dir=None, ptt_boards=None):
             "llmMaxCallsPerRun": LLM_MAX_CALLS_PER_RUN,
             "llmConcurrency": NEWS_LLM_CONCURRENCY,
             "llmFailed": llm_failed,
+            "llmUnusable": llm_unusable,
+            "llmFailReasons": dict(_LLM_FAIL_REASONS),
+            "llmUnusableReasons": dict(_LLM_UNUSABLE_REASONS),
+            "llmProviderErrors": dict(_LLM_PROVIDER_ERRORS),
+            "llmActualModels": dict(_LLM_ACTUAL_MODELS),
             # 欄位名稱沿用舊版，供 App 端 AlertSourceHealthService 既有的健康
             # 面板判斷式繼續讀取；語意已從「整輪停用」改成「本輪 LLM 大規模
             # 失效」（見上方 llm_circuit_open 的計算方式）。
@@ -2158,6 +2388,7 @@ def main(feeds=None, out_dir=None, ptt_boards=None):
             "foreignDropped": foreign_dropped,
             "foreignTitles": foreign_titles,
             "staleOngoingCleared": stale_ongoing_cleared,
+            "aftermathOngoingCleared": aftermath_cleared,
             "extraLLMMaxCalls": EXTRA_LLM_MAX_CALLS_PER_RUN,
             "extraSourceDeferred": extra_deferred,
             "droppedRecentDuplicate": dropped_recent_dup,
@@ -2178,9 +2409,17 @@ def main(feeds=None, out_dir=None, ptt_boards=None):
     ])
 
     log("完成：原始 {}／近期 {} 則（略過已見 {}）→ 事故 {} 則｜規則排除 {}｜"
-        "LLM 呼叫 {}（失敗 {}）｜LLM 排除 {}｜待重試 {}".format(
+        "LLM 呼叫 {}（失敗 {}、回應不採用 {}）｜LLM 排除 {}｜待重試 {}".format(
             total_fetched, total_eligible, skipped_seen, len(events), dropped_by_rules,
-            llm_calls, llm_failed, dropped_by_llm, llm_retry_pending))
+            llm_calls, llm_failed, llm_unusable, dropped_by_llm, llm_retry_pending))
+    if _LLM_FAIL_REASONS:
+        log("LLM 失敗原因：{}".format(format_llm_reasons(_LLM_FAIL_REASONS)))
+    if _LLM_UNUSABLE_REASONS:
+        log("LLM 回應不採用原因：{}".format(format_llm_reasons(_LLM_UNUSABLE_REASONS)))
+    if _LLM_ACTUAL_MODELS:
+        log("LLM 實際回答模型：{}".format(format_llm_reasons(_LLM_ACTUAL_MODELS)))
+    if _LLM_PROVIDER_ERRORS:
+        log("LLM 單一通道錯誤（含已由備援救回）：{}".format(format_llm_reasons(_LLM_PROVIDER_ERRORS)))
     log("輸出：{}".format(latest_path))
 
     push_to_oracle(output, out_dir)
