@@ -569,4 +569,73 @@ final class HavenCircleUITests: XCTestCase {
         auditShot(flow, "付費牆-下捲")
         flushAudit(flow)
     }
+
+    /// 家人位置觀察：在觀看端（iPad）截家人列表、對方詳情（今天的軌跡）、地圖，記錄對方位置是否持續更新
+    func testWatchMember() throws {
+        let familyTab = app.tabBars.buttons["家人"].firstMatch
+        if familyTab.waitForExistence(timeout: 4) { familyTab.tap() } else { app.buttons["家人"].firstMatch.tap() }
+        sleep(25) // 等前景輪詢（每 20 秒）抓到最新位置
+        shot("家人列表")
+        attach(text: app.debugDescription, name: "家人列表文字")
+        // 點另一位家人：優先找「圈主」「家人」等非本人的列（本人列的標籤以「我」開頭，可能前面有表情）
+        let rowPred = NSPredicate(format: "label CONTAINS '位置' AND NOT (label CONTAINS '我,' OR label CONTAINS '我，' OR label BEGINSWITH '我' OR label CONTAINS '😐 我' OR label CONTAINS '🙂 我')")
+        let byName = app.buttons.matching(NSPredicate(format: "label CONTAINS '圈主'")).firstMatch
+        let candidates = app.buttons.matching(rowPred).allElementsBoundByIndex + app.cells.matching(rowPred).allElementsBoundByIndex
+        if let other = byName.exists ? byName : candidates.first {
+            attach(text: other.label, name: "點選的家人列")
+            other.tap(); sleep(4)
+            shot("家人詳情")
+            app.swipeUp(); sleep(1)
+            shot("家人詳情-軌跡")
+            attach(text: app.debugDescription, name: "家人詳情文字")
+        } else {
+            missing.append("找不到其他家人的列")
+        }
+        let mapTab = app.tabBars.buttons["地圖"].firstMatch
+        if mapTab.waitForExistence(timeout: 3) { mapTab.tap() } else { app.buttons["地圖"].firstMatch.tap() }
+        sleep(5)
+        shot("地圖")
+    }
+
+    /// 新增使用者指定的兩個守護地點（走真實 UI：家人 → 新增守護地點 → 名稱＋地址 → 等 Apple Maps 搜尋 → 儲存）
+    func testAddPlaces() throws {
+        let places = [("福上巷", "台中市西屯區福上巷214弄100號"), ("育英街", "台北市文山區育英街85號")]
+        let familyTab = app.tabBars.buttons["家人"].firstMatch
+        if familyTab.waitForExistence(timeout: 4) { familyTab.tap() } else { app.buttons["家人"].firstMatch.tap() }
+        sleep(2)
+        for (idx, (name, addr)) in places.enumerated() {
+            if app.staticTexts[name].exists { shot("已存在-\(name)"); continue }
+            guard let add = find("新增守護地點", timeout: 6) else { shot("找不到新增入口"); XCTFail("找不到新增守護地點"); return }
+            add.tap(); sleep(2)
+            // 先跳「這是什麼地方？」預設選單：選「其他」再自己填名稱
+            let other = app.buttons.matching(NSPredicate(format: "label CONTAINS '其他'")).firstMatch
+            if other.waitForExistence(timeout: 3) {
+                shot("地點類型選單"); other.tap(); sleep(2)
+                // 「其他」會再跳一個輸入名稱的彈窗
+                let alertField = app.alerts.textFields.firstMatch
+                if alertField.waitForExistence(timeout: 3) {
+                    alertField.typeText(name); shot("名稱彈窗-\(name)")
+                    app.alerts.buttons["就用這個"].firstMatch.tap(); sleep(2)
+                }
+            }
+            shot("編輯頁-\(idx + 1)")
+            let nameField = app.textFields["地點名稱"].firstMatch
+            guard nameField.waitForExistence(timeout: 5) else { shot("找不到名稱欄"); XCTFail("找不到名稱欄"); return }
+            if (nameField.value as? String) != name { nameField.tap(); nameField.typeText(name) }
+            let addrField = app.textFields["地址或地標"].firstMatch
+            addrField.tap(); addrField.typeText(addr)
+            sleep(4) // 0.7 秒 debounce 後自動用 Apple Maps 搜尋
+            shot("已輸入-\(name)")
+            attach(text: app.debugDescription, name: "編輯頁文字-\(name)")
+            let save = app.buttons["儲存"].firstMatch
+            if !save.isEnabled {
+                tapIf("使用 Apple Maps 搜尋"); sleep(4)
+            }
+            shot("搜尋後-\(name)")
+            guard save.isEnabled else { missing.append("儲存鈕不可用：\(name)（地址搜尋可能失敗）"); app.buttons["取消"].firstMatch.tap(); sleep(1); continue }
+            save.tap(); sleep(3)
+            shot("儲存後-\(name)")
+        }
+        shot("家人頁-守護地點")
+    }
 }
