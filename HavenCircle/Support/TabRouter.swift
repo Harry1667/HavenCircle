@@ -28,6 +28,8 @@ final class TabRouter {
     /// B2：QR／havencircle://join 深連結帶進來的邀請碼，交給家人頁消耗（開加入流程並預填）；
     /// 用過就清空，避免重新進到家人頁時被舊值誤觸發。
     var pendingJoinCode: String?
+    /// 動態頁情境卡「新增守護地點」：切到家人頁後由 FamilyHomeView 消耗並開啟新增地點流程。
+    var pendingAddPlace = false
 
     init(selection: Int = TabRouter.eventsTab) {
         self.selection = selection

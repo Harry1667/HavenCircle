@@ -247,10 +247,17 @@ struct FamilyHomeView: View {
             router.pendingJoinCode = nil
             nameGate.perform {
                 signInGate.perform {
-                    prefilledJoinCode = code
+                    // 空字串＝動態頁「家人傳了邀請碼給你？」列：開加入流程但不預填
+                    prefilledJoinCode = code.isEmpty ? nil : code
                     showJoinByCode = true
                 }
             }
+        }
+        // 動態頁情境卡「新增守護地點」：消耗式旗標，走同一個額度閘門
+        .task(id: router.pendingAddPlace) {
+            guard router.pendingAddPlace else { return }
+            router.pendingAddPlace = false
+            gateAddPlace()
         }
         // iPad：整份清單限寬置中，避免按鈕與列卡撐滿 13 吋全寬（iPhone 上無感）；
         // 外圍再鋪同款群組底色，否則 List 底色只到 600pt，左右會露出不同色階的接縫

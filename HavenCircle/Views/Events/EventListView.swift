@@ -21,7 +21,18 @@ struct EventListView: View {
     @State private var selected: LocalSafetyEvent?
     @State private var selectedAlert: RegionAlert?
     @State private var didOpenDebugDetail = false
-    @State private var feedScope: FeedScope = .related
+    @Query private var circles: [LocalLifeCircle]
+    /// 使用者手動選過的範圍；沒選過就跟著「有沒有守護範圍」走：
+    /// 沒有圈（沒授權定位、也沒新增守護地點）→ 全台動態；一有圈（授權後建好跟隨圈）→ 自動切「與我有關」。
+    /// 一旦使用者自己選了就尊重他的選擇，不再自動切。
+    @State private var feedScopeOverride: FeedScope?
+
+    private var feedScope: FeedScope {
+        feedScopeOverride ?? (circles.isEmpty ? .nationwide : .related)
+    }
+    private var feedScopeBinding: Binding<FeedScope> {
+        Binding(get: { feedScope }, set: { feedScopeOverride = $0 })
+    }
 
     private var visibleEvents: [LocalSafetyEvent] {
         events.filter { !$0.isArchived && !EventVisibility.isSuppressed($0) }
@@ -93,8 +104,13 @@ struct EventListView: View {
     // 自己不再包 NavigationStack（巢狀堆疊會讓 push/pop 行為錯亂）
     var body: some View {
         List {
+            // 零導覽引導：定位／通知／邀請碼三張情境卡（最多同時兩張）
+            FeedOnboardingCards(hasCircle: !circles.isEmpty)
             scopeSection
-            if visibleEvents.isEmpty && activeRegionAlerts.isEmpty {
+            // 沒有任何守護範圍時不能說「一切平安」——那是假性安心；改給空狀態與出路
+            if feedScope == .related && circles.isEmpty {
+                Section { NoCircleEmptyState() }
+            } else if visibleEvents.isEmpty && activeRegionAlerts.isEmpty && feedScope == .related {
                 Section {
                     safeStateHero
                         .listRowBackground(Color.clear)
@@ -129,6 +145,10 @@ struct EventListView: View {
             try? await Task.sleep(for: .milliseconds(450))
             selected = match
         }
+        // 看過內容的訊號：點開任一事件詳情後，通知邀請卡才有資格出現
+        .onChange(of: selected?.eventKey) { _, key in
+            if key != nil { UserDefaults.standard.set(true, forKey: SettingsKeys.hasOpenedEventDetail) }
+        }
         .sheet(item: $selected) { EventDetailView(event: $0, members: members).hcSheet() }
         .sheet(item: $selectedAlert) { RegionAlertDetailView(alert: $0, members: members).hcSheet() }
         #if DEBUG
@@ -152,7 +172,7 @@ struct EventListView: View {
         Section {
             // D4 重問通道：曾拒絕過情境式權限卡、但通知仍未開啟時，動態頂部再給一次機會
             NotificationReaskRow()
-            Picker("動態範圍", selection: $feedScope) {
+            Picker("動態範圍", selection: feedScopeBinding) {
                 ForEach(FeedScope.allCases) { scope in
                     Text(scope.rawValue).tag(scope)
                 }
