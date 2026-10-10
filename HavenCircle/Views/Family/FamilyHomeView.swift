@@ -140,6 +140,8 @@ struct FamilyHomeView: View {
         List {
             // 提醒暫停中（#19）：地圖不再放暫停鈴鐺，靜音狀態改在家人首頁顯示，點一下恢復
             MutedAlertsBanner()
+            // 狀態卡：我的警戒圈／家人平不平安、附近動態、最近避難所
+            FamilyStatusCard()
             if !isInFamilyCircle {
                 // 未入圈：邀請大鈕（連同「我收到了邀請碼」）永遠置頂——
                 // 受邀者尚未加入任何家庭時一定要看得到輸碼入口

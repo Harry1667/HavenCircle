@@ -29,28 +29,28 @@ struct AppTabs: View {
         if let flagIndex = args.firstIndex(of: "--start-tab"),
            flagIndex + 1 < args.count,
            let tab = Int(args[flagIndex + 1]) {
-            return min(max(tab, 0), 3)
+            return min(max(tab, 0), 2)
         }
         #endif
         // 第一次開 App 完成著陸後：直接落在地圖頁，展開親切帶領（看見自己的警戒圈）
         if UserDefaults.standard.bool(forKey: SettingsKeys.firstRunCoachingPending) {
             return TabRouter.mapTab
         }
-        return TabRouter.homeTab  // 打開就是安心頁：3 秒讀完「家人都平安嗎」
+        return TabRouter.familyTab  // 打開就是家人首頁：人在前、事在後
     }
 
     var body: some View {
         ZStack {
             TabView(selection: Bindable(router).selection) {
-                HomeStatusView(myName: myName)
-                    .tabItem { Label("安心", systemImage: "checkmark.shield.fill") }
-                    .tag(TabRouter.homeTab)
-                SafetyMapView()
-                    .tabItem { Label("安全地圖", systemImage: "map.fill") }
-                    .tag(TabRouter.mapTab)
                 FamilyHubView(myName: myName)
                     .tabItem { Label("家人", systemImage: "person.2.fill") }
                     .tag(TabRouter.familyTab)
+                EventsTabView()
+                    .tabItem { Label("動態", systemImage: "bell.badge.fill") }
+                    .tag(TabRouter.eventsTab)
+                SafetyMapView()
+                    .tabItem { Label("地圖", systemImage: "map.fill") }
+                    .tag(TabRouter.mapTab)
             }
             .tint(HCColor.brand)
             .environment(router)
@@ -89,8 +89,8 @@ struct AppTabs: View {
     }
 
     /// havencircle://alerts[?event=<eventKey>]｜map｜family｜refresh｜havencircle://join?code=<8碼>
-    /// 分頁減編後 alerts/refresh 改為「安心頁＋push 提醒中心」，widget 與通知不用改 URL；
-    /// 通知另帶 event 參數時，提醒中心會直接打開那一則的詳情。
+    /// alerts/refresh 切到「動態」分頁，widget 與通知不用改 URL；
+    /// 通知另帶 event 參數時，動態分頁會直接打開那一則的詳情。
     /// havencircle://join（B2）：QR code／分享連結掃到後，切到家人分頁並把邀請碼交給
     /// FamilyHomeView 消耗，由它負責登入前置與開啟加入流程（這裡只負責路由，不碰登入／加入邏輯）。
     private func route(_ url: URL) {
@@ -98,14 +98,14 @@ struct AppTabs: View {
         switch url.host {
         case "alerts":
             router.pendingEventKey = eventKey(from: url)
-            router.openHome(.events)
+            router.openEvents()
         case "map": router.selection = TabRouter.mapTab
         case "family": router.selection = TabRouter.familyTab
         case "join":
             router.pendingJoinCode = queryValue("code", from: url)
             router.selection = TabRouter.familyTab
         case "refresh":
-            router.openHome(.events)
+            router.openEvents()
             Task { await EventPipeline.refresh(context: context) }
         default: break
         }
@@ -118,7 +118,7 @@ struct AppTabs: View {
     /// 三個主分頁對照畫面名稱（tab 值對照 TabRouter 常數）。
     private func screenName(for tab: Int) -> String {
         switch tab {
-        case TabRouter.homeTab: "home"
+        case TabRouter.eventsTab: "events"
         case TabRouter.mapTab: "map"
         case TabRouter.familyTab: "family"
         default: "unknown_tab"

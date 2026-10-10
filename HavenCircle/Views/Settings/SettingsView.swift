@@ -86,13 +86,6 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    settingsRow("防災問答", subtitle: "AI 助理：地震、颱風、火災怎麼辦",
-                                icon: "bubble.left.and.text.bubble.right.fill", color: HCColor.brand) {
-                        AIAssistantView()
-                    }
-                }
-
-                Section {
                     // 標題從「個人資訊」改為白話版，讓使用者一眼知道改名／改身分在這裡
                     settingsRow("你的名字與家庭身分", subtitle: "本名、家人怎麼叫你，與緊急聯絡備註",
                                 icon: "person.text.rectangle.fill", color: HCColor.brand) {

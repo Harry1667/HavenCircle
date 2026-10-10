@@ -421,18 +421,15 @@ final class HavenCircleUITests: XCTestCase {
 
     func testEventsTour() throws {
         let flow = "events"
+        // 先看家人首頁（狀態卡），再切到「動態」分頁
         auditLaunch(["--start-tab", "0", "--skip-location-prompt"])
         clearOverlays()
         sleep(8) // 等事件管線抓到資料
-        auditShot(flow, "安心首頁")
-        app.swipeUp(); sleep(1)
-        auditShot(flow, "安心首頁-下捲")
-        app.swipeDown(); app.swipeDown(); sleep(1)
-
-        // 提醒中心（事件列表）
-        if let hero = firstMatch("提醒中心", types: [.button, .other]) {
-            auditTap(hero, wait: 2)
-            auditShot(flow, "提醒中心-事件列表")
+        auditShot(flow, "家人首頁")
+        let eventsTab = app.tabBars.buttons["動態"].exists ? app.tabBars.buttons["動態"] : app.buttons.matching(NSPredicate(format: "label == '動態'")).firstMatch
+        // 動態分頁（原提醒中心，事件列表）
+        if auditTap(eventsTab, wait: 2) {
+            auditShot(flow, "動態-事件列表")
             // 先點第一則區域警報（官方示警），再切到「全台動態」點第一則事件
             let alertRow = app.buttons.matching(NSPredicate(format: "label CONTAINS '警報：'")).firstMatch
             if alertRow.exists {
@@ -443,7 +440,7 @@ final class HavenCircleUITests: XCTestCase {
                 auditDismiss(); sleep(1)
             } else { auditLines.append("\(flow)|--|列表無區域警報列|\(auditClicks)|||") }
             if auditTap(app.buttons["全台動態"], wait: 2) {
-                auditShot(flow, "提醒中心-全台動態")
+                auditShot(flow, "動態-全台動態")
                 let row = app.buttons.matching(NSPredicate(format: "label CONTAINS '進行中、'")).firstMatch
                 if row.waitForExistence(timeout: 10) {
                     auditTap(row, wait: 2)
@@ -453,11 +450,10 @@ final class HavenCircleUITests: XCTestCase {
                     auditDismiss(); sleep(1)
                 } else { auditLines.append("\(flow)|--|全台動態無事件列|\(auditClicks)|||") }
             }
-            auditBack(); sleep(1)
-        } else { auditLines.append("\(flow)|--|找不到提醒中心入口|\(auditClicks)|||") }
+        } else { auditLines.append("\(flow)|--|找不到動態分頁|\(auditClicks)|||") }
 
-        // 區域回顧
-        if let h = firstMatch("區域回顧") {
+        // 區域回顧（動態分頁底部）
+        if let h = firstMatch("回顧過去") {
             if !h.isHittable { app.swipeUp() }
             auditTap(h, wait: 2)
             auditShot(flow, "區域回顧")
@@ -465,7 +461,7 @@ final class HavenCircleUITests: XCTestCase {
         }
 
         // 安全地圖
-        let mapTab = app.tabBars.buttons["安全地圖"].exists ? app.tabBars.buttons["安全地圖"] : app.buttons.matching(NSPredicate(format: "label == '安全地圖'")).firstMatch
+        let mapTab = app.tabBars.buttons["地圖"].exists ? app.tabBars.buttons["地圖"] : app.buttons.matching(NSPredicate(format: "label == '地圖'")).firstMatch
         if auditTap(mapTab, wait: 3) {
             clearOverlays()
             auditShot(flow, "安全地圖")

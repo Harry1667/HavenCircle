@@ -1,7 +1,7 @@
 import SwiftUI
 import SwiftData
 
-/// 提醒中心：按「需要注意 / 持續確認中 / 已結束」分類（對應產品規格的通知頁分類）
+/// 動態分頁（原提醒中心）：按「需要注意 / 持續確認中 / 已結束」分類（對應產品規格的通知頁分類）
 struct EventListView: View {
     private enum FeedScope: String, CaseIterable, Identifiable {
         case related = "與我有關"
@@ -12,6 +12,7 @@ struct EventListView: View {
 
     @Environment(\.modelContext) private var context
     @Environment(TabRouter.self) private var router
+    @Environment(EntitlementStore.self) private var entitlementStore
     @Query(sort: \LocalSafetyEvent.occurredAt, order: .reverse) private var events: [LocalSafetyEvent]
     @Query private var members: [LocalFamilyMember]
     @Query private var regionAlerts: [RegionAlert]
@@ -88,7 +89,7 @@ struct EventListView: View {
         return newest.values.sorted { $0.updatedAt > $1.updatedAt }
     }
 
-    // 分頁減編（合成案 C2）後本頁由安心頁 push，導航堆疊由上層提供，
+    // 本頁是「動態」分頁的根內容，導航堆疊由 EventsTabView 提供，
     // 自己不再包 NavigationStack（巢狀堆疊會讓 push/pop 行為錯亂）
     var body: some View {
         List {
@@ -111,8 +112,10 @@ struct EventListView: View {
                 nationwideDynamicsSection
             }
             // #B：不再顯示「已結束」區塊——使用者不需要看已解除／已過期的事件（地圖也早已排除）
+            footerLinksSection
         }
-        .navigationTitle("提醒中心")
+        .navigationTitle("動態")
+        .navigationBarTitleDisplayMode(.inline)
         .analyticsScreen("alert_center")
         // 手動下拉刷新：重跑一次資料管線
         .refreshable { await EventPipeline.refresh(context: context) }
@@ -147,6 +150,8 @@ struct EventListView: View {
 
     private var scopeSection: some View {
         Section {
+            // D4 重問通道：曾拒絕過情境式權限卡、但通知仍未開啟時，動態頂部再給一次機會
+            NotificationReaskRow()
             Picker("動態範圍", selection: $feedScope) {
                 ForEach(FeedScope.allCases) { scope in
                     Text(scope.rawValue).tag(scope)
@@ -157,6 +162,27 @@ struct EventListView: View {
             Text(feedScope == .related
                  ? "通知只會依你的生活圈與設定發送；全台內容不會干擾你。"
                  : "全台內容供了解動態；「持續確認中」代表尚未由官方、主流媒體或多來源充分驗證。")
+        }
+    }
+
+    /// 動態分頁最底：低頻入口——回顧與防災問答（原本分別在首頁與設定裡）
+    private var footerLinksSection: some View {
+        Section {
+            NavigationLink(value: TabRouter.EventsDestination.history) {
+                // 天數依方案分層跟著變（見 HistoryView／FreeTier），不寫死避免 Guardian+ 看到錯誤天數
+                Label("回顧過去 \(entitlementStore.isPlus ? FreeTier.plusHistoryDays : FreeTier.historyDays) 天",
+                      systemImage: "clock.arrow.circlepath")
+            }
+            NavigationLink {
+                AIAssistantView()
+            } label: {
+                VStack(alignment: .leading, spacing: HCSpacing.x1) {
+                    Label("防災問答", systemImage: "bubble.left.and.text.bubble.right.fill")
+                    Text("AI 助理：地震、颱風、火災怎麼辦")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 
@@ -333,5 +359,6 @@ struct EventListView: View {
     EventListView()
         .modelContainer(PreviewSupport.container())
         .environment(TabRouter())
+        .environment(EntitlementStore())
 }
 #endif

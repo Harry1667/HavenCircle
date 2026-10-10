@@ -308,7 +308,7 @@ struct SafetyMapView: View {
                         nearbyStrip
                     }
                 }
-                .navigationTitle("安心圈")
+                .navigationTitle("地圖")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     // #3：只有自己（沒有家人）時不顯示「全家/我」切換器——沒有對象可切，
@@ -385,6 +385,7 @@ struct SafetyMapView: View {
                     if showNotificationPrompt {
                         NotificationPromptCard {
                             withAnimation { showNotificationPrompt = false }
+                            landOnFamilyAfterGuidance()
                         }
                     }
                 }
@@ -996,10 +997,23 @@ struct SafetyMapView: View {
         Task {
             let declined = UserDefaults.standard.bool(forKey: SettingsKeys.notificationPromptDeclined)
             guard !declined,
-                  await NotificationScheduler.authorizationStatus() == .notDetermined else { return }
+                  await NotificationScheduler.authorizationStatus() == .notDetermined else {
+                // 不需要再問通知：新手流程到此結束，落在家人首頁
+                landOnFamilyAfterGuidance()
+                return
+            }
             try? await Task.sleep(for: .milliseconds(600))
             guard !Task.isCancelled else { return }
             withAnimation { showNotificationPrompt = true }
+        }
+    }
+
+    /// 新手帶領（含通知權限卡）結束後落在家人首頁：App 啟動與新手結束都以家人為首頁。
+    /// 稍等一拍讓卡片／帶領收尾動畫走完再切分頁。
+    private func landOnFamilyAfterGuidance() {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            router.selection = TabRouter.familyTab
         }
     }
 
