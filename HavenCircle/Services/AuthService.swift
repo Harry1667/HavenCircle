@@ -42,6 +42,8 @@ final class AuthService {
         if let user = Auth.auth().currentUser {
             uid = user.uid
             isSignedIn = true
+            // 本機名字是空的、但 Firebase 帳號有 displayName（Apple 首次授權的姓名）時回填
+            ProfileIdentity.backfillLocalName()
         }
 
         // #2/#13：登入狀態要即時反映，不能只在啟動時讀一次快照。掛上 Firebase 官方的狀態監聽，
@@ -123,6 +125,8 @@ final class AuthService {
         isSignedIn = true
         // #11：存下 Apple 穩定使用者代碼，供之後 [checkAppleCredentialState] 複查授權是否被撤銷。
         UserDefaults.standard.set(credential.user, forKey: Self.appleUserIdentifierDefaultsKey)
+        // 名字回填：本機還沒名字時，用 Apple 這次給的姓名（僅首次授權才有），否則用 Firebase displayName
+        ProfileIdentity.backfillLocalName(fullName: credential.fullName)
         AppLog.cloud.info("Firebase Auth（Sign in with Apple）登入成功")
         return result.user.uid
     }
