@@ -20,6 +20,16 @@ struct FamilyLiveLocation: Identifiable, Equatable {
     var placeSince: Date? = nil
     let isSharing: Bool
 
+    /// 複製一份並換成讀取端解析後的顯示名稱（雲端沒名字時補「家人 N」，不會寫回雲端）
+    func withDisplayName(_ name: String) -> FamilyLiveLocation {
+        FamilyLiveLocation(
+            id: id, participantID: participantID, displayName: name,
+            latitude: latitude, longitude: longitude, radiusMeters: radiusMeters,
+            district: district, updatedAt: updatedAt, stationarySince: stationarySince,
+            placeName: placeName, placeSince: placeSince, isSharing: isSharing
+        )
+    }
+
     /// 過時判斷只看「最後回報時間」：人沒移動但心跳正常，仍是新鮮的
     var isFresh: Bool {
         isSharing && LiveLocationPresence.isReporting(lastReportedAt: updatedAt)

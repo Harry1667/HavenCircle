@@ -253,6 +253,11 @@ struct ArrivalEvent: Identifiable, Equatable {
     let placeName: String
     let createdAt: Date
 
+    func withName(_ newName: String) -> ArrivalEvent {
+        ArrivalEvent(id: id, uid: uid, name: newName, kind: kind, source: source,
+                     placeName: placeName, createdAt: createdAt)
+    }
+
     /// 「小明到達家」「小明離開公司」；visit 沒有守護地點名時用「某處」
     var message: String {
         let place = placeName.isEmpty ? "某處" : placeName

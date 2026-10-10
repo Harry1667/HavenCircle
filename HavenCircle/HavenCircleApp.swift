@@ -121,6 +121,9 @@ struct HavenCircleApp: App {
                     // Apple 授權是否已被撤銷（例如上次關閉 App 期間使用者去系統設定登出了 Apple 帳號）。
                     await AuthService.shared.checkAppleCredentialState()
                     await familySync.refreshAccountStatus()
+                    // 資料遷移：舊版把「我」「家人」「圈主」當名字上傳過，啟動時把自己雲端的佔位字清掉
+                    // （只動佔位字；已是真名的不碰）
+                    await familySync.syncOwnNameToCloud(onlyIfPlaceholder: true)
                     LocationService.shared.syncLiveLocationSharing(
                         isEnabled: liveLocationSharingEnabled
                     )

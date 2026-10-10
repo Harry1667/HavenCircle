@@ -103,7 +103,7 @@ enum FirestoreFamilyBackend {
             "createdAt": Timestamp(date: now)
         ])
         try await familyRef.collection(FirestoreConfig.Path.members).document(ownerUid).setData([
-            "displayName": ownerDisplayName,
+            "displayName": FamilyNaming.clean(ownerDisplayName),
             "role": "owner",
             "joinedAt": Timestamp(date: now)
         ])
@@ -117,7 +117,7 @@ enum FirestoreFamilyBackend {
             "createdAt": Timestamp(date: now),
             "expiresAt": Timestamp(date: now.addingTimeInterval(inviteCodeLifetime)),
             "familyName": familyName,
-            "ownerName": ownerDisplayName
+            "ownerName": FamilyNaming.clean(ownerDisplayName)
         ])
 
         return FamilyCircleDoc(
@@ -162,11 +162,62 @@ enum FirestoreFamilyBackend {
             throw FamilyBackendError.familyNotFound
         }
         try await familyRef.collection(FirestoreConfig.Path.members).document(uid).setData([
-            "displayName": displayName,
+            "displayName": FamilyNaming.clean(displayName),
             "role": "member",
             "joinedAt": Timestamp(date: Date())
         ], merge: true)
         return familyId
+    }
+
+    /// 把自己的名字同步到雲端所有相關文件（成員資料 members/{uid}、位置文件 locations/{uid}、
+    /// 圈主時的邀請碼預覽 ownerName）。name 為空＝清掉雲端名字（位置文件刪欄位、成員資料寫空字串）。
+    ///
+    /// onlyIfPlaceholder＝true 為啟動時的「資料遷移」模式：先讀雲端現值，只有現值是佔位字
+    /// （「我」「家人」「圈主」…）才改寫，已經是真名的不動，避免多裝置互相覆蓋。
+    /// 位置文件不存在時不建立（沒開分享的人不該憑空多出一筆位置文件，也避免被規則拒絕）。
+    static func syncOwnName(
+        familyId: String, uid: String, name: String, onlyIfPlaceholder: Bool,
+        isOwner: Bool, inviteCode: String?
+    ) async throws {
+        let db = FirestoreConfig.store()
+        let familyRef = db.collection(FirestoreConfig.Path.families).document(familyId)
+        let clean = FamilyNaming.clean(name)
+
+        let memberRef = familyRef.collection(FirestoreConfig.Path.members).document(uid)
+        let memberSnap = try? await memberRef.getDocument()
+        if let data = memberSnap?.data() {
+            let current = data["displayName"] as? String
+            let isDirty = (current ?? "") != FamilyNaming.clean(current)
+            if onlyIfPlaceholder ? isDirty : (current ?? "") != clean {
+                try await memberRef.setData(["displayName": clean], merge: true)
+            }
+        }
+
+        let locationRef = familyRef.collection(FirestoreConfig.Path.locations).document(uid)
+        let locationSnap = try? await locationRef.getDocument()
+        if let data = locationSnap?.data() {
+            let current = data["displayName"] as? String
+            let isDirty = current != nil && (current ?? "") != FamilyNaming.clean(current)
+            let needsWrite = onlyIfPlaceholder ? isDirty : (current ?? "") != clean
+            if needsWrite {
+                // updateData 只改名字欄位，不會碰座標；空字串＝刪欄位
+                try await locationRef.updateData([
+                    "displayName": clean.isEmpty ? FieldValue.delete() : clean
+                ])
+            }
+        }
+
+        // 邀請碼預覽的圈主名字：盡力而為（規則不允許或碼已失效都不擋主流程）
+        if isOwner, let inviteCode, !inviteCode.isEmpty {
+            let codeRef = db.collection(FirestoreConfig.Path.inviteCodes).document(inviteCode)
+            if let snap = try? await codeRef.getDocument(), let data = snap.data() {
+                let current = data["ownerName"] as? String
+                let isDirty = (current ?? "") != FamilyNaming.clean(current)
+                if onlyIfPlaceholder ? isDirty : (current ?? "") != clean {
+                    try? await codeRef.updateData(["ownerName": clean])
+                }
+            }
+        }
     }
 
     /// 離開家庭圈：從 memberUids 移除自己，並刪掉自己的成員與位置文件。
@@ -343,7 +394,7 @@ enum FirestoreFamilyBackend {
         return InvitePreview(
             familyId: familyId,
             familyName: data["familyName"] as? String,
-            ownerName: data["ownerName"] as? String
+            ownerName: FamilyNaming.clean(data["ownerName"] as? String)
         )
     }
 
@@ -372,7 +423,8 @@ enum FirestoreFamilyBackend {
 
         let ownerDoc = try? await familyRef.collection(FirestoreConfig.Path.members)
             .document(family.ownerUid).getDocument()
-        let ownerName = (ownerDoc?.data()?["displayName"] as? String) ?? "圈主"
+        // 圈主沒有真名就存空字串，不再塞「圈主」佔位字（顯示端自己決定 fallback）
+        let ownerName = FamilyNaming.clean(ownerDoc?.data()?["displayName"] as? String)
 
         let newCode = generateInviteCode()
         let now = Date()
@@ -413,7 +465,6 @@ enum FirestoreFamilyBackend {
         let ref = db.collection(FirestoreConfig.Path.families).document(familyId)
             .collection(FirestoreConfig.Path.locations).document(uid)
         var payload: [String: Any] = [
-            "displayName": displayName,
             "latitude": latitude,
             "longitude": longitude,
             "radiusMeters": radiusMeters,
@@ -422,6 +473,9 @@ enum FirestoreFamilyBackend {
             "stationarySince": Timestamp(date: stationarySince),
             "isSharing": true
         ]
+        // 名字：有真名才寫；沒有就刪欄位（merge 寫入會一併清掉舊版留下的「我」「家人」）
+        let cleanName = FamilyNaming.clean(displayName)
+        payload["displayName"] = cleanName.isEmpty ? FieldValue.delete() : cleanName
         // 目前所在守護地點（沒在任何守護地點內就清掉欄位，家人端才不會顯示過期的「在家」）
         if let placeName, !placeName.isEmpty {
             payload["placeName"] = placeName
@@ -563,7 +617,7 @@ enum FirestoreFamilyBackend {
             .collection(FirestoreConfig.Path.arrivals).document()
         let data: [String: Any] = [
             "uid": uid,
-            "name": name,
+            "name": FamilyNaming.clean(name),
             "kind": kind.rawValue,
             "source": source.rawValue,
             "placeName": placeName,
@@ -586,7 +640,6 @@ enum FirestoreFamilyBackend {
         return snap.documents.compactMap { doc -> ArrivalEvent? in
             let data = doc.data()
             guard let uid = data["uid"] as? String,
-                  let name = data["name"] as? String,
                   let kindRaw = data["kind"] as? String, let kind = ArrivalEvent.Kind(rawValue: kindRaw),
                   let createdAt = (data["createdAt"] as? Timestamp)?.dateValue()
                     ?? (data["clientAt"] as? Timestamp)?.dateValue()
@@ -594,7 +647,7 @@ enum FirestoreFamilyBackend {
             return ArrivalEvent(
                 id: doc.documentID,
                 uid: uid,
-                name: name,
+                name: FamilyNaming.clean(data["name"] as? String),
                 kind: kind,
                 source: (data["source"] as? String).flatMap(ArrivalEvent.Source.init(rawValue:)) ?? .region,
                 placeName: data["placeName"] as? String ?? "",
@@ -650,7 +703,7 @@ enum FirestoreFamilyBackend {
             .collection(FirestoreConfig.Path.locationRequests).document(targetUid)
         let data: [String: Any] = [
             "requesterUid": requesterUid,
-            "requesterName": requesterName,
+            "requesterName": FamilyNaming.clean(requesterName),
             "requestedAt": FieldValue.serverTimestamp(),
             "expireAt": Timestamp(date: Date().addingTimeInterval(LocationRequestPolicy.maxAge * 3))
         ]
@@ -710,7 +763,7 @@ enum FirestoreFamilyBackend {
         let now = Date()
         var data: [String: Any] = [
             "senderUid": senderUid,
-            "senderName": senderName,
+            "senderName": FamilyNaming.clean(senderName),
             "status": status.rawValue,
             "note": note,
             "createdAt": Timestamp(date: now),
@@ -786,8 +839,8 @@ enum FirestoreFamilyBackend {
 
     private static func member(from doc: QueryDocumentSnapshot) -> FamilyMemberDoc? {
         let data = doc.data()
-        guard let displayName = data["displayName"] as? String,
-              let role = data["role"] as? String,
+        let displayName = FamilyNaming.clean(data["displayName"] as? String)
+        guard let role = data["role"] as? String,
               let joinedAt = (data["joinedAt"] as? Timestamp)?.dateValue()
         else { return nil }
         return FamilyMemberDoc(
@@ -801,8 +854,8 @@ enum FirestoreFamilyBackend {
     /// Firestore 位置文件 → FamilyLiveLocation（文件 ID = 成員 uid，同時當 participantID）
     private static func liveLocation(from doc: QueryDocumentSnapshot) -> FamilyLiveLocation? {
         let data = doc.data()
-        guard let displayName = data["displayName"] as? String,
-              let latitude = data["latitude"] as? Double,
+        let displayName = FamilyNaming.clean(data["displayName"] as? String)
+        guard let latitude = data["latitude"] as? Double,
               let longitude = data["longitude"] as? Double,
               let updatedAt = (data["updatedAt"] as? Timestamp)?.dateValue()
         else { return nil }
@@ -826,14 +879,15 @@ enum FirestoreFamilyBackend {
     /// Firestore 回報文件 → SafetyPing
     private static func ping(from doc: QueryDocumentSnapshot) -> SafetyPing? {
         let data = doc.data()
-        guard let senderName = data["senderName"] as? String,
-              let statusRaw = data["status"] as? String,
+        let senderName = FamilyNaming.clean(data["senderName"] as? String)
+        guard let statusRaw = data["status"] as? String,
               let status = SafetyStatus(rawValue: statusRaw),
               let createdAt = (data["createdAt"] as? Timestamp)?.dateValue()
         else { return nil }
         return SafetyPing(
             id: doc.documentID,
             senderName: senderName,
+            senderUid: data["senderUid"] as? String ?? "",
             status: status,
             note: data["note"] as? String ?? "",
             createdAt: createdAt,

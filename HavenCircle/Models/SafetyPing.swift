@@ -29,6 +29,8 @@ enum SafetyStatus: String, CaseIterable {
 struct SafetyPing: Identifiable {
     let id: String
     let senderName: String
+    /// 回報者 uid（雲端文件本來就有）。名字空白時讀取端靠它排「家人 N」，也用來認出自己的回報
+    var senderUid: String = ""
     let status: SafetyStatus
     let note: String
     let createdAt: Date

@@ -98,9 +98,65 @@ final class FamilySyncService {
         return localMembers.filter { !$0.isPlace }.count < 2
     }
 
-    private var displayName: String {
-        UserDefaults.standard.string(forKey: SettingsKeys.profileDisplayName)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    /// 本人要上傳的名字：本名 > 家庭身分 > 空字串。**絕不回傳「我」「家人」「圈主」這類佔位字**
+    /// （規則見 [FamilyNaming]）；空字串代表「沒有名字」，家人端自己顯示「家人 N」。
+    private var displayName: String { FamilyNaming.ownUploadName() }
+
+    // MARK: - 名字 fallback 與同步
+
+    /// 讀取端 fallback：別人沒有名字時顯示「家人 N」。N＝該 uid 在「其他成員」中的加入順序
+    /// （memberUids 由 arrayUnion 依加入順序追加，穩定）；memberUids 尚未載入時退回已知位置文件
+    /// 的 uid 排序。只用於顯示，絕不上傳。
+    func fallbackName(forUid targetUid: String) -> String {
+        var others = memberUids.filter { $0 != uid }
+        if !others.contains(targetUid) {
+            others = Array(Set(liveLocations.map(\.id).filter { $0 != uid } + [targetUid])).sorted()
+        }
+        let index = others.firstIndex(of: targetUid) ?? 0
+        return FamilyNaming.fallbackLabel(number: index + 1)
+    }
+
+    /// 解析一位成員要顯示的名字：自己＝真名或「我」；別人＝真名或「家人 N」
+    func resolvedName(_ raw: String, forUid targetUid: String) -> String {
+        let cleaned = FamilyNaming.clean(raw)
+        if targetUid == uid { return cleaned.isEmpty ? "我" : cleaned }
+        return cleaned.isEmpty ? fallbackName(forUid: targetUid) : cleaned
+    }
+
+    private func resolvedLocations(_ locations: [FamilyLiveLocation]) -> [FamilyLiveLocation] {
+        locations.map { $0.withDisplayName(resolvedName($0.displayName, forUid: $0.participantID)) }
+            .sorted { $0.displayName < $1.displayName }
+    }
+
+    /// 本人改名／設定名字後的統一入口（NamePromptSheet、設定頁共用）：
+    /// 1. 本機「本人」成員的名字跟著改（有真名用真名，沒有才用身分，都沒有維持原狀）
+    /// 2. 已在家庭圈就把新名字同步到雲端（成員資料＋位置文件＋圈主邀請碼預覽）
+    /// profileDisplayName 由呼叫端先寫進 UserDefaults/AppStorage。
+    func applyOwnNameChange(context: ModelContext) async {
+        let resolved = FamilyNaming.ownUploadName()
+        if !resolved.isEmpty,
+           let me = (try? context.fetch(FetchDescriptor<LocalFamilyMember>()))?.first(where: \.isCurrentUser),
+           me.name != resolved {
+            me.name = resolved
+            context.saveReporting()
+        }
+        await syncOwnNameToCloud(onlyIfPlaceholder: false)
+    }
+
+    /// 把本人名字同步到雲端所有相關文件（成員資料＋位置文件＋圈主的邀請碼預覽）。
+    /// 改名後呼叫（onlyIfPlaceholder: false）；App 啟動時以 true 呼叫＝只清掉舊版留下的佔位字。
+    /// 沒登入或不在家庭圈時什麼都不做。
+    func syncOwnNameToCloud(onlyIfPlaceholder: Bool) async {
+        guard AuthService.shared.isSignedIn, let uid, let familyID = currentFamilyID else { return }
+        do {
+            try await FirestoreFamilyBackend.syncOwnName(
+                familyId: familyID, uid: uid, name: displayName,
+                onlyIfPlaceholder: onlyIfPlaceholder,
+                isOwner: isFamilyOwner, inviteCode: currentInviteCode
+            )
+        } catch {
+            AppLog.cloud.error("同步名字到雲端失敗：\(error.localizedDescription)")
+        }
     }
 
     // MARK: - 帳號 / 家庭狀態
@@ -152,7 +208,7 @@ final class FamilySyncService {
         guard let uid else { throw FamilyBackendError.notSignedIn }
         let family = try await FirestoreFamilyBackend.createFamily(
             ownerUid: uid,
-            ownerDisplayName: displayName.isEmpty ? "圈主" : displayName,
+            ownerDisplayName: displayName,
             familyName: name
         )
         currentFamilyID = family.id
@@ -175,7 +231,7 @@ final class FamilySyncService {
         let familyID = try await FirestoreFamilyBackend.joinFamily(
             code: code,
             uid: uid,
-            displayName: displayName.isEmpty ? "家人" : displayName
+            displayName: displayName
         )
         if let previousFamilyID, previousFamilyID != familyID {
             do {
@@ -279,8 +335,7 @@ final class FamilySyncService {
             var changed = false
 
             for remote in remoteMembers where remote.id != selfUID {
-                let resolvedName = remote.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-                let name = resolvedName.isEmpty ? "家人" : resolvedName
+                let name = resolvedName(remote.displayName, forUid: remote.id)
                 if let existing = localMembers.first(where: { $0.sharedIdentityKey == remote.id }) {
                     if existing.name != name {
                         existing.name = name
@@ -314,8 +369,7 @@ final class FamilySyncService {
         if !isFirstSync {
             let newcomers = remoteMembers.filter { $0.id != selfUID && !knownSet.contains($0.id) }
             for member in newcomers {
-                let name = member.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-                let displayName = name.isEmpty ? "家人" : name
+                let displayName = resolvedName(member.displayName, forUid: member.id)
                 // interruptionLevel 用 active（timeSensitive 預設 false）：這不是災害警報，
                 // 不該突破勿擾模式。
                 await NotificationScheduler.scheduleAlert(
@@ -355,17 +409,11 @@ final class FamilySyncService {
             liveLocationError = "請先用 Apple 帳號登入，才能把即時位置分享給家人"
             return false
         }
-        var trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedName.isEmpty {
-            // 顯示名稱沒設時退回本機「本人」成員的名字，避免因為名字空白整條上傳路徑卡死
-            let members = (try? context.fetch(FetchDescriptor<LocalFamilyMember>())) ?? []
-            trimmedName = members.first(where: \.isCurrentUser)?.name
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        }
-        guard !trimmedName.isEmpty else {
-            liveLocationError = "請先設定你的顯示名稱"
-            return false
-        }
+        // 名字沒設不再擋上傳（位置分享不該被名字綁架），也**不能**退回本機「我」成員的名字——
+        // 那正是「我」被上傳到雲端的根因。沒有真名就送空字串（publishLocation 會刪欄位），
+        // 家人端顯示「家人 N」。
+        var trimmedName = FamilyNaming.clean(displayName)
+        if trimmedName.isEmpty { trimmedName = FamilyNaming.ownUploadName() }
         // 過舊（> 2 分鐘）或精度太差（> 1000 公尺）的定位不上傳，但要讓使用者看到原因而不是無聲略過：
         // 先前門檻 500 公尺，剛開 GPS 的第一筆常是基地台定位（數百至上千公尺），被默默丟掉後
         // 要等移動 100 公尺才會有下一筆，畫面就一直卡在「等待第一次位置更新」。
@@ -543,7 +591,7 @@ final class FamilySyncService {
         )
         var updated = liveLocations.filter { $0.id != uid }
         updated.append(own)
-        liveLocations = updated.sorted { $0.displayName < $1.displayName }
+        liveLocations = resolvedLocations(updated)
         if applyLiveLocationSnapshots(liveLocations, context: context) {
             context.saveReporting()
         }
@@ -644,7 +692,9 @@ final class FamilySyncService {
         guard let familyID = currentFamilyID else { return }
         do {
             let locations = try await FirestoreFamilyBackend.fetchLocations(familyId: familyID)
-            liveLocations = locations.sorted { $0.displayName < $1.displayName }
+            // 先記下 uid 清單再解析名字（fallbackName 在 memberUids 未載入時要靠它）
+            liveLocations = locations
+            liveLocations = resolvedLocations(locations)
             let changed = applyLiveLocationSnapshots(liveLocations, context: context)
             if changed {
                 context.saveReporting()
@@ -801,7 +851,7 @@ final class FamilySyncService {
         let storedRadius = defaults.integer(forKey: SettingsKeys.liveCircleRadiusMeters)
         return await publishLiveLocation(
             location,
-            displayName: defaults.string(forKey: SettingsKeys.profileDisplayName) ?? "",
+            displayName: FamilyNaming.ownUploadName(defaults: defaults),
             radiusMeters: storedRadius > 0 ? storedRadius : 1_000,
             context: context,
             force: true
@@ -812,11 +862,10 @@ final class FamilySyncService {
         kind: ArrivalEvent.Kind, source: ArrivalEvent.Source, placeName: String, at date: Date
     ) async {
         guard AuthService.shared.isSignedIn, let uid, let familyID = currentFamilyID else { return }
-        let name = UserDefaults.standard.string(forKey: SettingsKeys.profileDisplayName)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let name = displayName
         do {
             try await FirestoreFamilyBackend.postArrival(
-                familyId: familyID, uid: uid, name: name.isEmpty ? "家人" : name,
+                familyId: familyID, uid: uid, name: name,
                 kind: kind, source: source, placeName: placeName, at: date
             )
         } catch {
@@ -839,7 +888,11 @@ final class FamilySyncService {
             let events = try await FirestoreFamilyBackend.fetchArrivals(familyId: familyID, since: lastSeen)
             guard let newest = events.map(\.createdAt).max() else { return }
             defaults.set(max(newest, lastSeen), forKey: key)
-            let candidates = ArrivalPolicy.bannerCandidates(events, selfUID: uid, lastSeen: lastSeen, now: now)
+            // 事件裡沒名字的人補「家人 N」（名字不上傳佔位字，顯示端補）
+            let named = events.map { event in
+                event.name.isEmpty ? event.withName(fallbackName(forUid: event.uid)) : event
+            }
+            let candidates = ArrivalPolicy.bannerCandidates(named, selfUID: uid, lastSeen: lastSeen, now: now)
             guard !candidates.isEmpty else { return }
             if UIApplication.shared.applicationState == .active {
                 arrivalBanners.append(contentsOf: candidates)
@@ -887,7 +940,7 @@ final class FamilySyncService {
         do {
             try await FirestoreFamilyBackend.requestLocationUpdate(
                 familyId: familyID, targetUid: targetUid, requesterUid: uid,
-                requesterName: requesterName.isEmpty ? "家人" : requesterName
+                requesterName: FamilyNaming.clean(requesterName)
             )
             lastRequestSentAt[targetUid] = .now
             return .sent
@@ -972,7 +1025,7 @@ final class FamilySyncService {
             _ = try await FirestoreFamilyBackend.postPing(
                 familyId: familyID,
                 senderUid: uid,
-                senderName: senderName,
+                senderName: FamilyNaming.clean(senderName),
                 status: status,
                 note: note,
                 latitude: latitude,
@@ -1002,7 +1055,20 @@ final class FamilySyncService {
     func fetchPings() async {
         guard let familyID = currentFamilyID else { return }
         do {
-            pings = try await FirestoreFamilyBackend.fetchPings(familyId: familyID)
+            // 回報者沒名字時補「家人 N」（自己的回報顯示「我」）
+            pings = try await FirestoreFamilyBackend.fetchPings(familyId: familyID).map { ping in
+                var resolved = ping
+                if ping.senderName.isEmpty {
+                    resolved = SafetyPing(
+                        id: ping.id,
+                        senderName: ping.senderUid.isEmpty ? "家人" : resolvedName("", forUid: ping.senderUid),
+                        senderUid: ping.senderUid, status: ping.status, note: ping.note,
+                        createdAt: ping.createdAt, readBy: ping.readBy,
+                        latitude: ping.latitude, longitude: ping.longitude, placeName: ping.placeName
+                    )
+                }
+                return resolved
+            }
             await notifyIncomingPings(pings)
         } catch {
             AppLog.cloud.error("讀取安否回報失敗：\(error.localizedDescription)")
@@ -1015,6 +1081,7 @@ final class FamilySyncService {
         let defaults = UserDefaults.standard
         let seenKey = "seenSafetyPingIDs"
         let myName = defaults.string(forKey: SettingsKeys.profileDisplayName) ?? ""
+        let myUid = uid ?? ""
         let previouslySeen = defaults.stringArray(forKey: seenKey)
         let isFirstSync = previouslySeen == nil
         var seenSet = Set(previouslySeen ?? [])
@@ -1023,7 +1090,8 @@ final class FamilySyncService {
         for ping in latest where !seenSet.contains(ping.id) {
             seenSet.insert(ping.id)
             seenList.append(ping.id)
-            guard !isFirstSync, ping.senderName != myName else { continue }
+            let isMine = (!myUid.isEmpty && ping.senderUid == myUid) || (!myName.isEmpty && ping.senderName == myName)
+            guard !isFirstSync, !isMine else { continue }
             let (title, body): (String, String) = switch ping.status {
             case .safe:
                 ("\(ping.senderName)已回報平安",
@@ -1053,6 +1121,8 @@ final class FamilySyncService {
     /// 標記某則回報為「我已讀」（已讀回條）
     func markRead(pingID: String, readerName: String) async {
         guard let familyID = currentFamilyID else { return }
+        // 沒有真名就不寫已讀回條（寫空字串或佔位字都是髒資料）
+        guard !FamilyNaming.clean(readerName).isEmpty else { return }
         do {
             try await FirestoreFamilyBackend.markPingRead(
                 familyId: familyID,

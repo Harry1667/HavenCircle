@@ -48,8 +48,8 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
                 await postFeedback(title: "尚未登入", body: "請先打開 App 登入後再回報")
                 return
             }
-            let rawName = UserDefaults.standard.string(forKey: SettingsKeys.profileDisplayName) ?? ""
-            let senderName = rawName.isEmpty ? "我" : rawName
+            // 沒有真名就送空字串（不上傳「我」），家人端顯示「家人 N」
+            let senderName = FamilyNaming.ownUploadName()
             let success = await sync.postPing(
                 senderName: senderName,
                 status: quickStatus,
