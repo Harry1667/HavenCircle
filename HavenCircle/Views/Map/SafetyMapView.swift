@@ -82,7 +82,6 @@ struct SafetyMapView: View {
     // 用 @AppStorage 與設定頁共用同一旗標
     @AppStorage(SettingsKeys.alertsPaused) private var isPaused = false
     /// 點靜音鈕要先跳確認框才真的暫停；恢復不用確認（安全動作，越快越好）
-    @State private var showMuteConfirmation = false
 
     /// 圖例首次自動展開一次的旗標。刻意用字串常數放在這裡（不進 SettingsKeys）——
     /// 這是本檔專屬、跟其他設定無關的一次性 UI 提示旗標，沒有共用需求。
@@ -317,7 +316,6 @@ struct SafetyMapView: View {
                         memberPicker
                     }
                     filterMenu
-                    pauseButton
                     // 三個主分頁右上角統一放同一顆設定齒輪
                     Button("設定", systemImage: "gearshape") { router.showSettings = true }
                 }
@@ -1110,40 +1108,6 @@ struct SafetyMapView: View {
             }
         )
     }
-
-    /// 靜音鈕：暫停會關掉「所有」本機警報推播（含地震／海嘯／火災這類保命等級，
-    /// 目前系統沒有分級豁免——見 NotificationScheduler.scheduleAlert 的 `!paused` guard，
-    /// 一旦暫停就整個提前 return，沒有例外路徑）。誤觸的代價是「保命警報完全收不到」，
-    /// 所以暫停這個方向要先跳確認框講清楚後果；恢復提醒是安全動作，不需要確認、越快越好。
-    private var pauseButton: some View {
-        Button {
-            if isPaused {
-                withAnimation { isPaused = false }
-            } else {
-                showMuteConfirmation = true
-            }
-        } label: {
-            Label(isPaused ? "恢復提醒" : "暫停提醒",
-                  systemImage: isPaused ? "bell.slash.fill" : "bell.slash")
-        }
-        .tint(isPaused ? HCColor.attention : nil)
-        // 工具列圖示鈕預設只顯示 icon，文字會被吃掉——明確補一個無障礙標籤
-        .accessibilityLabel(isPaused ? "恢復提醒" : "暫停提醒")
-        .confirmationDialog(
-            "暫停警報提醒？",
-            isPresented: $showMuteConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("暫停提醒", role: .destructive) {
-                withAnimation { isPaused = true }
-                Analytics.track("map_alerts_paused") // 漏斗：從地圖靜音鈕真的按下暫停（危險動作，值得追蹤頻率）
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("暫停後，包括地震、海嘯、火災在內的所有警報都不會推播，直到你手動恢復。事件仍會顯示在地圖與提醒中心，只是手機不會跳通知或響鈴。")
-        }
-    }
-
     // MARK: - 浮層
 
     private var topOverlays: some View {
@@ -1171,7 +1135,7 @@ struct SafetyMapView: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// 靜音常駐提示：目前的暫停機制是手動 toggle，沒有時限（見 pauseButton 註解），
+    /// 靜音常駐提示：目前的暫停機制是手動 toggle，沒有時限（暫停開關在設定→提醒設定），
     /// 所以這裡不寫「至 XX:XX」——寫了就是對使用者說謊。點擊直接恢復，不必再跳確認框
     /// （恢復是安全動作）。
     private var mutedChip: some View {

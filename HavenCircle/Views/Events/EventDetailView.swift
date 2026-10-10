@@ -10,7 +10,7 @@ struct EventDetailView: View {
     @Environment(FamilySyncService.self) private var sync
     @AppStorage(SettingsKeys.profileDisplayName) private var profileName = ""
     @AppStorage(SettingsKeys.profileFamilyRole) private var familyRole = ""
-    @State private var showResolveConfirmation = false
+    @State private var aiExpanded = false
     @State private var checkInFeedback: String?
     /// 回報失敗／逾時的人話錯誤（見 FamilySyncService.humanPingErrorMessage）；
     /// 與 checkInFeedback 互斥，兩者任一顯示前都會清掉另一個
@@ -48,12 +48,13 @@ struct EventDetailView: View {
                 emergencySection
                 detailSection
                 whySection
-                aiImpactSection
                 checkInSection
                 infoSection
                 sourceTimelineSection
                 resourceSection
                 actionSection
+                // AI 分析非核心、需要網路：放最底並預設折疊
+                aiImpactSection
             }
             .listSectionSpacing(HCSpacing.x6)
             .navigationTitle(event.isDrill ? "【演練】\(event.title)" : event.title)
@@ -64,12 +65,6 @@ struct EventDetailView: View {
                 }
             }
             .presentationDragIndicator(.visible)
-            .confirmationDialog("將這則事件標記為本機已解除？", isPresented: $showResolveConfirmation) {
-                Button("確認標記", role: .destructive) { resolveLocally() }
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text("這只會更新此裝置的顯示與解除通知，不會改變官方來源。")
-            }
             .onAppear {
                 // 重開同一事件時，若行程內已有分析結果就直接顯示，不再打 AI
                 if aiImpact == nil { aiImpact = AIImpactCache.store[impactCacheKey] }
@@ -103,47 +98,49 @@ struct EventDetailView: View {
     @ViewBuilder
     private var aiImpactSection: some View {
         Section {
-            if let aiImpact {
-                Text(aiImpact)
-                    .font(.subheadline)
-                    .textSelection(.enabled)
-                Text("AI 生成，僅供參考，不取代官方指示；有立即危險請直接撥 119 或 110。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Button {
-                    Task { await runImpactAnalysis(force: true) }
-                } label: {
-                    Label("重新分析", systemImage: "arrow.clockwise")
-                        .frame(maxWidth: .infinity)
-                }
-                .font(.caption)
-                .disabled(aiImpactLoading)
-            } else {
-                Button {
-                    Task { await runImpactAnalysis(force: false) }
-                } label: {
-                    HStack {
-                        Spacer()
-                        Label("AI 分析：這起事件對我的影響", systemImage: "sparkles")
-                            .foregroundStyle(HCColor.brand)
-                        if aiImpactLoading {
-                            ProgressView()
-                        }
-                        Spacer()
+            DisclosureGroup(isExpanded: $aiExpanded) {
+                if let aiImpact {
+                    Text(aiImpact)
+                        .font(.subheadline)
+                        .textSelection(.enabled)
+                    Text("AI 生成，僅供參考，不取代官方指示；有立即危險請直接撥 119 或 110。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Button {
+                        Task { await runImpactAnalysis(force: true) }
+                    } label: {
+                        Label("重新分析", systemImage: "arrow.clockwise")
+                            .frame(maxWidth: .infinity)
                     }
-                }
-                .disabled(aiImpactLoading)
-            }
-            if let aiImpactError {
-                Text(aiImpactError)
                     .font(.caption)
-                    .foregroundStyle(HCColor.danger)
-            }
-        } header: {
-            Text("AI 影響分析")
-        } footer: {
-            if aiImpact == nil && !aiImpactLoading {
-                Text("依你設定的警戒圈與這起事件的位置、類型，產生個人化的影響說明。")
+                    .disabled(aiImpactLoading)
+                } else {
+                    Text("依你設定的警戒圈與這起事件的位置、類型，產生個人化的影響說明。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button {
+                        Task { await runImpactAnalysis(force: false) }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Label("開始分析", systemImage: "sparkles")
+                                .foregroundStyle(HCColor.brand)
+                            if aiImpactLoading {
+                                ProgressView()
+                            }
+                            Spacer()
+                        }
+                    }
+                    .disabled(aiImpactLoading)
+                }
+                if let aiImpactError {
+                    Text(aiImpactError)
+                        .font(.caption)
+                        .foregroundStyle(HCColor.danger)
+                }
+            } label: {
+                Label("AI 分析：這起事件對我的影響", systemImage: "sparkles")
+                    .font(.subheadline)
             }
         }
     }
@@ -684,19 +681,7 @@ struct EventDetailView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if !event.isEnded {
-                Button("回報此事件在我這裡已解除") {
-                    showResolveConfirmation = true
-                }
-            }
         }
-    }
-
-    private func resolveLocally() {
-        event.resolve()
-        context.saveReporting()
-        Task { await NotificationScheduler.notifyResolved(for: event) }
-        dismiss()
     }
 
     private func localizedDate(_ date: Date) -> String {
