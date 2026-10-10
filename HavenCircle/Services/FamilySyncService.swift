@@ -403,7 +403,7 @@ final class FamilySyncService {
                 displayName: trimmedName,
                 latitude: anchor.coordinate.latitude,
                 longitude: anchor.coordinate.longitude,
-                radiusMeters: max(300, min(radiusMeters, 3_000)),
+                radiusMeters: max(300, min(radiusMeters, 5_000)),
                 district: district,
                 stationarySince: stationarySince
             )
@@ -436,6 +436,32 @@ final class FamilySyncService {
             radiusMeters: radiusMeters,
             context: context
         )
+    }
+
+    /// 警戒範圍可選值（公尺）：設定→提醒設定的選項，也是唯一調整警戒半徑的地方
+    /// （地圖上不再能拖圈或開滑桿）。
+    static let alertRadiusOptions = [500, 1_000, 2_000, 3_000, 5_000]
+
+    /// 套用新的警戒範圍：寫入既有的半徑欄位（liveCircleRadiusMeters 與本人所有即時圈的 radiusMeters），
+    /// 立即讓地圖圈與警報判斷（AlertPolicy 讀 circle.radiusMeters、FCM 行政區訂閱）吃到新值；
+    /// 分享中則重新上傳一次，讓家人看到的圈也同步變大變小。
+    func applyAlertRadius(_ meters: Int, context: ModelContext) async {
+        UserDefaults.standard.set(meters, forKey: SettingsKeys.liveCircleRadiusMeters)
+        let circles = (try? context.fetch(FetchDescriptor<LocalLifeCircle>())) ?? []
+        var changed = false
+        for circle in circles where circle.member?.isCurrentUser == true
+            && (circle.isFollowMe || circle.kind == .live) && circle.radiusMeters != meters {
+            circle.radiusMeters = meters
+            changed = true
+        }
+        if changed { context.saveReporting() }
+        FCMTopicSync.sync(circles: circles)
+        if changed { await EventPipeline.refresh(context: context) }
+        if UserDefaults.standard.bool(forKey: SettingsKeys.liveLocationSharingEnabled),
+           let location = await LocationService.shared.currentLocation() {
+            await publishLiveLocation(location, displayName: displayName, radiusMeters: meters, context: context)
+        }
+        Analytics.track("circle_adjusted") // 漏斗：調整了警戒範圍
     }
 
     /// 停止分享：標記雲端記錄停用，並清掉本機自己的即時圈。

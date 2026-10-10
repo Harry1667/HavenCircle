@@ -24,13 +24,10 @@ struct LiveCircleSharingSection: View {
                 }
 
             if isSharing {
-                Stepper(
-                    "警戒半徑：\(radiusMeters) 公尺",
-                    value: $radiusMeters,
-                    in: 300...3_000,
-                    step: 100
-                )
-                .disabled(isWorking)
+                // 警戒半徑改到「設定 > 提醒設定 > 警戒範圍」調整，這裡只顯示目前值
+                Text("警戒範圍：\(radiusMeters >= 1_000 ? String(format: "%g 公里", Double(radiusMeters) / 1_000) : "\(radiusMeters) 公尺")（可在設定 > 提醒設定調整）")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 HStack {
                     Label(

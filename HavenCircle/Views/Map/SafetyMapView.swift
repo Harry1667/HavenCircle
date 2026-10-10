@@ -50,24 +50,12 @@ struct SafetyMapView: View {
     /// 鏡頭明確框住生活圈（不能用 .automatic——它會框住所有內容，
     /// 加了全台塗層後開圖會變成全台灣視角，失去「聚焦自家」的預設）
     @State private var cameraPosition: MapCameraPosition = .region(Self.taiwanWideRegion)
-    /// 目前「半徑調整面板」開著的圈（circleKey）；nil＝面板關閉。
-    /// 點自己的圈標記開啟／收起面板——底部滑桿取代舊的拖曳把手
-    /// （2026-07-23 使用者實測裁決：拖曳跟地圖平移手勢打架、圈大時把手在螢幕邊緣、讀數膠囊被切）。
-    @State private var adjustingCircleKey: String?
-    /// 面板滑桿拖動中的即時預覽半徑（公尺）；只有放手／按「完成」才寫回 SwiftData，
-    /// 避免每個 tick 都觸發存檔。進入調整模式時以該圈目前的 radiusMeters 初始化。
-    @State private var previewRadiusMeters: Double = 1_000
     /// 地圖的具名座標空間：guidance 脈動圈換算螢幕直徑要用 proxy.convert（見 circleScreenDiameter）
     private static let mapSpace = "safetyMapSpace"
     /// 跨縣市以上視野改顯示數字叢集，避免全國尺度的事件標記互相遮擋。
     private static let eventClusterZoomThreshold: CLLocationDegrees = 1.5
     /// 每個方向切成八格，兼顧叢集密度與線性分組成本。
     private static let eventClusterGridDivisions = 8
-    /// 「警戒圈可拖動調整」的提示：第一次點開事件、關掉詳情後顯示一次（不在帶領卡就先講）
-    @AppStorage(SettingsKeys.seenCircleAdjustHint) private var seenCircleAdjustHint = false
-    @State private var showCircleAdjustHint = false
-    /// 這次點開的事件關掉後，是否要接著顯示拖圈提示
-    @State private var pendingCircleAdjustHint = false
     /// 第一次進地圖的「目標自己動」帶領：0＝脈動你的警戒圈，1＝脈動附近事件，nil＝結束（幾乎不用文字）
     @AppStorage(SettingsKeys.firstRunCoachingPending) private var firstRunCoachingPending = false
     @State private var guidanceStep: Int?
@@ -281,16 +269,6 @@ struct SafetyMapView: View {
                     guard !Task.isCancelled else { return }
                     withAnimation(.easeInOut(duration: 0.2)) { isLegendExpanded = false }
                 }
-                #if DEBUG
-                // 截圖用：--adjust-circle 自動打開自己圈的半徑調整面板（headless 無法點圈觸發）
-                .task {
-                    guard ProcessInfo.processInfo.arguments.contains("--adjust-circle") else { return }
-                    try? await Task.sleep(for: .milliseconds(500))
-                    guard let mine = visibleCircles.first(where: { $0.member?.isCurrentUser == true }) else { return }
-                    previewRadiusMeters = Double(mine.radiusMeters)
-                    adjustingCircleKey = mine.circleKey
-                }
-                #endif
                 .overlay(alignment: .top) {
                     topOverlays
                 }
@@ -299,13 +277,8 @@ struct SafetyMapView: View {
                 .overlay(alignment: .bottomLeading) {
                     legendPanel
                 }
-                // 半徑調整面板開著時取代附近卡片列（同一個 safe area 插槽，天然避開分頁列與事件卡片列）
                 .safeAreaInset(edge: .bottom) {
-                    if adjustingCircleKey != nil {
-                        circleAdjustPanel
-                    } else {
-                        nearbyStrip
-                    }
+                    nearbyStrip
                 }
                 .navigationTitle("地圖")
                 .navigationBarTitleDisplayMode(.inline)
@@ -339,27 +312,6 @@ struct SafetyMapView: View {
                         .presentationDragIndicator(.visible)
                         // iPad 會忽略 presentationDetents 而放大成整頁 sheet，這裡收斂成 form 尺寸
                         .formPresentationSizing()
-                }
-                // 點事件才教拖圈：點開事件詳情、關掉後，第一次跳一張拖圈提示
-                .onChange(of: selected) { oldValue, newValue in
-                    if newValue != nil {
-                        if !seenCircleAdjustHint { pendingCircleAdjustHint = true }
-                    } else if oldValue != nil, pendingCircleAdjustHint {
-                        pendingCircleAdjustHint = false
-                        seenCircleAdjustHint = true
-                        Analytics.track("circle_adjust_hint_shown") // 漏斗：拖圈教學出現
-                        withAnimation { showCircleAdjustHint = true }
-                    }
-                }
-                .overlay {
-                    if showCircleAdjustHint {
-                        CoachCard(
-                            icon: "hand.draw.fill",
-                            text: "點你的警戒圈，可以調整範圍",
-                            progress: nil,
-                            onTap: { withAnimation { showCircleAdjustHint = false } }
-                        )
-                    }
                 }
                 // 帶領進行中：全螢幕透明層接住點擊往下一段，底部一個小小「輕點繼續」
                 .overlay {
@@ -494,14 +446,9 @@ struct SafetyMapView: View {
                         isCurrentUser: circle.member?.isCurrentUser == true
                     )
                     let renderedColor = circle.isActiveForAlerts ? circleColor : Color.gray
-                    // 調整面板開著時，這顆圈即時吃滑桿預覽值（放手前不寫回 SwiftData）；
-                    // 沒在調整就照常顯示已存檔的半徑
-                    let displayRadius = adjustingCircleKey == circle.circleKey
-                        ? previewRadiusMeters
-                        : Double(circle.radiusMeters)
                     MapCircle(
                         center: .init(latitude: circle.latitude, longitude: circle.longitude),
-                        radius: CLLocationDistance(displayRadius)
+                        radius: CLLocationDistance(circle.radiusMeters)
                     )
                     .foregroundStyle(renderedColor.opacity(0.08))
                     .stroke(renderedColor.opacity(0.5), lineWidth: 1.5)
@@ -543,16 +490,6 @@ struct SafetyMapView: View {
                         .accessibilityLabel(
                             "\(circleLabelText(circle))，\(circleKindAccessibilityText(circle.kind))，警戒半徑 \(circle.radiusMeters) 公尺，\(circle.locationFreshnessText)"
                         )
-                        // 點自己的圈＝開啟／收起底部半徑調整面板
-                        .onTapGesture {
-                            guard circle.member?.isCurrentUser == true else { return }
-                            if adjustingCircleKey == circle.circleKey {
-                                finishAdjustingCircle()
-                            } else {
-                                previewRadiusMeters = Double(circle.radiusMeters)
-                                withAnimation(.easeInOut(duration: 0.2)) { adjustingCircleKey = circle.circleKey }
-                            }
-                        }
                     }
                     // 名字 chip 已經內建在標記內容裡，MapKit 內建標題文字不需要重複再畫一次
                     .annotationTitles(.hidden)
@@ -774,14 +711,8 @@ struct SafetyMapView: View {
         }
         // 具名座標空間：guidance 脈動圈換算螢幕直徑要用 proxy.convert（見 circleScreenDiameter）
         .coordinateSpace(.named(Self.mapSpace))
-        // 調整面板開著時，點地圖其他處＝存檔＋收起面板；圖例展開時，點地圖其他處＝收合圖例。
-        // 兩者共用同一個 onTapGesture，只加在各自模式成立時才動作，
-        // 不影響平時的地圖平移／縮放手勢，也不吃大頭針/標註本身的點擊（onTapGesture 不吃 pan/pinch，
-        // 且標註自己的手勢辨識優先於地圖底層這個 tap，實測與既有的調整面板收合邏輯一致）
+        // 圖例展開時，點地圖其他處＝收合圖例（不影響平移／縮放，也不吃標註本身的點擊）
         .onTapGesture {
-            if adjustingCircleKey != nil {
-                finishAdjustingCircle()
-            }
             if isLegendExpanded {
                 withAnimation(.easeInOut(duration: 0.2)) { isLegendExpanded = false }
             }
@@ -795,78 +726,6 @@ struct SafetyMapView: View {
         let metersPerDegLon = 111_320 * max(cos(latRad), 0.01)
         let deltaLon = Double(circle.radiusMeters) / metersPerDegLon
         return CLLocationCoordinate2D(latitude: circle.latitude, longitude: circle.longitude + deltaLon)
-    }
-
-    // MARK: - 底部半徑調整面板（Find My 地理圍欄式，取代舊拖曳把手）
-
-    /// 收起調整面板：半徑真的變了才寫回 SwiftData＋記漏斗事件，避免「開了面板但沒動滑桿」也算一次調整、
-    /// 也避免沒變更卻多一次沒必要的存檔。不論是按「完成」、點地圖其他處、或再點一次自己的圈都會走這條路。
-    private func finishAdjustingCircle() {
-        if let key = adjustingCircleKey,
-           let circle = visibleCircles.first(where: { $0.circleKey == key }) {
-            let newValue = Int(previewRadiusMeters)
-            if circle.radiusMeters != newValue {
-                circle.radiusMeters = newValue
-                modelContext.saveReporting()
-                Analytics.track("circle_adjusted") // 漏斗：真的調整了警戒圈半徑
-            }
-        }
-        withAnimation(.easeInOut(duration: 0.2)) { adjustingCircleKey = nil }
-    }
-
-    /// 半徑讀數格式化：>=1000 公尺顯示公里（一位小數），沿用事件卡片距離讀數的既有格式慣例
-    private static func radiusDisplayText(_ meters: Int) -> String {
-        meters >= 1000
-            ? String(format: "%.1f 公里", Double(meters) / 1_000)
-            : "\(meters) 公尺"
-    }
-
-    /// 底部滑桿面板：拖滑桿即時改 previewRadiusMeters（地圖上的圈跟著即時縮放），
-    /// 放手不會存檔——真正寫入 SwiftData 的時機只有 finishAdjustingCircle。
-    @ViewBuilder
-    private var circleAdjustPanel: some View {
-        if let key = adjustingCircleKey, let circle = visibleCircles.first(where: { $0.circleKey == key }) {
-            VStack(spacing: HCSpacing.x3) {
-                HStack(spacing: HCSpacing.x3) {
-                    Image(systemName: "scope")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(HCColor.brand)
-                        .frame(width: HCSpacing.x6 + HCSpacing.x3, height: HCSpacing.x6 + HCSpacing.x3)
-                        .background(HCColor.brand.opacity(0.10), in: Circle())
-                    VStack(alignment: .leading, spacing: HCSpacing.x1) {
-                        Text(circle.name)
-                            .font(.body.weight(.semibold))
-                            .lineLimit(1)
-                        Text("警戒半徑")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: HCSpacing.x3)
-                    Button("完成") { finishAdjustingCircle() }
-                        .font(.subheadline.weight(.medium))
-                }
-                Text(Self.radiusDisplayText(Int(previewRadiusMeters)))
-                    .font(.title2.weight(.bold))
-                    .contentTransition(.numericText())
-                    .accessibilityHidden(true)
-                Slider(value: $previewRadiusMeters, in: 200...5_000, step: 100)
-                    .tint(HCColor.brand)
-                    .accessibilityLabel("警戒半徑")
-                    .accessibilityValue(Self.radiusDisplayText(Int(previewRadiusMeters)))
-            }
-            .padding(HCSpacing.x4)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: HCRadius.card, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: HCRadius.card, style: .continuous)
-                    .stroke(HCColor.brand.opacity(0.16), lineWidth: 1)
-            )
-            .padding(.horizontal, HCSpacing.x4)
-            .padding(.bottom, HCSpacing.x2)
-            // iPad 上限制面板寬度並置中，外層仍貼底（safeAreaInset(edge: .bottom) 負責貼底，不受影響）
-            .frame(maxWidth: 500)
-            .frame(maxWidth: .infinity)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-        }
     }
 
     // MARK: - 第一次帶領（目標自己動、幾乎不用文字）

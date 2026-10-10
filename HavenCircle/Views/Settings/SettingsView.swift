@@ -1048,6 +1048,9 @@ private struct AlertSettingsView: View {
     @Query private var events: [LocalSafetyEvent]
     @Query private var members: [LocalFamilyMember]
     @Query private var circles: [LocalLifeCircle]
+    @Environment(FamilySyncService.self) private var sync
+    @Environment(\.modelContext) private var context
+    @AppStorage(SettingsKeys.liveCircleRadiusMeters) private var alertRadius = 1_000
     /// 「允許通知」按下後的結果（nil＝尚未按過）——按了沒反應等於壞掉，必須有可見回饋
     @State private var notificationGranted: Bool?
     /// 2026-07-24：關閉「災害警報通知」等於關掉所有保命警報，一滑就掉風險太高，
@@ -1108,6 +1111,18 @@ private struct AlertSettingsView: View {
                     .foregroundStyle(granted ? HCColor.safe : HCColor.attention)
                 }
             }
+            Section {
+                Picker("警戒範圍", selection: $alertRadius) {
+                    ForEach(FamilySyncService.alertRadiusOptions, id: \.self) { meters in
+                        Text(Self.radiusLabel(meters)).tag(meters)
+                    }
+                }
+                .accessibilityIdentifier("alertRadiusPicker")
+            } header: {
+                Text("警戒範圍")
+            } footer: {
+                Text("以你的位置為圓心，這個半徑內發生的事件才會提醒你。改了會立即套用到地圖上的圈與警報判斷；分享位置中時家人也會看到新的範圍。")
+            }
             Section("勿擾與吵醒") {
                 Picker("吵醒門檻", selection: $wakeThresholdRaw) {
                     ForEach(WakeThreshold.allCases) { level in
@@ -1165,6 +1180,16 @@ private struct AlertSettingsView: View {
         .analyticsScreen("alert_settings")
         // 摘要設定變更時立即重排通知
         .onChange(of: digestEnabled) { refreshDigest() }
+        // 警戒範圍：改了立即寫進本人的圈、重算警報並（分享中）重新上傳
+        .onChange(of: alertRadius) { _, newValue in
+            Task { await sync.applyAlertRadius(newValue, context: context) }
+        }
+        .onAppear {
+            // 以本人即時圈實際半徑為準（避免與舊版地圖調整後的值不一致），對齊到最近的選項
+            let current = circles.first { $0.member?.isCurrentUser == true && ($0.isFollowMe || $0.kind == .live) }?.radiusMeters ?? alertRadius
+            let nearest = FamilySyncService.alertRadiusOptions.min { abs($0 - current) < abs($1 - current) } ?? 1_000
+            if nearest != alertRadius { alertRadius = nearest }
+        }
         .onChange(of: digestHour) { refreshDigest() }
         // FCM 現在只負責無聲喚醒；停用或暫停時立即退訂，恢復時重訂目前有效生活圈。
         .onChange(of: alertsEnabled) { FCMTopicSync.sync(circles: circles) }
@@ -1180,6 +1205,10 @@ private struct AlertSettingsView: View {
         } message: {
             Text("關閉後，任何警報（包含火災、地震等保命警報）都不會再通知你。")
         }
+    }
+
+    private static func radiusLabel(_ meters: Int) -> String {
+        meters >= 1_000 ? String(format: "%g 公里", Double(meters) / 1_000) : "0.5 公里"
     }
 
     private func refreshDigest() {
