@@ -28,6 +28,9 @@ final class TabRouter {
     /// B2：QR／havencircle://join 深連結帶進來的邀請碼，交給家人頁消耗（開加入流程並預填）；
     /// 用過就清空，避免重新進到家人頁時被舊值誤觸發。
     var pendingJoinCode: String?
+    /// 通知深連結指定的家人回報（pingId）：家人頁會打開回報中心、捲到該則並短暫高亮，
+    /// 處理完（高亮結束或找不到）由回報中心清空。
+    var pendingPingID: String?
     /// 動態頁情境卡「新增守護地點」：切到家人頁後由 FamilyHomeView 消耗並開啟新增地點流程。
     var pendingAddPlace = false
 

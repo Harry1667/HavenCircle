@@ -7,6 +7,7 @@ import CoreLocation
 /// - 工具列：邀請家人加入家庭圈（CKShare）
 struct SafetyCheckInView: View {
     @Environment(FamilySyncService.self) private var sync
+    @Environment(TabRouter.self) private var router
     let myName: String
 
     @State private var showInviteOptions = false
@@ -22,9 +23,14 @@ struct SafetyCheckInView: View {
     /// 登入前置把關：未登入時先彈預告卡解釋「為什麼」，登入成功後自動接續原動作
     @State private var gate = SignInGate()
     @State private var nameGate = NamePromptGate()
+    /// 通知點進來要特別標示的那一則回報（短暫高亮，約 3 秒後消失）
+    @State private var highlightedPingID: String?
+    /// 正在送出「收到」的回報 ID（防連點）
+    @State private var ackingPingIDs: Set<String> = []
 
     var body: some View {
         // 由 FamilyHubView 承載（提供 NavigationStack 與分段切換）
+        ScrollViewReader { proxy in
         List {
             accountSection
             if sync.state == .sharing || !sync.pings.isEmpty {
@@ -32,6 +38,10 @@ struct SafetyCheckInView: View {
                 familyPingsSection
             }
         }
+        // 通知深連結：清單載入後（冷啟動要等 fetchPings）捲到該則並高亮
+        .onChange(of: sync.pings.map(\.id)) { _, _ in focusPendingPing(proxy) }
+        .onChange(of: router.pendingPingID) { _, _ in focusPendingPing(proxy) }
+        .onAppear { focusPendingPing(proxy) }
         .listSectionSpacing(HCSpacing.x6)
         .signInPreflight(gate)
         .analyticsScreen("check_in")
@@ -65,6 +75,20 @@ struct SafetyCheckInView: View {
             await sync.fetchPings()
         }
         .refreshable { await sync.fetchPings() }
+        }
+    }
+
+    /// 處理通知帶來的 pendingPingID：清單裡找得到就捲過去、高亮 3 秒並清掉待辦；
+    /// 找不到（已被清掉或尚未載入）就先保留，等下一次清單更新再試。
+    private func focusPendingPing(_ proxy: ScrollViewProxy) {
+        guard let id = router.pendingPingID, sync.pings.contains(where: { $0.id == id }) else { return }
+        router.pendingPingID = nil
+        withAnimation { proxy.scrollTo(id, anchor: .center) }
+        highlightedPingID = id
+        Task {
+            try? await Task.sleep(for: .seconds(3))
+            if highlightedPingID == id { highlightedPingID = nil }
+        }
     }
 
     @ViewBuilder
@@ -181,6 +205,9 @@ struct SafetyCheckInView: View {
             } else {
                 ForEach(sync.pings) { ping in
                     pingRow(ping)
+                        .id(ping.id)
+                        // 高亮不只靠顏色：同時有外框；通知帶來的那則才會有
+                        .listRowBackground(highlightedPingID == ping.id ? HCColor.brand.opacity(0.15) : nil)
                 }
             }
         }
@@ -229,14 +256,54 @@ struct SafetyCheckInView: View {
                             in: Capsule()
                         )
                 }
+                if !ping.ack.isEmpty {
+                    Label("\(sync.ackNames(of: ping).joined(separator: "、"))已收到", systemImage: "heart.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("pingRow.ackSummary")
+                }
+                // 他人的平安／求助回報可回「收到 ❤️」；「請回報平安」是請求，不是要確認的狀態
+                if !sync.isMine(ping) && ping.status != .pleaseReport {
+                    ackButton(ping)
+                }
             }
         }
         .padding(.vertical, HCSpacing.x1)
         .task {
             // 顯示他人回報時，自動標記我已讀（已讀回條）
-            if ping.senderName != myName && !ping.readBy.contains(myName) {
+            if !sync.isMine(ping) && !ping.readBy.contains(myName) {
                 await sync.markRead(pingID: ping.id, readerName: myName)
             }
+        }
+    }
+
+    /// 「收到 ❤️」按鈕；已按過改顯示「已回覆收到」（不可再按）
+    @ViewBuilder
+    private func ackButton(_ ping: SafetyPing) -> some View {
+        if sync.hasAcked(ping) {
+            Label("已回覆收到", systemImage: "heart.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(HCColor.brand)
+                .accessibilityIdentifier("pingRow.acked")
+        } else {
+            Button {
+                guard !ackingPingIDs.contains(ping.id) else { return }
+                ackingPingIDs.insert(ping.id)
+                Task {
+                    let ok = await sync.ackPing(pingID: ping.id)
+                    ackingPingIDs.remove(ping.id)
+                    if !ok { showSuccessBanner("沒有送出，請確認網路後再按一次") }
+                }
+            } label: {
+                Text("收到 ❤️")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, HCSpacing.x3)
+                    .frame(minHeight: 32)
+            }
+            .buttonStyle(.bordered)
+            .tint(HCColor.brand)
+            .disabled(ackingPingIDs.contains(ping.id))
+            .accessibilityIdentifier("pingRow.ackButton")
         }
     }
 

@@ -74,6 +74,7 @@ function fcm_access_token(): ?string {
 ///  - interruptionLevel：預設 time-sensitive；一般訊息（例如家人報平安）傳 'active'，不穿透專注模式
 function fcm_send(array $target, string $title, string $body, array $data = [], array $opts = []): array {
     $headers = ['apns-priority' => '10'];
+    // $opts['category']：APNs aps.category（通知互動按鈕分類），必須與 App 端 NotificationScheduler.registerCategories 登記的識別碼一致
     if (($opts['collapseId'] ?? '') !== '') { $headers['apns-collapse-id'] = substr((string)$opts['collapseId'], 0, 64); }
     $message = [
         'notification' => ['title' => $title, 'body' => $body],
@@ -82,6 +83,7 @@ function fcm_send(array $target, string $title, string $body, array $data = [], 
             'payload' => ['aps' => ['sound' => 'default', 'interruption-level' => $opts['interruptionLevel'] ?? 'time-sensitive']],
         ],
     ];
+    if (($opts['category'] ?? '') !== '') { $message['apns']['payload']['aps']['category'] = (string)$opts['category']; }
     if (!empty($data)) { $message['data'] = array_map('strval', $data); }
     $message = fcm_apply_target($message, $target);
     if ($message === null) {

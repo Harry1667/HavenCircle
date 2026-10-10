@@ -698,6 +698,38 @@ final class HavenCircleUITests: XCTestCase {
         XCTAssertTrue(ok && okHelp && okBack)
     }
 
+    /// 家人回報「收到 ❤️」：家人頁 → 回報平安 → 對最上面一則他人的回報按「收到 ❤️」（若存在），
+    /// 再看動態頁我平安卡的已送出狀態（有人收到時會顯示「XX已收到」）。只截圖與記錄，不強制斷言有他人回報。
+    func testPingAck() throws {
+        app.tabBars.buttons["家人"].firstMatch.tap(); sleep(3)
+        let checkIn = app.buttons["回報平安"].firstMatch
+        if checkIn.waitForExistence(timeout: 5) {
+            checkIn.tap(); sleep(3)
+            shot("回報中心")
+            let ackButton = app.buttons["pingRow.ackButton"].firstMatch
+            if ackButton.waitForExistence(timeout: 3) {
+                ackButton.tap(); sleep(3)
+                shot("按下收到後")
+                let acked = app.staticTexts["已回覆收到"].firstMatch.exists
+                attach(text: "已回覆收到=\(acked)", name: "收到結果")
+            } else {
+                // 沒有他人的回報（或都已回覆）：記錄現況，不算失敗
+                attach(text: "無可回覆的他人回報｜已回覆數=\(app.staticTexts.matching(identifier: "已回覆收到").count)", name: "收到結果")
+                shot("無可回覆的回報")
+            }
+            app.swipeDown(velocity: .fast); sleep(1)
+        } else {
+            attach(text: "找不到回報平安鈕（單人或未登入）", name: "收到結果")
+        }
+        app.tabBars.buttons["動態"].firstMatch.tap(); sleep(2)
+        app.swipeDown(); sleep(1)
+        let sent = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH '已告訴家人你'")).firstMatch
+        let hasSent = sent.waitForExistence(timeout: 3)
+        let ackSummary = app.staticTexts["quickSafe.ackSummary"].exists
+        shot("動態-我平安卡已送出狀態")
+        attach(text: "已送出狀態=\(hasSent) 有人收到=\(ackSummary)", name: "我平安卡-收到")
+    }
+
     /// 通知說明視窗：全新安裝（模擬器）新增第一個守護地點後，應先出現 App 內說明，按「開啟通知」才跳系統詢問
     func testNotificationPrimer() throws {
         sleep(2)

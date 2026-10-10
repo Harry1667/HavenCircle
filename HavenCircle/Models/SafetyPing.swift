@@ -42,6 +42,9 @@ struct SafetyPing: Identifiable {
     let longitude: Double?
     /// 位置的可讀描述（回報端反向地理編碼一次，例「台北市信義區」），家人不用看座標
     let placeName: String?
+    /// 「收到 ❤️」確認：uid → 名字（名字可能為空字串，顯示端以 resolvedName 補「家人 N」）。
+    /// 家人收到平安／求助回報後按「收到」寫入，回報者即可知道有人看到了；舊文件沒有這欄＝空
+    var ack: [String: String] = [:]
 
     var hasLocation: Bool { latitude != nil && longitude != nil }
 
@@ -53,6 +56,7 @@ struct SafetyPing: Identifiable {
         static let note = "note"
         static let createdAt = "createdAt"
         static let readBy = "readBy"
+        static let ack = "ack"
         static let latitude = "latitude"
         static let longitude = "longitude"
         static let placeName = "placeName"

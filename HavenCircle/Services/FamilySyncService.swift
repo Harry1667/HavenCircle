@@ -1142,7 +1142,8 @@ final class FamilySyncService {
                         senderName: ping.senderUid.isEmpty ? "家人" : resolvedName("", forUid: ping.senderUid),
                         senderUid: ping.senderUid, status: ping.status, note: ping.note,
                         createdAt: ping.createdAt, readBy: ping.readBy,
-                        latitude: ping.latitude, longitude: ping.longitude, placeName: ping.placeName
+                        latitude: ping.latitude, longitude: ping.longitude, placeName: ping.placeName,
+                        ack: ping.ack
                     )
                 }
                 return resolved
@@ -1188,7 +1189,10 @@ final class FamilySyncService {
             await NotificationScheduler.scheduleAlert(
                 title: title, body: body, id: "ping-\(ping.id)",
                 timeSensitive: urgent,
-                kind: "家人安否" // 家人安否視同重大：吵醒門檻設「僅重大」或安靜時段內仍會吵醒
+                kind: "家人安否", // 家人安否視同重大：吵醒門檻設「僅重大」或安靜時段內仍會吵醒
+                // 按鈕依回報狀態掛載（與伺服器推播 aps.category 一致）；userInfo 供點擊後導到該則回報
+                category: NotificationScheduler.pingCategory(for: ping.status),
+                userInfo: NotificationScheduler.pingUserInfo(pingID: ping.id, senderUid: ping.senderUid)
             )
         }
 
@@ -1211,6 +1215,41 @@ final class FamilySyncService {
         } catch {
             AppLog.cloud.error("更新安否回報已讀狀態失敗：\(error.localizedDescription)")
         }
+    }
+
+    /// 對家人的回報按「收到 ❤️」（通知按鈕與 App 內按鈕共用）。回傳是否成功，失敗原因進 log。
+    /// 不依賴 pings 已載入：背景通知按鈕冷啟動時可能還沒抓過清單，直接以 pingID 寫入。
+    @discardableResult
+    func ackPing(pingID: String) async -> Bool {
+        guard let familyID = currentFamilyID, let uid else { return false }
+        do {
+            try await FirestoreFamilyBackend.ackPing(
+                familyId: familyID, pingId: pingID, uid: uid, name: FamilyNaming.ownUploadName()
+            )
+            await fetchPings()
+            return true
+        } catch {
+            AppLog.cloud.error("回覆「收到」失敗：\(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// 這則回報有哪些人按了收到（已把名字補成「家人 N」並排序），給寄件者端顯示
+    func ackNames(of ping: SafetyPing) -> [String] {
+        ping.ack.map { resolvedName($0.value, forUid: $0.key) }.sorted()
+    }
+
+    /// 我是否已對這則回報按過收到
+    func hasAcked(_ ping: SafetyPing) -> Bool {
+        guard let uid else { return false }
+        return ping.ack[uid] != nil
+    }
+
+    /// 這則回報是不是我自己發的（以 uid 為準，舊資料才退回比對名字）
+    func isMine(_ ping: SafetyPing) -> Bool {
+        if let uid, !ping.senderUid.isEmpty { return ping.senderUid == uid }
+        let myName = FamilyNaming.ownUploadName()
+        return !myName.isEmpty && ping.senderName == myName
     }
 
     // MARK: - 全家共用守護地點（families/{fid}/places/{placeId}）

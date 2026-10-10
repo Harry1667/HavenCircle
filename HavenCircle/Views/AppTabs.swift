@@ -104,7 +104,7 @@ struct AppTabs: View {
         }
     }
 
-    /// havencircle://alerts[?event=<eventKey>]｜map｜family｜refresh｜havencircle://join?code=<8碼>
+    /// havencircle://alerts[?event=<eventKey>]｜map｜family｜ping?id=<pingId>｜refresh｜havencircle://join?code=<8碼>
     /// alerts/refresh 切到「動態」分頁，widget 與通知不用改 URL；
     /// 通知另帶 event 參數時，動態分頁會直接打開那一則的詳情。
     /// havencircle://join（B2）：QR code／分享連結掃到後，切到家人分頁並把邀請碼交給
@@ -117,6 +117,10 @@ struct AppTabs: View {
             router.openEvents()
         case "map": router.selection = TabRouter.mapTab
         case "family": router.selection = TabRouter.familyTab
+        case "ping":
+            // 家人回報通知：切到家人分頁，由家人頁開回報中心並捲到該則
+            router.pendingPingID = queryValue("id", from: url)
+            router.selection = TabRouter.familyTab
         case "join":
             router.pendingJoinCode = queryValue("code", from: url)
             router.selection = TabRouter.familyTab

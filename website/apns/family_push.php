@@ -4,6 +4,8 @@
 //  2) locationRequests：家人按「更新位置」→ 對被請求者發靜默 data message {type:locationRequest}
 //  1b) pings：家人報平安／需要協助（最近 10 分鐘）→ 推播給同家庭「其他成員」。
 //      App 也會在讀到新回報時發本機通知；兩邊都用 ping-<id> 當通知識別碼，系統會合併成一則
+//      通知帶 aps.category（互動按鈕）與 data{type,pingId,senderUid}（點擊後導到該則回報）。
+//  1c) pings 的 ack：家人按「收到 ❤️」（最近 24 小時建立的回報）→ 推播給寄件者「XX 已收到你的平安」。
 //  3) 自動喚醒：分享中（isSharing）的成員位置超過 20 分鐘沒更新，就對他發同一種靜默喚醒，
 //     補上「App 更新／重裝後背景定位停擺，直到使用者打開 App」的缺口。每人最多每 30 分鐘一次，
 //     狀態記在 data/family_wake_state.json。沒開分享的人不會被喚醒（尊重 opt-in）。
@@ -18,6 +20,7 @@ require_once __DIR__ . '/_firestore_lib.php';
 
 const FP_ARRIVAL_WINDOW = 600;      // 只看最近 10 分鐘的到達事件
 const FP_REQUEST_WINDOW = 600;      // 更新位置請求超過 10 分鐘就不再喚醒（App 端也會視為過期）
+const FP_ACK_WINDOW     = 86400;    // 「收到」確認只看最近 24 小時內建立的回報
 const FP_SEEN_KEEP      = 48 * 3600;
 const FP_SEEN_FILE      = __DIR__ . '/data/family_push_seen.json';
 const FP_WAKE_STALE     = 20 * 60;      // 位置超過 20 分鐘沒更新才自動喚醒
@@ -73,7 +76,7 @@ function fp_transient(array $r): bool {
     return $r['status'] === 0 || $r['status'] === 429 || $r['status'] >= 500;
 }
 
-$stat = ['arr' => 0, 'arrSent' => 0, 'ping' => 0, 'pingSent' => 0, 'req' => 0, 'reqSent' => 0, 'skipNoToken' => 0, 'fail' => 0, 'wake' => 0, 'wakeSent' => 0];
+$stat = ['arr' => 0, 'arrSent' => 0, 'ping' => 0, 'pingSent' => 0, 'req' => 0, 'reqSent' => 0, 'skipNoToken' => 0, 'fail' => 0, 'wake' => 0, 'wakeSent' => 0, 'ack' => 0, 'ackSent' => 0];
 $exit = 0;
 
 try {
@@ -132,7 +135,8 @@ try {
     // ---- 1b) 家人報平安 ----
     // 2026-10-11 實機：報平安原本只靠家人 App 自己讀到才發本機通知，App 被關掉時「需要協助」可能很久才被看到
     $pingFallback = false;
-    $pings = fs_group_query($token, 'pings', 'createdAt', $now - FP_ARRIVAL_WINDOW, $pingFallback);
+    // 一次撈 24 小時內的回報：1b 只處理其中 10 分鐘內的新回報，1c 看全部的 ack
+    $pings = fs_group_query($token, 'pings', 'createdAt', $now - FP_ACK_WINDOW, $pingFallback);
     if ($pingFallback) fs_log('提示：pings 的 collection group 索引（createdAt）未建，改為全撈後在 PHP 篩選；建議部署 firestore.indexes.json 以省讀取');
     foreach ($pings as $p) {
         $fid = $p['_family'];
@@ -153,7 +157,10 @@ try {
             case '請回報平安':   $title = "{$who}想確認你是否平安"; $body = "收到警報後，{$who}發起了平安確認；請開啟 App 回報你的狀態。"; break;
             default: continue 2;
         }
-        $opts = ['collapseId' => 'ping-' . $p['_id'], 'interruptionLevel' => $status === '我平安' ? 'active' : 'time-sensitive'];
+        // category 識別碼要與 App 端 NotificationScheduler 一致：
+        // 請回報平安→SAFETY_ALERT（回報我平安／尚未脫離危險）；我平安→FAMILY_PING_SAFE（收到）；其餘→FAMILY_PING_HELP（查看家人／收到）
+        $categoryFor = ['請回報平安' => 'SAFETY_ALERT', '我平安' => 'FAMILY_PING_SAFE', '尚未脫離危險' => 'FAMILY_PING_HELP', '需要協助' => 'FAMILY_PING_HELP'];
+        $opts = ['collapseId' => 'ping-' . $p['_id'], 'interruptionLevel' => $status === '我平安' ? 'active' : 'time-sensitive', 'category' => $categoryFor[$status]];
         foreach ($members as $uid => $m) {
             if ($uid === ($p['senderUid'] ?? '')) continue; // 不通知本人
             $key = "ping/$fid/{$p['_id']}/$uid";
@@ -167,13 +174,61 @@ try {
                 fs_log("[試跑] 會推播：family={$fid} → uid={$uid}｜{$title}｜{$body}");
                 continue;
             }
-            $r = fcm_send(['token' => $m['token']], $title, $body, ['type' => 'familyPing', 'pingId' => $p['_id']], $opts);
+            $r = fcm_send(['token' => $m['token']], $title, $body, ['type' => 'familyPing', 'pingId' => $p['_id'], 'senderUid' => (string)($p['senderUid'] ?? '')], $opts);
             if ($r['ok']) {
                 $stat['pingSent']++;
                 $seen[$key] = $now; $changed = true;
             } else {
                 $stat['fail']++;
                 fs_log("報平安推播失敗：family={$fid} uid={$uid} status={$r['status']} 原因={$r['error']}");
+                if (!fp_transient($r)) { $seen[$key] = $now; $changed = true; }
+            }
+        }
+    }
+
+    // ---- 1c) 家人按「收到 ❤️」→ 通知寄件者 ----
+    // ack 是 map：uid → 名字。每個 (回報, 確認者) 只推一次（seen 鍵 ack/<fid>/<pingId>/<uid>）。
+    foreach ($pings as $p) {
+        $fid = $p['_family'];
+        if ($fid === null) continue;
+        if (($p['createdAt'] ?? 0) < $now - FP_ACK_WINDOW) continue;
+        $ack = $p['ack'] ?? null;
+        if (!is_array($ack) || count($ack) === 0) continue;
+        $status = (string)($p['status'] ?? '');
+        if (!in_array($status, ['我平安', '尚未脫離危險', '需要協助'], true)) continue;
+        $senderUid = (string)($p['senderUid'] ?? '');
+        if ($senderUid === '') continue;
+        $members = fp_members($token, $fid);
+        $target = $members[$senderUid] ?? null;
+        foreach ($ack as $ackUid => $ackName) {
+            $ackUid = (string)$ackUid;
+            if ($ackUid === $senderUid) continue; // 自己對自己按收到不通知
+            $key = "ack/$fid/{$p['_id']}/$ackUid";
+            if (isset($seen[$key])) continue;
+            $stat['ack']++;
+            if ($target === null || $target['token'] === '') {
+                $stat['skipNoToken']++;
+                $seen[$key] = $now; $changed = true;
+                continue;
+            }
+            $who = trim((string)$ackName);
+            if ($who === '') $who = trim((string)($members[$ackUid]['name'] ?? ''));
+            if ($who === '') $who = '家人';
+            $title = $status === '我平安' ? "{$who}已收到你的平安" : "{$who}已看到你的回報";
+            $body = '對方知道你的狀況了。';
+            if ($dryRun) {
+                fs_log("[試跑] 會推播收到：family={$fid} → 寄件者 uid={$senderUid}｜{$title}");
+                continue;
+            }
+            $r = fcm_send(['token' => $target['token']], $title, $body,
+                ['type' => 'familyPing', 'pingId' => $p['_id'], 'senderUid' => $senderUid],
+                ['collapseId' => 'ack-' . $p['_id'] . '-' . $ackUid, 'interruptionLevel' => 'active']);
+            if ($r['ok']) {
+                $stat['ackSent']++;
+                $seen[$key] = $now; $changed = true;
+            } else {
+                $stat['fail']++;
+                fs_log("收到確認推播失敗：family={$fid} uid={$senderUid} status={$r['status']} 原因={$r['error']}");
                 if (!fp_transient($r)) { $seen[$key] = $now; $changed = true; }
             }
         }
@@ -254,7 +309,7 @@ try {
     exit(1);
 }
 
-fs_log(sprintf('到達事件 %d（已推 %d）｜報平安 %d（已推 %d）｜更新位置請求 %d（已喚醒 %d）｜自動喚醒 %d（已發 %d）｜無權杖略過 %d｜失敗 %d%s',
-    $stat['arr'], $stat['arrSent'], $stat['ping'], $stat['pingSent'], $stat['req'], $stat['reqSent'], $stat['wake'], $stat['wakeSent'], $stat['skipNoToken'], $stat['fail'],
+fs_log(sprintf('到達事件 %d（已推 %d）｜報平安 %d（已推 %d）｜收到確認 %d（已推 %d）｜更新位置請求 %d（已喚醒 %d）｜自動喚醒 %d（已發 %d）｜無權杖略過 %d｜失敗 %d%s',
+    $stat['arr'], $stat['arrSent'], $stat['ping'], $stat['pingSent'], $stat['ack'], $stat['ackSent'], $stat['req'], $stat['reqSent'], $stat['wake'], $stat['wakeSent'], $stat['skipNoToken'], $stat['fail'],
     $dryRun ? '｜試跑，未發送' : ''));
 exit($exit);

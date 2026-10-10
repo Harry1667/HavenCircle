@@ -13,6 +13,30 @@ enum NotificationScheduler {
     static let actionReportDanger = "REPORT_DANGER"
     static let actionAskSafe = "ASK_SAFE"
 
+    /// 家人回報通知的互動分類（本機通知與伺服器 FCM 的 aps.category 必須用同一組字串，
+    /// 改這裡要同步改 website/apns/family_push.php 的 $categoryFor）：
+    /// - 「請回報平安」→ 沿用 safetyAlertCategory（回報我平安／尚未脫離危險）
+    /// - 家人回報「我平安」→ FAMILY_PING_SAFE（收到 ❤️）
+    /// - 家人回報「尚未脫離危險」「需要協助」→ FAMILY_PING_HELP（查看家人／收到 ❤️）
+    static let pingSafeCategory = "FAMILY_PING_SAFE"
+    static let pingHelpCategory = "FAMILY_PING_HELP"
+    static let actionAckPing = "ACK_PING"
+    static let actionViewFamily = "VIEW_FAMILY"
+
+    /// 某狀態的回報通知該掛哪個分類
+    static func pingCategory(for status: SafetyStatus) -> String {
+        switch status {
+        case .pleaseReport: safetyAlertCategory
+        case .safe: pingSafeCategory
+        case .inDanger, .needHelp: pingHelpCategory
+        }
+    }
+
+    /// 回報通知的 userInfo：與伺服器 FCM data 欄位同名，點擊時 NotificationDelegate 靠它導到該則回報
+    static func pingUserInfo(pingID: String, senderUid: String) -> [String: String] {
+        ["type": "familyPing", "pingId": pingID, "senderUid": senderUid]
+    }
+
     /// 通知互動型態（依「事件打在誰的圈」決定）
     enum AlertInteraction {
         case selfReport   // 我的圈：回報我平安／尚未脫離危險
@@ -47,7 +71,32 @@ enum NotificationScheduler {
             actions: [ask],
             intentIdentifiers: []
         )
-        UNUserNotificationCenter.current().setNotificationCategories([selfCategory, familyCategory])
+        // 家人回報平安：一鍵回「收到 ❤️」，不開 App
+        let ack = UNNotificationAction(
+            identifier: actionAckPing,
+            title: "收到 ❤️",
+            options: [] // 背景寫入確認
+        )
+        let safePingCategory = UNNotificationCategory(
+            identifier: Self.pingSafeCategory,
+            actions: [ack],
+            intentIdentifiers: []
+        )
+        // 家人求助／未脫離危險：查看家人（開 App 到那則回報）＋收到 ❤️（讓對方知道有人看到）。
+        // 刻意不放撥號：App 沒有儲存成員電話（見 AGENTS.md 的資料最小化原則）
+        let view = UNNotificationAction(
+            identifier: actionViewFamily,
+            title: "查看家人",
+            options: [.foreground]
+        )
+        let helpPingCategory = UNNotificationCategory(
+            identifier: Self.pingHelpCategory,
+            actions: [view, ack],
+            intentIdentifiers: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories(
+            [selfCategory, familyCategory, safePingCategory, helpPingCategory]
+        )
     }
     static func requestPermission() async -> Bool {
         do {
@@ -73,7 +122,9 @@ enum NotificationScheduler {
         eventKey: String? = nil,
         interaction: AlertInteraction = .none,
         timeSensitive: Bool = false,
-        kind: String? = nil
+        kind: String? = nil,
+        category: String? = nil,
+        userInfo extraUserInfo: [String: String] = [:]
     ) async {
         let defaults = UserDefaults.standard
         // alertsEnabled 預設值為 true（鍵不存在時視為啟用），alertsPaused 預設 false
@@ -94,15 +145,17 @@ enum NotificationScheduler {
         content.title = title
         content.body = body
         content.sound = .default
-        if let eventKey {
-            content.userInfo = ["eventKey": eventKey]
-        }
+        var userInfo: [String: String] = extraUserInfo
+        if let eventKey { userInfo["eventKey"] = eventKey }
+        if !userInfo.isEmpty { content.userInfo = userInfo }
         // 互動按鈕依事件主角掛載；提醒級災害（高溫、降雨…）不掛
         switch interaction {
         case .selfReport: content.categoryIdentifier = safetyAlertCategory
         case .familyCheck: content.categoryIdentifier = familyCheckCategory
         case .none: break
         }
+        // 明確指定的分類優先（家人回報通知用）
+        if let category { content.categoryIdentifier = category }
         // 危險級（火災、械鬥、地震、海嘯、颱風）用時效性通知：可突破專注模式、鎖屏置頂。
         // 提醒級維持一般層級，避免高溫特報也吵到勿擾中的使用者。
         // 是否「真的」能突破再交給 effectiveTimeSensitive 收斂（吵醒門檻／安靜時段／個別靜音）

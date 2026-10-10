@@ -20,7 +20,34 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        let eventKey = response.notification.request.content.userInfo["eventKey"] as? String
+        let userInfo = response.notification.request.content.userInfo
+        let eventKey = userInfo["eventKey"] as? String
+        // 家人回報通知（本機與 FCM 推播都帶 type=familyPing、pingId、senderUid）
+        let isFamilyPing = (userInfo["type"] as? String) == "familyPing"
+        let pingID = userInfo["pingId"] as? String
+
+        // 「收到 ❤️」：背景寫入確認、不開 App，結果用本機通知回饋（成功與失敗都要讓人知道）
+        if response.actionIdentifier == NotificationScheduler.actionAckPing {
+            guard let pingID, !pingID.isEmpty else {
+                await postFeedback(title: "⚠️ 沒有送出收到", body: "找不到這則回報，請打開 App 查看")
+                return
+            }
+            guard let sync = AppRuntime.familySync else {
+                await postFeedback(title: "⚠️ 沒有送出收到", body: "請打開 App 後再回覆一次")
+                return
+            }
+            guard await MainActor.run(body: { AuthService.shared.uid }) != nil else {
+                await postFeedback(title: "尚未登入", body: "請先打開 App 登入後再回覆")
+                return
+            }
+            await MainActor.run { Analytics.track("ping_ack_from_notification") }
+            if await sync.ackPing(pingID: pingID) {
+                await postFeedback(title: "❤️ 已回覆收到", body: "對方會知道你看到了")
+            } else {
+                await postFeedback(title: "⚠️ 收到可能未送出", body: "請打開 App 確認網路後再按一次")
+            }
+            return
+        }
 
         // 快速按鈕（長按警報通知）：不開 App、直接寫入回報／發起確認並同步家庭圈。
         // 我的圈出事＝回報自己；家人的圈出事＝發「請回報平安」的確認請求。
@@ -66,6 +93,18 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         await MainActor.run {
             // 匿名統計：通知被點開＝提醒真的有被看（只記次數，不記事件內容）
             Analytics.track("notification_opened")
+            // 家人回報通知（點通知本體或「查看家人」）：導到家人頁那一則回報
+            if isFamilyPing, let pingID, !pingID.isEmpty {
+                var pingComponents = URLComponents()
+                pingComponents.scheme = "havencircle"
+                pingComponents.host = "ping"
+                pingComponents.queryItems = [URLQueryItem(name: "id", value: pingID)]
+                if let pingURL = pingComponents.url {
+                    DeepLinkStore.pending = pingURL
+                    NotificationCenter.default.post(name: .didReceiveDeepLink, object: pingURL)
+                    return
+                }
+            }
             // 用 URLComponents 組網址：eventKey 來自資料源（可能含空格或非 ASCII），要正確編碼
             var components = URLComponents()
             components.scheme = "havencircle"

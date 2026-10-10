@@ -908,6 +908,25 @@ enum FirestoreFamilyBackend {
             ])
     }
 
+    /// 對某則回報按「收到 ❤️」：寫入 `ack.<自己的 uid>` = 名字（map 欄位，同一人重按只是覆寫，天然去重）。
+    /// 用 FieldPath 組路徑而不是字串 "ack.\(uid)"，避免 uid 含特殊字元被誤切。
+    /// 8 秒逾時保護：背景通知按鈕離線時 updateData 會一直等伺服器確認，不能讓動作懸著。
+    static func ackPing(familyId: String, pingId: String, uid: String, name: String) async throws {
+        let db = FirestoreConfig.store()
+        let ref = db.collection(FirestoreConfig.Path.families).document(familyId)
+            .collection(FirestoreConfig.Path.pings).document(pingId)
+        let fields: [AnyHashable: Any] = [FieldPath(["ack", uid]): FamilyNaming.clean(name)]
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { try await ref.updateData(fields) }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 8_000_000_000)
+                throw SafetyPingTimeoutError()
+            }
+            _ = try await group.next()
+            group.cancelAll()
+        }
+    }
+
     // MARK: - 文件 → struct
 
     private static func family(from doc: DocumentSnapshot) -> FamilyCircleDoc? {
@@ -985,7 +1004,8 @@ enum FirestoreFamilyBackend {
             readBy: data["readBy"] as? [String] ?? [],
             latitude: data["latitude"] as? Double,
             longitude: data["longitude"] as? Double,
-            placeName: (data["placeName"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            placeName: (data["placeName"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+            ack: data["ack"] as? [String: String] ?? [:]
         )
     }
 }

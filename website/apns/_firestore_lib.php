@@ -70,6 +70,12 @@ function fs_value(array $v) {
     if (isset($v['doubleValue'])) return (float)$v['doubleValue'];
     if (isset($v['booleanValue'])) return (bool)$v['booleanValue'];
     if (isset($v['nullValue'])) return null;
+    // map 欄位（例如 pings 的 ack：uid → 名字）→ 關聯陣列；空 map 沒有 fields 鍵
+    if (isset($v['mapValue'])) {
+        $m = [];
+        foreach ($v['mapValue']['fields'] ?? [] as $mk => $mv) $m[$mk] = fs_value($mv);
+        return $m;
+    }
     return null;
 }
 

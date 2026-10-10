@@ -8,6 +8,7 @@ import SwiftData
 struct FamilyHubView: View {
     let myName: String
     @Environment(FamilySyncService.self) private var sync
+    @Environment(TabRouter.self) private var router
     @Query private var members: [LocalFamilyMember]
     @State private var showCheckIn = false
 
@@ -28,6 +29,10 @@ struct FamilyHubView: View {
                 .sheet(isPresented: $showCheckIn) {
                     NavigationStack { SafetyCheckInView(myName: myName) }
                         .hcSheet()
+                }
+                // 點家人回報通知（含冷啟動）：直接打開回報中心，由它捲到那一則並高亮
+                .task(id: router.pendingPingID) {
+                    if router.pendingPingID != nil { showCheckIn = true }
                 }
         }
     }

@@ -174,10 +174,19 @@ struct QuickSafetyCard: View {
                 VStack(alignment: .leading, spacing: HCSpacing.x1) {
                     Text("已告訴家人\(sentPhrase(sent.status))・\(agoText(sent.at, now: now))")
                         .font(.headline)
-                    Text(isSafe ? "家人會收到通知，可在「家人」分頁看到已讀回條。"
-                                : "家人會收到通知。若情況危急，請先直接撥 110／119。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    // 有人按「收到 ❤️」就顯示是誰；沒有人收到時維持原文案
+                    let ackers = ackNames(for: sent)
+                    if !ackers.isEmpty {
+                        Label("\(ackers.joined(separator: "、"))已收到", systemImage: "heart.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(HCColor.brand)
+                            .accessibilityIdentifier("quickSafe.ackSummary")
+                    } else {
+                        Text(isSafe ? "家人會收到通知，可在「家人」分頁看到已讀回條。"
+                                    : "家人會收到通知。若情況危急，請先直接撥 110／119。")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             HStack(spacing: HCSpacing.x2) {
@@ -200,6 +209,24 @@ struct QuickSafetyCard: View {
             }
             disclaimer
         }
+        // 已送出狀態可見時，每 60 秒重抓一次回報清單，才看得到家人新按的「收到」
+        // （卡片只在送出後 30 分鐘內顯示，讀取量有限）
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                if Task.isCancelled { break }
+                await sync.fetchPings()
+            }
+        }
+    }
+
+    /// 這次一鍵送出對應的那則回報（我發的、狀態相同、時間貼近送出時間），取其「收到」名單
+    private func ackNames(for sent: SentState) -> [String] {
+        let match = sync.pings
+            .filter { sync.isMine($0) && $0.status == sent.status && $0.createdAt >= sent.at.addingTimeInterval(-10) }
+            .max { $0.createdAt < $1.createdAt }
+        guard let match else { return [] }
+        return sync.ackNames(of: match)
     }
 
     /// 狀態原文是第一人稱（「我平安」），直接接在「已告訴家人」後會變成「你我平安」，改成敘述句

@@ -107,12 +107,17 @@ service cloud.firestore {
         allow delete: if isMember(familyId);
       }
 
-      // 安否回報：家庭成員可讀、可發、可標記已讀（更新）；一般情況下不開放刪除，
+      // 安否回報：家庭成員可讀、可發、可標記已讀與「收到 ❤️」（更新）；一般情況下不開放刪除，
       // 只有圈主解散家庭圈時能刪（避免解散後留下永久孤兒資料）。
+      // 更新只准動 readBy（已讀回條）與 ack（收到確認，map：uid → 名字）兩個欄位，
+      // 且 ack 只能新增／修改「自己的 uid」那一格，不能替別人按收到、也不能改回報內容。
       match /pings/{pingId} {
         allow read: if isMember(familyId);
         allow create: if isMember(familyId);
-        allow update: if isMember(familyId);
+        allow update: if isMember(familyId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readBy', 'ack'])
+          && request.resource.data.get('ack', {}).diff(resource.data.get('ack', {}))
+               .affectedKeys().hasOnly([request.auth.uid]);
         allow delete: if isOwner(familyId);
       }
     }
