@@ -793,4 +793,17 @@ final class HavenCircleUITests: XCTestCase {
             shot("skyLagoon-天空-\(period)")
         }
     }
+
+    /// 地圖圖例：開關在工具列 ⓘ，展開後接在頂部狀態卡下方；左下角不再有圖例膠囊
+    func testMapLegend() throws {
+        app.tabBars.buttons["地圖"].firstMatch.tap()
+        sleep(4)
+        shot("地圖-圖例收合")
+        let button = app.buttons["地圖圖例"].firstMatch
+        guard button.waitForExistence(timeout: 5) else { attach(text: app.debugDescription, name: "地圖結構"); XCTFail("工具列找不到地圖圖例"); return }
+        button.tap(); sleep(1)
+        shot("地圖-圖例展開")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap(); sleep(1)
+        shot("地圖-點空白收合")
+    }
 }

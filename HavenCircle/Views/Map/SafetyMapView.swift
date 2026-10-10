@@ -377,11 +377,6 @@ struct SafetyMapView: View {
                 .onChange(of: relevantCountiesKey, initial: true) {
                     refreshRelevantCounties()
                 }
-                // 圖例：地圖有多層塗色，沒有圖例評審與使用者都無法自行解讀顏色
-                // （含治安層免責：統計≠即時安全程度，避免標籤化社區——產品倫理要求）
-                .overlay(alignment: .bottomLeading) {
-                    legendPanel
-                }
                 .safeAreaInset(edge: .bottom) {
                     nearbyStrip
                 }
@@ -392,6 +387,17 @@ struct SafetyMapView: View {
                     // 出現「全家」會讓人以為已經有家人。members 含本人，故 >1 才代表真的有家人。
                     if members.count > 1 {
                         memberPicker
+                    }
+                    // 圖例：地圖有多層塗色，沒有圖例評審與使用者都無法自行解讀顏色
+                    // （含治安層免責：統計≠即時安全程度，避免標籤化社區——產品倫理要求）。
+                    // 2026-10-11：從左下角移到工具列——左下角膠囊會壓住圖釘、地名與 Apple 地圖的法律資訊
+                    if legendHasContent {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { isLegendExpanded.toggle() }
+                        } label: {
+                            Label("地圖圖例", systemImage: isLegendExpanded ? "info.circle.fill" : "info.circle")
+                        }
+                        .accessibilityHint(isLegendExpanded ? "收合地圖圖例" : "展開地圖圖例，查看警戒圈與警報區說明")
                     }
                     filterMenu
                     // 三個主分頁右上角統一放同一顆設定齒輪
@@ -923,6 +929,8 @@ struct SafetyMapView: View {
             if isPaused {
                 mutedChip
             }
+            // 圖例展開時接在頂部狀態卡下方（開關在工具列的 ⓘ）
+            legendPanel
         }
         .padding(.horizontal, HCSpacing.x4)
         .padding(.top, HCSpacing.x2)
@@ -1077,27 +1085,9 @@ struct SafetyMapView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityHint("點兩下收合地圖圖例")
-                    .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .bottomLeading)))
-                } else {
-                    // 收合態改成帶文字的膠囊鈕（不再是純 ⓘ icon）——「找不到圖例」是本次
-                    // 走查最多人卡住的點之一，純圖示在滿版地圖上太容易被忽略。
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) { isLegendExpanded = true }
-                    } label: {
-                        Label("圖例", systemImage: "info.circle.fill")
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, HCSpacing.x3)
-                            .padding(.vertical, HCSpacing.x2)
-                            .background(.regularMaterial, in: Capsule())
-                            .overlay(Capsule().stroke(.secondary.opacity(0.2), lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("展開地圖圖例，查看警戒圈與警報區說明")
+                    .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .top)))
                 }
             }
-            .padding(.leading, 12)
-            // 往上挪，跟 Apple Maps 底部的圖資標示（Legal）字樣拉開距離，避免視覺打架
-            .padding(.bottom, HCSpacing.x6 + HCSpacing.x2)
         }
     }
 
