@@ -222,7 +222,7 @@ struct CircleEditorView: View {
         }
     }
 
-    /// 新增地點兩段式流程的收尾：步驟 A（PlaceSelectView／FamilyListView／HomeStatusView
+    /// 新增地點兩段式流程的收尾：步驟 A（PlaceSelectView／FamilyHomeView／HomeStatusView
     /// 建立 `LocalFamilyMember(kind: "place")` 並存檔）已經讓這個 member 落地，
     /// 若使用者在這裡（步驟 B）沒儲存就離開，這個 member 會變成「0 個圈」的孤兒——
     /// 不只家人頁多一筆空地點，還會佔掉 `FreeTier.maxPlaces` 的免費額度，讓下次新增誤觸付費牆

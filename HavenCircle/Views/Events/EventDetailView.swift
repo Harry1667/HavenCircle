@@ -74,7 +74,7 @@ struct EventDetailView: View {
                 // 重開同一事件時，若行程內已有分析結果就直接顯示，不再打 AI
                 if aiImpact == nil { aiImpact = AIImpactCache.store[impactCacheKey] }
             }
-            // C1：情境觸發邀請的登入前置＋邀請動線（沿用 FamilyListView.startInviteFlow 的作法）
+            // C1：情境觸發邀請的登入前置＋邀請動線（沿用 FamilyHomeView.startInviteFlow 的作法）
             .signInPreflight(signInGate)
             .fullScreenCover(isPresented: $showRoleSelect) {
                 RoleSelectView(
@@ -520,7 +520,7 @@ struct EventDetailView: View {
         }
     }
 
-    /// 建立家庭圈（沿用 FamilySyncService.ensureInviteReady，與 FamilyListView.startInviteFlow
+    /// 建立家庭圈（沿用 FamilySyncService.ensureInviteReady，與 FamilyHomeView.startInviteFlow
     /// 共用同一份「建或沿用」決策，不重複實作）並依是否第一次建立決定先接身分選擇還是直接開邀請碼。
     private func startInviteFlow() async {
         isInviting = true

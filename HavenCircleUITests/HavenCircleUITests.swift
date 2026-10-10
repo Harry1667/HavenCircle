@@ -117,29 +117,40 @@ final class HavenCircleUITests: XCTestCase {
             dismissSheet()
         } else { shot("邀請入口-找不到") }
 
-        // 輸入邀請碼頁
-        if tapIf("輸入邀請碼加入") {
+        // 輸入邀請碼頁：未入圈時在首頁空狀態（「我收到了邀請碼」）；已入圈時收在「家庭圈管理」子頁
+        if app.buttons["family.joinByCodeButton"].exists {
+            app.buttons["family.joinByCodeButton"].tap(); sleep(1)
             if hitSignIn() { return }
             shot("輸入邀請碼頁")
             dismissSheet()
-        } else { shot("輸入邀請碼入口-找不到") }
+        }
 
-        // 平安回報
-        if tapIf("回報平安") {
+        // 平安回報：底部固定鈕（多人時才有；單人沒有對象不顯示）
+        if app.buttons["family.checkInButton"].waitForExistence(timeout: 2) {
+            app.buttons["family.checkInButton"].tap(); sleep(1)
             shot("平安回報-SafetyCheckIn")
             dismissSheet()
-        } else { shot("平安回報入口-找不到") }
+        } else { shot("平安回報入口-單人或未入圈-不顯示") }
 
-        // 即時位置分享區塊
-        if find("把我的位置分享給家人", timeout: 3) != nil {
-            shot("即時位置分享區塊")
-        } else { shot("即時位置分享區塊-找不到") }
+        // 家庭圈管理子頁：位置分享、警報跟著我、換圈、解散
+        if tapIf("家庭圈管理") {
+            shot("家庭圈管理")
+            if find("把我的位置分享給家人", timeout: 3) != nil {
+                shot("即時位置分享區塊")
+            } else { shot("即時位置分享區塊-找不到（未入圈時不顯示）") }
+            if app.buttons["family.joinByCodeButton"].exists {
+                app.buttons["family.joinByCodeButton"].tap(); sleep(1)
+                shot("換圈確認")
+                for name in ["取消"] where app.buttons[name].exists { app.buttons[name].tap(); sleep(1); break }
+            }
+            app.navigationBars.buttons.firstMatch.tap(); sleep(1) // 返回家人首頁
+        } else { shot("家庭圈管理入口-找不到") }
 
-        // 成員詳情
-        app.swipeDown(); app.swipeDown()
-        if let cell = find("位成員", timeout: 2) ?? find("自己", timeout: 1) {
-            cell.tap(); sleep(1)
-            shot("成員詳情或成員總覽")
+        // 成員詳情：家人首頁第一張人卡（我的卡）
+        let firstCard = app.cells.containing(NSPredicate(format: "label CONTAINS '平安回報'")).firstMatch
+        if firstCard.waitForExistence(timeout: 3) {
+            firstCard.tap(); sleep(1)
+            shot("成員詳情")
         } else { shot("成員詳情-無成員") }
     }
 
@@ -184,9 +195,13 @@ final class HavenCircleUITests: XCTestCase {
         let familyTab = app.tabBars.buttons["家人"].firstMatch
         if familyTab.waitForExistence(timeout: 4) { familyTab.tap() } else { app.buttons["家人"].firstMatch.tap() }
         sleep(2)
+        // 未入圈：首頁空狀態直接有「我收到了邀請碼」；已入圈：先進「家庭圈管理」子頁再點輸碼換圈
+        if !app.buttons["family.joinByCodeButton"].waitForExistence(timeout: 4) {
+            _ = tapIf("家庭圈管理")
+        }
         if app.buttons["family.joinByCodeButton"].waitForExistence(timeout: 4) {
             app.buttons["family.joinByCodeButton"].tap()
-        } else if !tapIf("輸入邀請碼加入") {
+        } else {
             shot("找不到輸碼入口"); XCTFail("找不到輸碼入口"); return
         }
         sleep(2)

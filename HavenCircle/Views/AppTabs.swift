@@ -92,7 +92,7 @@ struct AppTabs: View {
     /// 分頁減編後 alerts/refresh 改為「安心頁＋push 提醒中心」，widget 與通知不用改 URL；
     /// 通知另帶 event 參數時，提醒中心會直接打開那一則的詳情。
     /// havencircle://join（B2）：QR code／分享連結掃到後，切到家人分頁並把邀請碼交給
-    /// FamilyListView 消耗，由它負責登入前置與開啟加入流程（這裡只負責路由，不碰登入／加入邏輯）。
+    /// FamilyHomeView 消耗，由它負責登入前置與開啟加入流程（這裡只負責路由，不碰登入／加入邏輯）。
     private func route(_ url: URL) {
         guard url.scheme == "havencircle" else { return }
         switch url.host {

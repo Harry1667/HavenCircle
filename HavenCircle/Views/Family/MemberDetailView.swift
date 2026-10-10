@@ -2,7 +2,7 @@ import SwiftUI
 import SwiftData
 
 /// 成員詳情頁——依成員三態呈現，設計鐵律：
-/// 「一個守護地點＝剛好一個警戒圈」，額度＝地點數（見 FamilyListView.gateAddPlace）。
+/// 「一個守護地點＝剛好一個警戒圈」，額度＝地點數（見 FamilyHomeView.gateAddPlace）。
 /// 這裡不再提供任何「往現有成員新增警戒圈」的無閘門入口——新增守護地點一律從
 /// 家人頁「新增守護地點」走（有 gateAddPlace 額度閘門），本頁只負責呈現/編輯/刪除既有的圈。
 struct MemberDetailView: View {

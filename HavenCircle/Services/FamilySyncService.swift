@@ -41,7 +41,7 @@ final class FamilySyncService {
     /// 目前家庭圈的名稱（A4 header 用）；未在家庭圈或尚未讀到時為 nil
     private(set) var familyName: String?
     /// 目前家庭圈的成員 uid 清單（雲端真相）；未在家庭圈時為空陣列。
-    /// FamilyListView 等畫面判斷「單人／多人」一律看這個，不看本機 LocalFamilyMember 筆數——
+    /// FamilyHomeView 等畫面判斷「單人／多人」一律看這個，不看本機 LocalFamilyMember 筆數——
     /// 本機清單是投影，會落後於雲端（見 [isSolo]）。
     private(set) var memberUids: [String] = []
     /// 目前登入者是否為這個家庭圈的圈主（雲端真相）；未在家庭圈或尚未載入完成時為 false。
@@ -78,12 +78,12 @@ final class FamilySyncService {
         return liveLocations.first { $0.participantID == uid && $0.isSharing }
     }
 
-    /// D1：「是否已加入或建立家庭圈」的單一真相來源。FamilyListView 等畫面的空狀態／
+    /// D1：「是否已加入或建立家庭圈」的單一真相來源。FamilyHomeView 等畫面的空狀態／
     /// 家人清單分支一律看這個，不看本機 LocalFamilyMember 筆數——後者是本機投影，
     /// 剛加入、refreshFamilyMembers 還沒跑完時會落後，導致「明明已加入卻還顯示邀請空狀態」的錯覺。
     var isInFamilyCircle: Bool { currentFamilyID != nil }
 
-    /// 單人／多人判斷的共用規則（取代 FamilyListView／FamilyHubView／HomeStatusView 各自一份）：
+    /// 單人／多人判斷的共用規則（取代 FamilyHomeView／FamilyHubView／HomeStatusView 各自一份）：
     /// 已在家庭圈時看雲端 memberUids（至少含自己一人，尚未載入完成時保守視為單人，
     /// 避免「載入前一瞬間」誤判成多人而閃現錯的畫面）；未在家庭圈時退回本機成員數（沿用舊行為）。
     func isSolo(localMembers: [LocalFamilyMember]) -> Bool {
@@ -239,7 +239,7 @@ final class FamilySyncService {
         return try await createFamily().id
     }
 
-    /// 邀請動線共用起點：FamilyListView「邀請家人」與事件詳情頁 C1 情境卡都從這裡開始——
+    /// 邀請動線共用起點：FamilyHomeView「邀請家人」與事件詳情頁 C1 情境卡都從這裡開始——
     /// 還沒有家庭圈就建立一個（成為圈主）；已有的話原樣沿用現有邀請碼，不重建。
     /// 回傳「這是不是第一次建立家庭圈」，讓呼叫端決定要不要先接身分選擇（RoleSelectView）
     /// 再開邀請碼畫面——這個 UI 順序留在各畫面自己決定，這裡只管「確保家庭圈存在」這件事。
@@ -703,7 +703,7 @@ final class FamilySyncService {
     /// 對照 firestore.rules 允許圈主 delete 根文件那條）；其餘情況走一般退出
     /// （[FirestoreFamilyBackend.leaveFamily]，只把自己移出 memberUids）。
     ///
-    /// Firestore 呼叫失敗會原樣往上拋，呼叫端（FamilyListView 的「退出家庭圈」按鈕）要接住
+    /// Firestore 呼叫失敗會原樣往上拋，呼叫端（FamilyHomeView 的「退出家庭圈」按鈕）要接住
     /// 顯示人話錯誤，不能 silent fail；帳號整個刪除那條路徑（SettingsView.deleteEverything）
     /// 呼叫這裡時刻意用 `try?` 吞掉錯誤——那條路徑就算離線，本機清除仍要能完成，
     /// 不該被雲端呼叫失敗卡住。

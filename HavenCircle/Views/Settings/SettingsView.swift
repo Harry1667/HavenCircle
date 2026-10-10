@@ -930,7 +930,7 @@ private struct DeleteAccountReauthSheet: View {
 
 /// #7+8：「設定你的名稱」空殼修好——這頁才是真正能改名、改家庭身分的地方。
 /// 本名（profileDisplayName）與家庭身分（profileFamilyRole）是分開的兩個鍵：
-/// 本名優先當顯示名稱，本名空著時才退而用身分頂替（與 FamilyListView/applyRole 等既有邏輯一致）。
+/// 本名優先當顯示名稱，本名空著時才退而用身分頂替（與 FamilyHomeView/applyRole 等既有邏輯一致）。
 private struct PersonalProfileView: View {
     @AppStorage(SettingsKeys.profileDisplayName) private var displayName = ""
     @AppStorage(SettingsKeys.profileFamilyRole) private var familyRole = ""

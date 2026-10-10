@@ -130,7 +130,7 @@ struct HomeStatusView: View {
             .sheet(isPresented: $addingPlace, onDismiss: presentPendingCircleEditor) {
                 // 選定後先建好地點成員暫存，等這個 sheet 完全關閉再由 onDismiss 開圈編輯器——
                 // 不能在關閉動畫途中就 present 下一個 sheet，否則會被 SwiftUI 靜默丟掉
-                // （＝新增固定圈完全打不開的根因，與 FamilyListView 同款修正）。
+                // （＝新增固定圈完全打不開的根因，與 FamilyHomeView 同款修正）。
                 PlaceSelectView { name, _ in
                     pendingCirclePlace = createPlace(name: name)
                     addingPlace = false
@@ -764,7 +764,7 @@ struct HomeStatusView: View {
     // MARK: - 付費閘門（地點額度）
 
     /// 「守護更多地方」入口共用閘門：額度用滿且非 Guardian+ 就改開付費頁——
-    /// 判斷邏輯與 FamilyListView 共用同一份（見 [EntitlementStore.canAddPlace]）。
+    /// 判斷邏輯與 FamilyHomeView 共用同一份（見 [EntitlementStore.canAddPlace]）。
     private func gateAddPlace() {
         let placeCount = members.filter(\.isPlace).count
         guard entitlementStore.canAddPlace(currentCount: placeCount) else {

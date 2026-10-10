@@ -185,7 +185,7 @@ enum EntitlementError: LocalizedError {
 
 extension EntitlementStore {
     /// 是否還能新增「重要地點」：Guardian+ 無上限；免費方案受 [FreeTier.maxPlaces] 限制。
-    /// 唯一共用判斷——FamilyListView（toolbar／addPlaceCard）、HomeStatusView（guardMorePlacesCard）
+    /// 唯一共用判斷——FamilyHomeView（toolbar／addPlaceCard）、HomeStatusView（guardMorePlacesCard）
     /// 三處入口都呼叫這裡，不各自寫一份數字比較，避免三處的免費額度定義走岔。
     /// 鐵律：這條閘門只擋「新增地點」這個功能本身，不影響任何警報推播的接收。
     func canAddPlace(currentCount: Int) -> Bool {

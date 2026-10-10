@@ -1,7 +1,7 @@
 import SwiftUI
 import SwiftData
 
-/// 家人分頁：以人為中心的家人清單（FamilyListView）為唯一內容。
+/// 家人分頁：以人為中心的家人清單（FamilyHomeView）為唯一內容。
 /// 舊版用頂部 segment 把「警戒圈」「安否回報」拆成兩個並列分頁，等於把「回報平安」
 /// 這個核心動作也藏進去——2026-07 實測回饋「家人功能沒有明顯引導，所以沒用」，
 /// segment 本身就是沒有引導的來源之一，改為單一頁＋固定底部回報鈕。
@@ -19,7 +19,7 @@ struct FamilyHubView: View {
 
     var body: some View {
         NavigationStack {
-            FamilyListView()
+            FamilyHomeView()
                 .navigationTitle("家人")
                 .navigationBarTitleDisplayMode(.inline)
                 // 單人時按了沒有對象收到，「回報平安」直接不出現，不留一顆死路按鈕
