@@ -31,7 +31,7 @@ enum FollowCircleService {
 
         // 反查行政區（區域型警報比對用）與粗略地名；反查失敗保留原值，不擋座標更新
         if let place = await MapReverseGeocoder.lookup(location) {
-            let district = OnboardingView.guessDistrict(from: place.searchableText)
+            let district = Districts.guess(from: place.searchableText)
             let label = place.approximateLabel(district: district)
             for circle in circles {
                 if district != Districts.unspecified { circle.district = district }

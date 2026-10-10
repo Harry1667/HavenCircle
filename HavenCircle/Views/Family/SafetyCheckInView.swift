@@ -300,7 +300,7 @@ struct SafetyCheckInView: View {
     /// 失敗回 nil（回報列會退回顯示「已附上位置」），不重試不阻塞。
     private static func reverseGeocode(_ location: CLLocation) async -> String? {
         guard let place = await MapReverseGeocoder.lookup(location) else { return nil }
-        let district = OnboardingView.guessDistrict(from: place.searchableText)
+        let district = Districts.guess(from: place.searchableText)
         return place.approximateLabel(district: district)
     }
 }

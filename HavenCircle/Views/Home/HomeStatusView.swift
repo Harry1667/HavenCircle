@@ -29,9 +29,7 @@ struct HomeStatusView: View {
     /// 地點額度閘門觸發時開這個付費頁（見 [gateAddPlace]，共用判斷在 EntitlementStore）
     @State private var showPaywall = false
 
-    /// 浮動分頁列（膠囊）從系統安全區下緣量到膠囊頂端的視覺高度：與 FeatureTour.swift 的
-    /// TourTarget.tabBar 挖洞框用同一組數字（12pt 間距＋64pt 膠囊高度＝76），
-    /// 那裡是已經對過真實裝置畫面校準過的框，不是這裡重新用猜的。
+    /// 浮動分頁列（膠囊）從系統安全區下緣量到膠囊頂端的視覺高度（12pt 間距＋64pt 膠囊高度＝76）。
     /// 用 safeAreaInset 疊加（而非塞進可捲動內容尾端的固定 padding）：不論系統本身
     /// 已經自動保留多少安全區，這裡都只是「再往上多補一段」，不必猜測兩者加總是否剛好蓋滿。
     private static let floatingTabBarClearance: CGFloat = 76
@@ -64,17 +62,12 @@ struct HomeStatusView: View {
     var body: some View {
         // 導航堆疊綁在 router 上：deep link（widget/通知的 alerts）能直接推入提醒中心
         NavigationStack(path: Bindable(router).homePath) {
-            ScrollViewReader { scrollProxy in
             ScrollView {
                 VStack(spacing: HCSpacing.x6) {
                     statusHero
-                        .tourAnchor(.statusHero)
-                        .id(TourTarget.statusHero)
                     // 單人時 members 只有自己＋重要地點，一張「全家名單」對一個人沒有意義
                     if !isSoloUser {
                         familySection
-                            .tourAnchor(.familyList)
-                            .id(TourTarget.familyList)
                     }
                     eventFeedSection
                     // 單人態：沒有家人可看，事件串後面補兩張引導卡，取代原本按了沒人看見的回報鈕
@@ -83,24 +76,12 @@ struct HomeStatusView: View {
                         inviteFamilyCard
                     }
                     historyRow
-                        .tourAnchor(.historyRow)
-                        .id(TourTarget.historyRow)
                 }
                 .padding(.horizontal, HCSpacing.x4)
                 .padding(.top, HCSpacing.x4)
                 // iPad 上限制內容主欄寬度並置中，避免 hcCard 卡片撐滿 13 吋螢幕
                 .frame(maxWidth: 600)
                 .frame(maxWidth: .infinity)
-            }
-            // 功能導覽介紹到的列可能在摺疊線以下（小螢幕尤其）：先捲進畫面再讓聚光燈框住，
-            // 否則錨點矩形在螢幕外，裁切後聚光燈會框到不相干的位置
-            .onReceive(NotificationCenter.default.publisher(for: .tourStepTargetChanged)) { note in
-                guard let target = note.object as? TourTarget,
-                      [.statusHero, .familyList, .historyRow].contains(target) else { return }
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    scrollProxy.scrollTo(target, anchor: .center)
-                }
-            }
             }
             .navigationTitle("安心圈")
             // 情緒底色：狀態色從頁面頂部滲下來的極淡漸層——平安是守護綠、
@@ -706,7 +687,6 @@ struct HomeStatusView: View {
         }
         .buttonStyle(.borderedProminent)
         .tint(HCColor.brand)
-        .tourAnchor(.checkInButton)
         .padding(.horizontal, HCSpacing.x4)
         .padding(.bottom, HCSpacing.x2)
         .background(.bar)

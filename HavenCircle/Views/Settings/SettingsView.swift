@@ -7,6 +7,7 @@ import UserNotifications
 /// 設定頁：沿用 Apple 系統設定的結構，並以低彩度語意圖示維持可掃讀性。
 struct SettingsView: View {
     @Environment(FamilySyncService.self) private var sync
+    @Environment(TabRouter.self) private var router
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss // 設定現在是 sheet：重看導覽等動作要先把自己收起來
     @AppStorage(SettingsKeys.profileDisplayName) private var displayName = ""
@@ -139,16 +140,17 @@ struct SettingsView: View {
                         AboutView()
                     }
                     Button {
-                        // 種旗標＋關掉設定 sheet：主畫面觀察到旗標會重播新版地圖新手帶領
-                        // （消耗點在 AppTabs.initialTab 與 SafetyMapView，這裡不動它們）
+                        // 種旗標＋關掉設定 sheet＋切到地圖分頁：地圖頁偵測到旗標會重播新手帶領
+                        // （消耗點在 SafetyMapView）
                         UserDefaults.standard.set(true, forKey: SettingsKeys.firstRunCoachingPending)
+                        router.selection = TabRouter.mapTab
                         dismiss()
                     } label: {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("重看功能導覽")
+                                Text("重播地圖導覽")
                                     .foregroundStyle(.primary)
-                                Text("回到主畫面後會重新播放各分頁介紹")
+                                Text("回到地圖後會重新播放新手帶領")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -156,8 +158,6 @@ struct SettingsView: View {
                             settingsIcon("book.fill", color: HCColor.brand)
                         }
                     }
-                    // 舊版 coach marks 導覽（homeTourPending）不再提供入口：新手流程重寫後
-                    // 沒有任何路徑會觸發它，兩顆同名「重看功能導覽」並列只會讓人困惑。
                 }
 
                 // App Store 審查指南 5.1.1(v)：提供帳號/資料刪除
@@ -188,10 +188,12 @@ struct SettingsView: View {
             }
             .listSectionSpacing(HCSpacing.x6)
             .navigationTitle("設定")
+            // iPad 的 sheet 預設大標題會佔掉一大塊，統一 inline；右上「完成」與其他 sheet 一致
+            .navigationBarTitleDisplayMode(.inline)
+            .presentationDragIndicator(.visible)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("關閉", systemImage: "xmark") { dismiss() }
-                        .labelStyle(.iconOnly)
+                    Button("完成") { dismiss() }
                 }
             }
             .analyticsScreen("settings")
@@ -382,8 +384,7 @@ struct SettingsView: View {
         context.saveReporting()
         let defaults = UserDefaults.standard
         for key in [SettingsKeys.onboardingCompleted, SettingsKeys.roleSelectionPending,
-                    SettingsKeys.firstRunCoachingPending, SettingsKeys.seenHomeIntro,
-                    SettingsKeys.seenFamilyIntro, SettingsKeys.seenCircleAdjustHint] {
+                    SettingsKeys.firstRunCoachingPending, SettingsKeys.seenCircleAdjustHint] {
             defaults.set(false, forKey: key)
         }
         defaults.set(1, forKey: SettingsKeys.launchCount)
@@ -889,8 +890,7 @@ private struct DeleteAccountReauthSheet: View {
             .padding(.top, HCSpacing.x3)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("關閉", systemImage: "xmark") { dismiss() }
-                        .labelStyle(.iconOnly)
+                    Button("關閉") { dismiss() }
                         .disabled(isDeleting)
                 }
             }

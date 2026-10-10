@@ -195,7 +195,7 @@ struct FamilyListView: View {
         .toolbar {
             // 問題3：三個主分頁右上角統一放同一顆齒輪；家人頁沒有自己的 NavigationStack，
             // 這裡的 toolbar 會被 FamilyHubView 的 NavigationStack 收下顯示。
-            ToolbarItem(placement: .topBarLeading) {
+            ToolbarItem(placement: .topBarTrailing) {
                 Button("設定", systemImage: "gearshape") { router.showSettings = true }
             }
             ToolbarItem(placement: .topBarTrailing) {

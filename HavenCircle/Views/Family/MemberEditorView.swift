@@ -27,6 +27,8 @@ struct MemberEditorView: View {
                     .foregroundStyle(.secondary)
             }
             .navigationTitle(isPlace ? "新增重要地點" : "新增本機家人資料")
+            .navigationBarTitleDisplayMode(.inline)
+            .presentationDragIndicator(.visible)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("儲存") {

@@ -39,10 +39,6 @@ enum SettingsKeys {
     /// 第一次進主畫面的地圖親切帶領待播旗標：第一次開 App 完成著陸就種下，
     /// 讓首次落在地圖頁並播放「這是安全地圖／你的警戒圈」等教學卡，播完消耗。
     static let firstRunCoachingPending = "firstRunCoachingPending"
-    /// 是否已看過「安心」分頁的一句話介紹（第一次切到就顯示一次）
-    static let seenHomeIntro = "seenHomeIntro"
-    /// 是否已看過「家人」分頁的一句話介紹（第一次切到就顯示一次）
-    static let seenFamilyIntro = "seenFamilyIntro"
     /// 是否已看過「警戒圈可拖動調整」的提示（第一次點開事件、關掉詳情後顯示一次）
     static let seenCircleAdjustHint = "seenCircleAdjustHint"
     /// Sign in with Apple 授權後存下的帳號 email（僅本機顯示用；CloudKit 拿不到 email）
@@ -56,8 +52,6 @@ enum SettingsKeys {
     /// 全域字體大小（AppTextSize 的 rawValue）：跟隨系統（預設）／大／特大／最大
     /// 與 alertFrequencyLevel（提醒多寡：僅重大／標準／靈敏）是兩件事，實機測試曾誤認為同一個設定，故分鍵獨立管理
     static let appTextSize = "appTextSize"
-    /// 功能導覽待播旗標：Onboarding 完成時種下，首次進主畫面消耗；設定頁可重新種下
-    static let homeTourPending = "homeTourPending"
     /// 首次設定時明確同意的法律文件版本；條款重大更新時改版號即可重新取得同意
     static let legalAcceptanceVersion = "legalAcceptanceVersion"
     /// 匿名使用統計開關（預設開）：關閉時 Analytics 不記錄也不送出

@@ -166,6 +166,8 @@ struct CircleEditorView: View {
             // 手指觸碰小地圖期間暫停 Form 捲動，放開立刻恢復——見 mapPickerSection 手勢方案說明
             .scrollDisabled(isTouchingMap)
             .navigationTitle(navigationTitleText)
+            .navigationBarTitleDisplayMode(.inline)
+            .presentationDragIndicator(.visible)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("儲存") { save() }
@@ -314,7 +316,7 @@ struct CircleEditorView: View {
         locationNeedsConfirmation = false
         locationHint = ""
         if let place = await MapReverseGeocoder.lookup(location) {
-            let matchedDistrict = OnboardingView.guessDistrict(from: place.searchableText)
+            let matchedDistrict = Districts.guess(from: place.searchableText)
             pickedLabel = place.approximateLabel(district: matchedDistrict) ?? "座標已取得"
             applyAutoDetectedDistrict(matchedDistrict)
             if address.isEmpty { address = pickedLabel }
@@ -411,7 +413,7 @@ struct CircleEditorView: View {
         Task {
             let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
             if let place = await MapReverseGeocoder.lookup(location) {
-                let matchedDistrict = OnboardingView.guessDistrict(from: place.searchableText)
+                let matchedDistrict = Districts.guess(from: place.searchableText)
                 pickedLabel = place.approximateLabel(district: matchedDistrict) ?? "座標已取得"
                 applyAutoDetectedDistrict(matchedDistrict)
                 if address.isEmpty { address = pickedLabel }
@@ -462,7 +464,7 @@ struct CircleEditorView: View {
             searchFailed = (found == nil)
             locationNeedsConfirmation = (found == nil)
             // 搜尋成功時嘗試從地址文字自動帶入行政區（已有值時 applyAutoDetectedDistrict 內部會自動略過）
-            applyAutoDetectedDistrict(OnboardingView.guessDistrict(from: "\(found?.name ?? "") \(address)"))
+            applyAutoDetectedDistrict(Districts.guess(from: "\(found?.name ?? "") \(address)"))
         } catch {
             AppLog.data.error("地點搜尋失敗：\(error.localizedDescription)")
             found = nil

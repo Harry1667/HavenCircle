@@ -44,6 +44,8 @@ struct EventDetailView: View {
             List {
                 statusSection
                 actionAdviceSection
+                // 110/119 放在建議行動之後的第一屏內，不再藏在最底
+                emergencySection
                 detailSection
                 whySection
                 aiImpactSection
@@ -61,6 +63,7 @@ struct EventDetailView: View {
                     Button("關閉") { dismiss() }
                 }
             }
+            .presentationDragIndicator(.visible)
             .confirmationDialog("將這則事件標記為本機已解除？", isPresented: $showResolveConfirmation) {
                 Button("確認標記", role: .destructive) { resolveLocally() }
                 Button("取消", role: .cancel) {}
@@ -310,6 +313,17 @@ struct EventDetailView: View {
                 bottom: HCSpacing.x1,
                 trailing: HCSpacing.x4
             )
+        )
+        .listRowBackground(Color.clear)
+    }
+
+    /// 110 / 119 一鍵撥號（第一屏）
+    private var emergencySection: some View {
+        Section {
+            EmergencyCallRow()
+        }
+        .listRowInsets(
+            EdgeInsets(top: HCSpacing.x1, leading: HCSpacing.x4, bottom: HCSpacing.x1, trailing: HCSpacing.x4)
         )
         .listRowBackground(Color.clear)
     }
@@ -675,20 +689,6 @@ struct EventDetailView: View {
                     showResolveConfirmation = true
                 }
             }
-            Button {
-                call("110")
-            } label: {
-                Label("人身安全或犯罪請撥 110", systemImage: "phone.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .foregroundStyle(HCColor.danger)
-            Button {
-                call("119")
-            } label: {
-                Label("火災或緊急救護請撥 119", systemImage: "cross.case.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .foregroundStyle(HCColor.danger)
         }
     }
 
@@ -697,11 +697,6 @@ struct EventDetailView: View {
         context.saveReporting()
         Task { await NotificationScheduler.notifyResolved(for: event) }
         dismiss()
-    }
-
-    private func call(_ number: String) {
-        guard let tel = URL(string: "tel://\(number)") else { return }
-        UIApplication.shared.open(tel)
     }
 
     private func localizedDate(_ date: Date) -> String {

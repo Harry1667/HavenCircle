@@ -12,7 +12,7 @@ final class HavenCircleUITests: XCTestCase {
         app = XCUIApplication()
         // UX 稽核測試（Audit）自行決定啟動參數，不走既有的預先啟動
         if name.contains("testOnboardingTour") || name.contains("testEventsTour")
-            || name.contains("testSettingsTour") || name.contains("testPaywallTour") || name.contains("testFeatureTour") {
+            || name.contains("testSettingsTour") || name.contains("testPaywallTour") {
             installPermissionMonitor()
             return
         }
@@ -536,27 +536,8 @@ final class HavenCircleUITests: XCTestCase {
                 if round == 0 { auditShot(flow, "設定-下捲") }
             }
         }
-        auditLines.append("\(flow)|--|未進入的列（刻意略過）|\(auditClicks)|刪除帳號、模擬警報、載入示範資料、重設 Demo、重跑新手流程、匿名統計開關、重看功能導覽||")
+        auditLines.append("\(flow)|--|未進入的列（刻意略過）|\(auditClicks)|刪除帳號、模擬警報、載入示範資料、重設 Demo、重跑新手流程、匿名統計開關、重播地圖導覽||")
         auditShot(flow, "設定-回到列表")
-        flushAudit(flow)
-    }
-
-    // MARK: 3b. 功能導覽（黑幕聚光燈，--tour 強制啟動）
-
-    func testFeatureTour() throws {
-        let flow = "tour"
-        auditLaunch(["--start-tab", "0", "--skip-location-prompt", "--tour"])
-        sleep(2)
-        auditShot(flow, "導覽開始")
-        var n = 0
-        for _ in 0..<12 {
-            let next = app.buttons.matching(NSPredicate(format: "label == '下一步' OR label == '完成'")).firstMatch
-            guard next.waitForExistence(timeout: 3) else { break }
-            n += 1
-            auditTap(next, wait: 2)
-            auditShot(flow, "導覽步驟-\(n)", note: "點了下一步/完成")
-        }
-        auditShot(flow, "導覽結束")
         flushAudit(flow)
     }
 

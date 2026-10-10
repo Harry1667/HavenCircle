@@ -5,6 +5,7 @@ import MapKit
 /// 安全地圖：全螢幕地圖為主體，狀態橫幅、區域警報與附近更新以浮層呈現。
 struct SafetyMapView: View {
     @Environment(FamilySyncService.self) private var sync
+    @Environment(TabRouter.self) private var router
     @Environment(\.modelContext) private var modelContext
     @Query private var events: [LocalSafetyEvent]
     @Query private var members: [LocalFamilyMember]
@@ -36,8 +37,6 @@ struct SafetyMapView: View {
     @State private var showUnverified = true
     @State private var isSummaryExpanded = false
     @State private var isLegendExpanded = false
-    /// 乾淨地圖模式：收起頂部摘要與底部卡片列，只留地圖（顯示偏好，不影響通知）
-    @State private var isChromeHidden = false
 
     // 守護圈開場（簽名動效）：Onboarding 完成後首次進地圖才演一次
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -238,7 +237,6 @@ struct SafetyMapView: View {
         NavigationStack {
             map
                 // 功能導覽直接讀取地圖實際版面，不再用機型相關的安全區域常數猜位置。
-                .tourAnchor(.mapCanvas)
                 .onAppear {
                     playGuardianIntroIfNeeded()
                     // 地圖藍點需要定位權限；只在未決定時跳系統框，拒絕過就不再打擾
@@ -295,19 +293,18 @@ struct SafetyMapView: View {
                 }
                 #endif
                 .overlay(alignment: .top) {
-                    if !isChromeHidden { topOverlays }
+                    topOverlays
                 }
-                .overlay(alignment: .bottomTrailing) { chromeToggle }
                 // 圖例：地圖有多層塗色，沒有圖例評審與使用者都無法自行解讀顏色
                 // （含治安層免責：統計≠即時安全程度，避免標籤化社區——產品倫理要求）
                 .overlay(alignment: .bottomLeading) {
-                    if !isChromeHidden { legendPanel }
+                    legendPanel
                 }
                 // 半徑調整面板開著時取代附近卡片列（同一個 safe area 插槽，天然避開分頁列與事件卡片列）
                 .safeAreaInset(edge: .bottom) {
                     if adjustingCircleKey != nil {
                         circleAdjustPanel
-                    } else if !isChromeHidden {
+                    } else {
                         nearbyStrip
                     }
                 }
@@ -321,6 +318,8 @@ struct SafetyMapView: View {
                     }
                     filterMenu
                     pauseButton
+                    // 三個主分頁右上角統一放同一顆設定齒輪
+                    Button("設定", systemImage: "gearshape") { router.showSettings = true }
                 }
                 .sheet(item: $selected) {
                     MapEventSheet(event: $0, members: members)
@@ -1132,26 +1131,6 @@ struct SafetyMapView: View {
     }
 
     // MARK: - 浮層
-
-    /// 乾淨地圖模式切換鈕：收起／恢復資訊浮層。
-    /// 永遠可見（否則收起後沒有入口恢復）；有「需要注意」事件時不隱藏警示——
-    /// 收起的只是摘要卡與卡片列，地圖上的事件標記仍在。
-    private var chromeToggle: some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.2)) { isChromeHidden.toggle() }
-        } label: {
-            Image(systemName: isChromeHidden
-                  ? "arrow.down.right.and.arrow.up.left"
-                  : "arrow.up.left.and.arrow.down.right")
-                .font(.body.weight(.semibold))
-                .padding(12)
-                .background(.regularMaterial, in: Circle())
-        }
-        .buttonStyle(.plain)
-        .padding(.trailing, 16)
-        .padding(.bottom, 12)
-        .accessibilityLabel(isChromeHidden ? "顯示資訊面板" : "收合資訊面板，只看地圖")
-    }
 
     private var topOverlays: some View {
         VStack(spacing: HCSpacing.x2) {

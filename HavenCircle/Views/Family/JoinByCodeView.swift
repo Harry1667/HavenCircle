@@ -47,6 +47,7 @@ struct JoinByCodeView: View {
             .listSectionSpacing(HCSpacing.x6)
             .navigationTitle(preview == nil ? "輸入邀請碼加入" : "確認加入")
             .navigationBarTitleDisplayMode(.inline)
+            .presentationDragIndicator(.visible)
             .toolbar {
                 Button("取消") { dismiss() }
             }

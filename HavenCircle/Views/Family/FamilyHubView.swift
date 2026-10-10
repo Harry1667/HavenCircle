@@ -20,8 +20,6 @@ struct FamilyHubView: View {
     var body: some View {
         NavigationStack {
             FamilyListView()
-                // 功能導覽直接讀取目前內容區的實際版面，避免導航列高度改變時遮罩偏移。
-                .tourAnchor(.familyContent)
                 .navigationTitle("家人")
                 .navigationBarTitleDisplayMode(.inline)
                 // 單人時按了沒有對象收到，「回報平安」直接不出現，不留一顆死路按鈕

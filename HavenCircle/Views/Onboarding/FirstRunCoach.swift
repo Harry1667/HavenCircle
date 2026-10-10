@@ -194,22 +194,3 @@ private struct DemoNotificationBanner: View {
         .padding(.horizontal, 12)
     }
 }
-
-/// 第一次切到某分頁時的一句話介紹。極短。
-enum TabIntro {
-    case home, family
-
-    var icon: String {
-        switch self {
-        case .home: "checkmark.shield.fill"
-        case .family: "person.2.fill"
-        }
-    }
-
-    var text: String {
-        switch self {
-        case .home: "看你和家人平不平安"
-        case .family: "在這裡連結家人"
-        }
-    }
-}

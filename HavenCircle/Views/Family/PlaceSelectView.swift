@@ -63,6 +63,8 @@ struct PlaceSelectView: View {
                     Button("取消") { dismiss() }
                 }
             }
+            .navigationBarTitleDisplayMode(.inline)
+            .presentationDragIndicator(.visible)
             .analyticsScreen("place_select")
             .alert("這是什麼地方？", isPresented: $showCustomInput) {
                 TextField("例如：倉庫、宿舍", text: $customName)

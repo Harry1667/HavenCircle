@@ -59,7 +59,9 @@ struct RegionAlertBanner: View {
 struct RegionAlertDetailView: View {
     let alert: RegionAlert
     let members: [LocalFamilyMember]
+    @Environment(\.dismiss) private var dismiss
 
+    /// 與事件詳情同一個殼：inline 標題＋左上「關閉」＋拖曳條；110/119 在建議行動之後的第一屏
     var body: some View {
         NavigationStack {
             List {
@@ -68,6 +70,13 @@ struct RegionAlertDetailView: View {
                         .foregroundStyle(alert.isEnded ? Color.secondary : HCColor.attention)
                     Text(alert.guidance)
                 }
+                Section {
+                    EmergencyCallRow()
+                }
+                .listRowInsets(
+                    EdgeInsets(top: HCSpacing.x1, leading: HCSpacing.x4, bottom: HCSpacing.x1, trailing: HCSpacing.x4)
+                )
+                .listRowBackground(Color.clear)
                 Section("影響範圍") {
                     Text(alert.affectedDistricts.joined(separator: "、"))
                     ForEach(alert.matchedCircles(members: members), id: \.circleName) { match in
@@ -86,6 +95,12 @@ struct RegionAlertDetailView: View {
             }
             .navigationTitle(alert.title)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("關閉") { dismiss() }
+                }
+            }
         }
+        .presentationDragIndicator(.visible)
     }
 }

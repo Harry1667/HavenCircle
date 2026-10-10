@@ -56,6 +56,7 @@ struct InviteOptionsView: View {
             .toolbar {
                 Button("完成") { dismiss() }
             }
+            .presentationDragIndicator(.visible)
             .analyticsScreen("invite_options")
             // 開啟邀請頁時，碼已過期或剩不到 24 小時就自動換新碼
             .task { await sync.renewInviteCodeIfNeeded() }

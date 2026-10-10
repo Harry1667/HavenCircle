@@ -93,11 +93,6 @@ struct EventListView: View {
     var body: some View {
         List {
             scopeSection
-            // 「全台動態」是閱讀入口，不需要先讓一張地圖把首屏推走；
-            // 小地圖只輔助判讀「與我有關」的事件和警戒圈相對位置。
-            if feedScope == .related {
-                miniMapSection
-            }
             if visibleEvents.isEmpty && activeRegionAlerts.isEmpty {
                 Section {
                     safeStateHero
@@ -191,24 +186,6 @@ struct EventListView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, HCSpacing.x6)
-    }
-
-    /// 頂部精簡地圖：只放進行中的事件，點標記開詳情
-    @ViewBuilder
-    private var miniMapSection: some View {
-        let active = visibleEvents.filter(\.isActiveForAwareness)
-        if !active.isEmpty {
-            Section {
-                EventsMiniMap(
-                    events: active,
-                    members: members,
-                    onSelect: { selected = $0 },
-                    onExpand: { router.selection = TabRouter.mapTab }
-                )
-                .listRowInsets(EdgeInsets())
-                .listRowBackground(Color.clear)
-            }
-        }
     }
 
     /// 區域警報依分組分區顯示（天災→公共安全→民生→交通，安全相關優先排前）。
