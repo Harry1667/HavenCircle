@@ -69,12 +69,17 @@ function fcm_access_token(): ?string {
 /// 對主題或 condition 發可見推播。
 /// $target = ['topic' => 'hc_all'] 或 ['condition' => "'hc_r_x' in topics || 'hc_r_y' in topics"]。
 /// 回 ['ok' => bool, 'status' => int, 'name' => ?string, 'error' => ?string]。
-function fcm_send(array $target, string $title, string $body, array $data = []): array {
+/// $opts：
+///  - collapseId：APNs 會拿它當通知識別碼。與 App 本機通知用同一個識別碼時，兩則會合併成一則（避免重複）
+///  - interruptionLevel：預設 time-sensitive；一般訊息（例如家人報平安）傳 'active'，不穿透專注模式
+function fcm_send(array $target, string $title, string $body, array $data = [], array $opts = []): array {
+    $headers = ['apns-priority' => '10'];
+    if (($opts['collapseId'] ?? '') !== '') { $headers['apns-collapse-id'] = substr((string)$opts['collapseId'], 0, 64); }
     $message = [
         'notification' => ['title' => $title, 'body' => $body],
         'apns' => [
-            'headers' => ['apns-priority' => '10'],
-            'payload' => ['aps' => ['sound' => 'default', 'interruption-level' => 'time-sensitive']],
+            'headers' => $headers,
+            'payload' => ['aps' => ['sound' => 'default', 'interruption-level' => $opts['interruptionLevel'] ?? 'time-sensitive']],
         ],
     ];
     if (!empty($data)) { $message['data'] = array_map('strval', $data); }

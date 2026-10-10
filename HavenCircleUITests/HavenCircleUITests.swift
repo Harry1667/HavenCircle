@@ -19,7 +19,10 @@ final class HavenCircleUITests: XCTestCase {
             return
         }
         // 家人走查驗「冷啟動預設落在動態」，不指定分頁，之後自行切到家人；其餘維持地圖（tag 1）
-        if name.contains("testFamilyTour") {
+        // 通知說明視窗測試：不帶 --skip-notification-prompt，才會走到 App 內說明
+        if name.contains("testNotificationPrimer") {
+            app.launchArguments += ["--start-tab", "2", "--skip-location-prompt"]
+        } else if name.contains("testFamilyTour") {
             app.launchArguments += ["--skip-location-prompt", "--skip-notification-prompt"]
         } else {
             app.launchArguments += ["--start-tab", "1", "--skip-location-prompt", "--skip-notification-prompt"]
@@ -660,5 +663,71 @@ final class HavenCircleUITests: XCTestCase {
         let send = app.buttons["quickSafe.sendButton"].exists
         let invite = app.staticTexts["加入家人，才能一鍵報平安"].exists
         attach(text: "送出鈕=\(send) 邀請卡=\(invite)\n" + app.debugDescription, name: "我平安卡")
+    }
+
+    /// 我平安一鍵卡實際送出：我平安 → 改報需要協助 → 改回我平安（家人最後看到的是平安）
+    func testQuickSafeSend() throws {
+        app.tabBars.buttons["動態"].firstMatch.tap()
+        sleep(2); app.swipeDown(); sleep(1)
+        let send = app.buttons["quickSafe.sendButton"].firstMatch
+        guard send.waitForExistence(timeout: 5) else { shot("找不到我平安鈕"); XCTFail("找不到我平安鈕"); return }
+        send.tap()
+        let sent = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH '已告訴家人你'")).firstMatch
+        let ok = sent.waitForExistence(timeout: 15)
+        shot("送出我平安後")
+        attach(text: "已送出狀態=\(ok) 文字=\(ok ? sent.label : "")", name: "送出結果-平安")
+        // 首次報平安後可能跳出通知說明（已授權則不會）
+        sleep(3)
+        if app.buttons["開啟通知"].exists { shot("通知說明"); _ = tapIf("稍後"); sleep(1) }
+        guard app.buttons["改報需要協助"].waitForExistence(timeout: 5) else { XCTFail("找不到改報需要協助"); return }
+        app.buttons["改報需要協助"].tap(); sleep(1)
+        shot("需要協助確認框")
+        app.buttons["告訴家人我需要協助"].firstMatch.tap()
+        let help = app.staticTexts.containing(NSPredicate(format: "label CONTAINS '需要協助・'")).firstMatch
+        let okHelp = help.waitForExistence(timeout: 15)
+        shot("改報需要協助後")
+        attach(text: "需要協助狀態=\(okHelp) 文字=\(okHelp ? help.label : "")", name: "送出結果-需要協助")
+        guard app.buttons["改報我平安"].waitForExistence(timeout: 5) else { XCTFail("找不到改報我平安"); return }
+        app.buttons["改報我平安"].tap()
+        let back = app.staticTexts.containing(NSPredicate(format: "label CONTAINS '平安・'")).firstMatch
+        let okBack = back.waitForExistence(timeout: 15)
+        shot("改回我平安後")
+        attach(text: "改回平安=\(okBack)", name: "送出結果-改回平安")
+        XCTAssertTrue(ok && okHelp && okBack)
+    }
+
+    /// 通知說明視窗：全新安裝（模擬器）新增第一個守護地點後，應先出現 App 內說明，按「開啟通知」才跳系統詢問
+    func testNotificationPrimer() throws {
+        sleep(2)
+        shot("啟動")
+        let familyTab = app.tabBars.buttons["家人"].firstMatch
+        if familyTab.waitForExistence(timeout: 4) { familyTab.tap() }
+        sleep(2)
+        guard let add = find("新增守護地點", timeout: 6) else { shot("找不到新增入口"); attach(text: app.debugDescription, name: "家人頁結構"); XCTFail("找不到新增守護地點"); return }
+        add.tap(); sleep(2)
+        let nameField = app.textFields["地點名稱"].firstMatch
+        guard nameField.waitForExistence(timeout: 5) else { shot("找不到名稱欄"); XCTFail("找不到名稱欄"); return }
+        nameField.tap(); nameField.typeText("測試地點")
+        let addrField = app.textFields["地址或地標"].firstMatch
+        addrField.tap(); addrField.typeText("台北101")
+        sleep(5)
+        let save = app.buttons["儲存"].firstMatch
+        if !save.isEnabled { _ = tapIf("使用 Apple Maps 搜尋"); sleep(4) }
+        shot("儲存前")
+        guard save.isEnabled else { XCTFail("儲存鈕不可用"); return }
+        save.tap()
+        let primer = app.buttons["開啟通知"].firstMatch
+        let shown = primer.waitForExistence(timeout: 8)
+        shot("儲存後-通知說明")
+        attach(text: "通知說明出現=\(shown)\n" + app.debugDescription, name: "通知說明結構")
+        XCTAssertTrue(shown, "新增第一個守護地點後應出現通知說明")
+        guard shown else { return }
+        primer.tap(); sleep(2)
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let systemAlert = springboard.alerts.firstMatch.exists
+        let shotAlert = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        shotAlert.name = "系統通知詢問"; shotAlert.lifetime = .keepAlways; self.add(shotAlert)
+        attach(text: "系統詢問出現=\(systemAlert)", name: "系統詢問")
+        XCTAssertTrue(systemAlert, "按開啟通知後應跳出系統詢問")
     }
 }

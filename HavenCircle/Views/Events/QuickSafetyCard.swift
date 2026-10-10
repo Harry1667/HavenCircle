@@ -45,6 +45,8 @@ struct QuickSafetyCard: View {
                 }
             }
         }
+        // 內容撐滿整列：已送出卡文字較短時，卡片才不會比下方其他卡片窄一截
+        .frame(maxWidth: .infinity, alignment: .leading)
         .hcCard()
         .cardRow()
         .signInPreflight(gate)
@@ -168,7 +170,7 @@ struct QuickSafetyCard: View {
                     .foregroundStyle(isSafe ? HCColor.safe : HCColor.danger)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: HCSpacing.x1) {
-                    Text("已告訴家人你\(sent.status.rawValue)・\(agoText(sent.at, now: now))")
+                    Text("已告訴家人\(sentPhrase(sent.status))・\(agoText(sent.at, now: now))")
                         .font(.headline)
                     Text(isSafe ? "家人會收到通知，可在「家人」分頁看到已讀回條。"
                                 : "家人會收到通知。若情況危急，請先直接撥 110／119。")
@@ -195,6 +197,16 @@ struct QuickSafetyCard: View {
                     .foregroundStyle(HCColor.danger)
             }
             disclaimer
+        }
+    }
+
+    /// 狀態原文是第一人稱（「我平安」），直接接在「已告訴家人」後會變成「你我平安」，改成敘述句
+    private func sentPhrase(_ status: SafetyStatus) -> String {
+        switch status {
+        case .safe: return "你平安"
+        case .needHelp: return "你需要協助"
+        case .inDanger: return "你尚未脫離危險"
+        case .pleaseReport: return "請大家回報平安"
         }
     }
 
