@@ -5,8 +5,11 @@ import os // Swift 6.2 MemberImportVisibility：用 os.Logger 插值的檔案必
 
 /// 定位服務有三種清楚分離的用途：
 /// (1) 地圖藍點與一次性取位；(2) 本機即時圈更新；(3) 使用者主動開啟的家庭位置分享。
-/// 家庭分享開啟時使用約 100 公尺精度／距離門檻，並允許背景更新；關閉後立即停止標準定位。
-/// 顯著位置變更保留作為省電喚醒與本機即時圈的降級路徑。
+/// 家庭分享開啟時（像「尋找」App 一樣）持續背景定位：
+/// - 移動中：100 公尺精度、distanceFilter 50 公尺；「永遠」授權時允許背景更新並顯示系統的藍色定位指示。
+/// - 偵測到靜止（約 4 分鐘位移 < 50 公尺，見 MotionDetector）：降為 1 公里精度＋300 公尺門檻省電，
+///   離開錨點 100 公尺後恢復移動參數。
+/// - 顯著位置變更保留作為 App 被系統終止後的喚醒路徑；關閉分享後立即停止標準定位。
 ///
 /// 心跳（分享中才有）：distanceFilter 只在「移動 100 公尺」時回報，人待在原地就完全沒有回呼，
 /// 家人端會誤判成「超過 15 分鐘沒更新」。所以分享期間每分鐘檢查一次，距離上一筆送出的
@@ -36,15 +39,15 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
     private var heartbeatFixTimeout: Task<Void, Never>?
     /// 最後一次送給 onLiveLocationUpdate 的時間（移動回報與心跳都算）
     private var lastLiveDeliveryAt: Date?
-    /// 平常的移動門檻（公尺）：心跳負責時間，distanceFilter 負責移動
-    private static let movementDistanceFilter: CLLocationDistance = 100
+    /// 靜止偵測：移動中／靜止切換定位參數（見 LocationProfile）
+    private var motionDetector = MotionDetector()
+    var motionState: MotionState { motionDetector.state }
     /// 距離上次送出超過這麼久就補心跳；比 5 分鐘短 30 秒，吸收每分鐘檢查與取位耗時的誤差
     private static let heartbeatDueInterval: TimeInterval = LiveLocationPresence.heartbeatInterval - 30
 
     override private init() {
         super.init()
-        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        manager.distanceFilter = Self.movementDistanceFilter
+        applyProfile()
         manager.activityType = .other
         // 不讓 iOS 自動暫停：自動暫停的觸發條件正是「一段時間沒移動」，暫停後背景 App 會被掛起、
         // 不會自動恢復，靜止的人就再也送不出心跳，被家人端判成失聯。
@@ -169,6 +172,12 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
         // 注意：不在這裡記 lastLiveDeliveryAt——收到定位不等於上傳成功，
         // 由 noteLiveLocationDelivered() 在實際送達後才記，上傳失敗的話心跳會盡快補送。
         if liveSharingEnabled {
+            let previousState = motionDetector.state
+            motionDetector.ingest(LocationSample(latest))
+            if motionDetector.state != previousState {
+                AppLog.data.info("定位模式切換：\(self.motionDetector.state.rawValue)")
+                applyProfile()
+            }
             onLiveLocationUpdate?(latest)
         }
     }
@@ -192,16 +201,21 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
 
         if liveSharingEnabled {
             startHeartbeatIfNeeded()
-            manager.allowsBackgroundLocationUpdates = authorization == .authorizedAlways
-            // Always 授權下可在背景更新而不常駐藍色狀態膠囊；When In Use 的顯示仍由系統決定。
-            // 隱私透明度由家人頁的「即時圈分享中」文字、最後更新時間與停止按鈕承擔。
-            manager.showsBackgroundLocationIndicator = false
+            // 「永遠」授權才能在背景持續更新；showsBackgroundLocationIndicator = true 讓系統在
+            // 狀態列顯示藍色定位指示（AGENTS 紅線：分享必須「看得見正在運作」）。
+            // 「使用期間」授權只有前景定位；App 進背景後靠顯著位置變更喚醒（見下方）。
+            let always = authorization == .authorizedAlways
+            manager.allowsBackgroundLocationUpdates = always
+            manager.showsBackgroundLocationIndicator = always
+            applyProfile()
             manager.startUpdatingLocation()
         } else {
             stopHeartbeat()
             manager.stopUpdatingLocation()
             manager.allowsBackgroundLocationUpdates = false
             manager.showsBackgroundLocationIndicator = false
+            motionDetector.reset()
+            applyProfile()
         }
 
         if hasFollowCircle || liveSharingEnabled {
@@ -251,6 +265,8 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
         }
         // 放開距離門檻後，正在運作的標準定位會在數秒內送來下一筆（多半來自 Wi-Fi／基地台，百米精度不必等 GPS）
         heartbeatAwaitingFix = true
+        // 靜止省電模式的精度是 1 公里，取到的定位可能粗到被上傳端拒收；心跳這一筆暫時改回 100 公尺精度
+        manager.desiredAccuracy = LocationProfile.moving.desiredAccuracy
         manager.distanceFilter = kCLDistanceFilterNone
         manager.startUpdatingLocation() // 已在運作時不會重複啟動；保險起見確保定位沒被停掉
         manager.requestLocation() // 人沒動時 distanceFilter 放開也不一定有回呼，主動要一筆保證有新定位
@@ -272,6 +288,13 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
         heartbeatAwaitingFix = false
         heartbeatFixTimeout?.cancel()
         heartbeatFixTimeout = nil
-        manager.distanceFilter = Self.movementDistanceFilter
+        applyProfile()
+    }
+
+    /// 依目前移動／靜止狀態套用定位參數
+    private func applyProfile() {
+        let profile = LocationProfile.profile(for: motionDetector.state)
+        manager.desiredAccuracy = profile.desiredAccuracy
+        manager.distanceFilter = profile.distanceFilter
     }
 }

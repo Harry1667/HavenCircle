@@ -328,7 +328,8 @@ final class FamilySyncService {
     // MARK: - 家庭即時圈
 
     /// 把這台手機最新的位置寫進家庭圈的 locations 子集合。
-    /// 100 公尺內且 30 秒內的重複更新會合併，避免寫入風暴。
+    /// 節流（UploadThrottle）：距離上次成功上傳不到 30 秒、且位移沒超過 200 公尺的更新會合併，避免寫入風暴；
+    /// `force` 用於進出守護地點、家人要求更新位置這類「必須立刻送」的情境。
     ///
     /// 心跳：LocationService 每 5 分鐘會送來一筆新定位（即使沒移動），這裡照常寫入，
     /// 讓 updatedAt（最後回報時間）持續刷新；30 秒去抖不會擋到 5 分鐘一次的心跳。
@@ -342,7 +343,8 @@ final class FamilySyncService {
         _ location: CLLocation,
         displayName: String,
         radiusMeters: Int,
-        context: ModelContext
+        context: ModelContext,
+        force: Bool = false
     ) async -> Bool {
         guard AuthService.shared.isSignedIn, let uid else {
             liveLocationError = "請先用 Apple 帳號登入，才能把即時位置分享給家人"
@@ -371,11 +373,15 @@ final class FamilySyncService {
             }
             return false
         }
-        if let lastPublishedLocation, let lastPublishedAt,
-           location.distance(from: lastPublishedLocation) < 100,
-           lastPublishedRadius == radiusMeters,
-           lastPublishedAt > Date.now.addingTimeInterval(-30) {
-            return true
+        if !force, let lastPublishedLocation, let lastPublishedAt, lastPublishedRadius == radiusMeters {
+            let previous = LocationSample(
+                time: lastPublishedAt,
+                latitude: lastPublishedLocation.coordinate.latitude,
+                longitude: lastPublishedLocation.coordinate.longitude
+            )
+            if !UploadThrottle.shouldUpload(previous: previous, current: LocationSample(time: .now, latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)) {
+                return true
+            }
         }
         guard !liveLocationPublishInFlight else { return false }
         liveLocationPublishInFlight = true

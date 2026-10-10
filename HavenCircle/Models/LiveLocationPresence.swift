@@ -67,21 +67,50 @@ enum LiveLocationPresence {
 
     /// 給家人看的狀態句（純文字，不靠顏色）。
     /// - 失聯：「20 分鐘沒有回報（可能沒電、關機或沒有網路）」
-    /// - 有心跳、沒移動：「在同一地點 40 分鐘・5 分鐘前確認」
-    /// - 剛移動過：「3 分鐘前更新位置」
-    static func statusText(lastReportedAt: Date?, stationarySince: Date?, now: Date = .now) -> String {
+    /// - 在守護地點內：「在家・從 08:30 起・2 分鐘前確認」
+    /// - 剛移動過（停留不滿 5 分鐘）：「移動中・3 分鐘前」
+    /// - 停留：「停留 大安區・40 分鐘・5 分鐘前確認」（沒有行政區時「在同一地點 40 分鐘・…」）
+    /// - 舊版文件（沒有 stationarySince）：「3 分鐘前更新位置」
+    /// 所有分支都帶上最後回報時間（AGENTS 紅線：即時圈一律顯示最後更新）。
+    static func statusText(
+        lastReportedAt: Date?,
+        stationarySince: Date?,
+        placeName: String? = nil,
+        placeSince: Date? = nil,
+        district: String? = nil,
+        now: Date = .now,
+        timeZone: TimeZone = .current
+    ) -> String {
         guard let lastReportedAt else { return "尚未取得位置" }
         let sinceReport = max(0, now.timeIntervalSince(lastReportedAt))
         guard isReporting(lastReportedAt: lastReportedAt, now: now) else {
             return "\(durationText(sinceReport))沒有回報（可能沒電、關機或沒有網路）"
         }
+        if let placeName, !placeName.isEmpty {
+            if let since = placeSince ?? stationarySince {
+                return "在\(placeName)・從 \(clockText(since, timeZone: timeZone)) 起・\(agoText(sinceReport))確認"
+            }
+            return "在\(placeName)・\(agoText(sinceReport))確認"
+        }
         if let stationarySince {
             let stayed = max(0, now.timeIntervalSince(stationarySince))
             if stayed >= stationaryDisplayThreshold {
+                if let district, !district.isEmpty, district != Districts.unspecified {
+                    return "停留 \(district)・\(durationText(stayed))・\(agoText(sinceReport))確認"
+                }
                 return "在同一地點 \(durationText(stayed))・\(agoText(sinceReport))確認"
             }
+            return "移動中・\(agoText(sinceReport))"
         }
         return "\(agoText(sinceReport))更新位置"
+    }
+
+    /// 「08:30」：固定 24 小時制、不跟著裝置語言變 AM/PM
+    static func clockText(_ date: Date, timeZone: TimeZone = .current) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let parts = calendar.dateComponents([.hour, .minute], from: date)
+        return String(format: "%02d:%02d", parts.hour ?? 0, parts.minute ?? 0)
     }
 
     /// 「剛剛」／「5 分鐘前」：自己組字串，不用系統相對時間格式器（會跟著裝置語言變英文）

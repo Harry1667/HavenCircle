@@ -1,0 +1,261 @@
+import Foundation
+import CoreLocation
+
+// 背景定位／軌跡／守護地點偵測用的純函式與小型值型別。
+// 刻意不碰 CLLocationManager、Firestore、SwiftData，讓判斷邏輯可以在 Preview／自我檢查中重現。
+
+/// 一筆定位取樣（只留判斷所需的欄位）
+struct LocationSample: Equatable {
+    let time: Date
+    let latitude: Double
+    let longitude: Double
+
+    init(time: Date, latitude: Double, longitude: Double) {
+        self.time = time
+        self.latitude = latitude
+        self.longitude = longitude
+    }
+
+    init(_ location: CLLocation) {
+        self.init(
+            time: location.timestamp,
+            latitude: location.coordinate.latitude,
+            longitude: location.coordinate.longitude
+        )
+    }
+
+    func distance(to other: LocationSample) -> Double {
+        CLLocation(latitude: latitude, longitude: longitude)
+            .distance(from: CLLocation(latitude: other.latitude, longitude: other.longitude))
+    }
+}
+
+// MARK: - 靜止偵測
+
+enum MotionState: String, Equatable {
+    case moving
+    case stationary
+}
+
+/// 靜止／移動偵測（純狀態機）。
+///
+/// 規則：
+/// - 移動中 → 靜止：往前找「至少 [stationaryWindow]（4 分鐘）以前」的最後一筆取樣當基準，
+///   基準與其後所有取樣都在 [stationaryRadius]（50 公尺）內，才判定靜止。
+///   （靜止時 distanceFilter 放大、定位很少回呼，所以允許用心跳那一筆跟 4 分鐘前的取樣比。）
+/// - 靜止 → 移動：離開靜止錨點超過 [resumeMovingRadius]（100 公尺）。
+///   半徑比進入靜止大，避免 GPS 抖動造成來回切換。
+struct MotionDetector {
+    static let stationaryWindow: TimeInterval = 4 * 60
+    static let stationaryRadius: Double = 50
+    static let resumeMovingRadius: Double = 100
+    /// 緩衝只保留這麼久的取樣，避免無限成長
+    private static let retention: TimeInterval = 15 * 60
+
+    private(set) var state: MotionState = .moving
+    private var samples: [LocationSample] = []
+    private var stationaryAnchor: LocationSample?
+
+    init() {}
+
+    /// 餵一筆新定位，回傳目前狀態
+    @discardableResult
+    mutating func ingest(_ sample: LocationSample) -> MotionState {
+        samples.append(sample)
+        samples.removeAll { $0.time < sample.time.addingTimeInterval(-Self.retention) }
+
+        switch state {
+        case .moving:
+            let cutoff = sample.time.addingTimeInterval(-Self.stationaryWindow)
+            guard let baseIndex = samples.lastIndex(where: { $0.time <= cutoff }) else { return state }
+            let span = samples[baseIndex...]
+            if span.allSatisfy({ $0.distance(to: sample) < Self.stationaryRadius }) {
+                state = .stationary
+                stationaryAnchor = sample
+            }
+        case .stationary:
+            if let anchor = stationaryAnchor, anchor.distance(to: sample) >= Self.resumeMovingRadius {
+                state = .moving
+                stationaryAnchor = nil
+                samples = [sample]
+            }
+        }
+        return state
+    }
+
+    mutating func reset() {
+        state = .moving
+        samples = []
+        stationaryAnchor = nil
+    }
+}
+
+/// 兩種定位參數組合（移動中 vs 靜止省電）
+struct LocationProfile: Equatable {
+    let desiredAccuracy: CLLocationAccuracy
+    let distanceFilter: CLLocationDistance
+
+    static let moving = LocationProfile(desiredAccuracy: kCLLocationAccuracyHundredMeters, distanceFilter: 50)
+    static let stationary = LocationProfile(desiredAccuracy: kCLLocationAccuracyKilometer, distanceFilter: 300)
+
+    static func profile(for state: MotionState) -> LocationProfile {
+        state == .moving ? .moving : .stationary
+    }
+}
+
+// MARK: - 上傳節流
+
+enum UploadThrottle {
+    /// 最短間隔：30 秒一筆
+    static let minInterval: TimeInterval = 30
+    /// 位移超過這個距離就不受最短間隔限制
+    static let bigMoveMeters: Double = 200
+
+    static func shouldUpload(previous: LocationSample?, current: LocationSample) -> Bool {
+        guard let previous else { return true }
+        if current.distance(to: previous) > bigMoveMeters { return true }
+        return current.time.timeIntervalSince(previous.time) >= minInterval
+    }
+}
+
+// MARK: - 24 小時軌跡
+
+enum TrailPolicy {
+    /// 軌跡與到達／離開事件保留 24 小時
+    static let retention: TimeInterval = 24 * 60 * 60
+    /// 每次最多刪幾筆過期點
+    static let cleanupBatchLimit = 50
+    /// 清理查詢最短間隔（每次上傳都查會白白多讀文件；10 分鐘一次足以讓過期點不累積）
+    static let cleanupMinInterval: TimeInterval = 10 * 60
+    /// 軌跡點最短間隔（靜止時不用每次上傳都加點）
+    static let appendMinInterval: TimeInterval = 10 * 60
+    /// 位移超過這個距離就一定追加軌跡點
+    static let appendMinMoveMeters: Double = 30
+
+    static func cutoff(now: Date = .now) -> Date { now.addingTimeInterval(-retention) }
+
+    /// 寫入時就帶上的 Firestore TTL 欄位 expireAt
+    static func expireAt(for pointTime: Date) -> Date { pointTime.addingTimeInterval(retention) }
+
+    static func isWithinWindow(_ date: Date, now: Date = .now) -> Bool { date >= cutoff(now: now) }
+
+    static func shouldCleanup(lastCleanupAt: Date?, now: Date = .now) -> Bool {
+        guard let lastCleanupAt else { return true }
+        return now.timeIntervalSince(lastCleanupAt) >= cleanupMinInterval
+    }
+
+    static func shouldAppendPoint(previous: LocationSample?, current: LocationSample) -> Bool {
+        guard let previous else { return true }
+        if current.distance(to: previous) >= appendMinMoveMeters { return true }
+        return current.time.timeIntervalSince(previous.time) >= appendMinInterval
+    }
+
+    /// 軌跡總長度（公尺），列表摘要用
+    static func totalDistance(_ points: [LocationSample]) -> Double {
+        zip(points, points.dropFirst()).reduce(0) { $0 + $1.0.distance(to: $1.1) }
+    }
+}
+
+// MARK: - 守護地點地理圍欄
+
+struct GeofencePlace: Equatable {
+    let id: String
+    let name: String
+    let latitude: Double
+    let longitude: Double
+}
+
+enum GeofencePlanner {
+    /// iOS 單一 App 最多監控 20 個區域
+    static let systemLimit = 20
+    /// 到達／離開判斷用的圍欄半徑。固定圈的 radiusMeters 是「警戒半徑」（500 公尺到 5 公里），
+    /// 拿來當到家偵測會太粗，所以另用較小的固定半徑。
+    static let regionRadiusMeters: Double = 150
+    static let identifierPrefix = "hc-place-"
+
+    static func identifier(forCircleKey key: String) -> String { identifierPrefix + key }
+
+    /// 超過 20 個時取離目前位置最近的 20 個；不知道目前位置就維持原順序取前 20 個
+    static func select(
+        _ places: [GeofencePlace],
+        near center: (latitude: Double, longitude: Double)?,
+        limit: Int = systemLimit
+    ) -> [GeofencePlace] {
+        guard places.count > limit else { return places }
+        guard let center else { return Array(places.prefix(limit)) }
+        let origin = CLLocation(latitude: center.latitude, longitude: center.longitude)
+        return places
+            .sorted {
+                CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: origin)
+                    < CLLocation(latitude: $1.latitude, longitude: $1.longitude).distance(from: origin)
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+}
+
+// MARK: - 到達／離開事件
+
+struct ArrivalEvent: Identifiable, Equatable {
+    enum Kind: String { case arrive, depart }
+    enum Source: String { case region, visit }
+
+    let id: String
+    let uid: String
+    let name: String
+    let kind: Kind
+    let source: Source
+    let placeName: String
+    let createdAt: Date
+
+    /// 「小明到達家」「小明離開公司」；visit 沒有守護地點名時用「某處」
+    var message: String {
+        let place = placeName.isEmpty ? "某處" : placeName
+        return kind == .arrive ? "\(name)到達\(place)" : "\(name)離開\(place)"
+    }
+
+    var timeText: String { LiveLocationPresence.clockText(createdAt) }
+}
+
+enum ArrivalPolicy {
+    /// 家人 App 讀到比這更舊的事件時不再跳橫幅（避免久未開 App 一次噴出一堆過時通知）
+    static let bannerMaxAge: TimeInterval = 30 * 60
+
+    /// 篩出要跳橫幅的事件：別人的、守護地點進出（不含 visit）、夠新、還沒看過
+    static func bannerCandidates(
+        _ events: [ArrivalEvent],
+        selfUID: String?,
+        lastSeen: Date,
+        now: Date = .now
+    ) -> [ArrivalEvent] {
+        events
+            .filter {
+                $0.uid != selfUID
+                    && $0.source == .region
+                    && $0.createdAt > lastSeen
+                    && now.timeIntervalSince($0.createdAt) <= bannerMaxAge
+            }
+            .sorted { $0.createdAt < $1.createdAt }
+    }
+}
+
+// MARK: - 家人主動「更新位置」
+
+enum LocationRequestPolicy {
+    /// 請求超過這麼久就當作過期、不再回應（對方手機早該回了，過期請求通常是舊的）
+    static let maxAge: TimeInterval = 10 * 60
+    /// 同一個人連續請求的冷卻時間（避免洗版與耗電）
+    static let cooldown: TimeInterval = 60
+
+    static func shouldAnswer(requestedAt: Date, lastHandledAt: Date?, now: Date = .now) -> Bool {
+        guard now.timeIntervalSince(requestedAt) <= maxAge else { return false }
+        if let lastHandledAt, requestedAt <= lastHandledAt { return false }
+        return true
+    }
+
+    /// 回傳還要等幾秒才能再請求；0 代表可以
+    static func cooldownRemaining(lastRequestAt: Date?, now: Date = .now) -> TimeInterval {
+        guard let lastRequestAt else { return 0 }
+        return max(0, cooldown - now.timeIntervalSince(lastRequestAt))
+    }
+}
