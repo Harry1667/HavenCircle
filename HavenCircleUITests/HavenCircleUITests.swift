@@ -875,4 +875,14 @@ final class HavenCircleUITests: XCTestCase {
         if app.buttons["收起示範與開發"].exists { app.buttons["收起示範與開發"].tap(); sleep(1) }
         attach(text: "收起後仍存在=\(app.buttons["收起示範與開發"].exists)", name: "收起結果")
     }
+
+    /// 只送一次「我平安」（雙機互傳測試用），並截已送出狀態
+    func testQuickSafeOnce() throws {
+        app.tabBars.buttons["動態"].firstMatch.tap(); sleep(2); app.swipeDown(); sleep(1)
+        let send = app.buttons["quickSafe.sendButton"].firstMatch
+        if send.waitForExistence(timeout: 5) { send.tap(); sleep(4) }
+        shot("送出後")
+        let ack = app.staticTexts["quickSafe.ackSummary"].firstMatch
+        attach(text: "有人收到=\(ack.exists) \(ack.exists ? ack.label : "")", name: "收到摘要")
+    }
 }
