@@ -137,6 +137,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, MessagingDelegate {
                 // 權杖（可能）換新 → 強制清快取重訂，避免舊「已訂閱」旗標讓新權杖漏訂主題
                 FCMTopicSync.resync(container: container)
             }
+            // 權杖就緒或換新 → 同步到家庭成員文件，供伺服器依 uid 推播
+            await AppRuntime.familySync?.syncFCMToken()
         }
     }
 

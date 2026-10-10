@@ -3,6 +3,7 @@ import CoreLocation
 import SwiftData
 import UIKit
 import FirebaseFirestore
+import FirebaseMessaging
 import os
 
 /// 登入 / 家庭圈狀態，供 UI 呈現對應提示
@@ -70,6 +71,8 @@ final class FamilySyncService {
         get { UserDefaults.standard.string(forKey: SettingsKeys.currentFamilyID) }
         set {
             let defaults = UserDefaults.standard
+            // 家庭指標一變（建立／加入／離開），成員文件可能是新的或被刪過 → 清掉權杖同步標記
+            defaults.removeObject(forKey: SettingsKeys.fcmTokenSyncedMarker)
             if let newValue {
                 defaults.set(newValue, forKey: SettingsKeys.currentFamilyID)
             } else {
@@ -196,6 +199,24 @@ final class FamilySyncService {
         memberUids = family.memberUids
         isFamilyOwner = family.ownerUid == uid
         currentInviteCodeExpiresAt = try? await FirestoreFamilyBackend.fetchInviteCodeExpiry(code: family.inviteCode)
+        await syncFCMToken()
+    }
+
+    /// 把本機 FCM 權杖寫進 families/{id}/members/{uid}（fcmToken），讓 Oracle 的 family_push.php
+    /// 能依 uid 找到要推播的裝置（家人到達通知、更新位置喚醒）。
+    /// 權杖＋家庭＋uid 沒變就不重寫，避免每次刷新都打 Firestore；失敗只記 log，下次刷新會再試。
+    func syncFCMToken() async {
+        guard let uid, let familyID = currentFamilyID,
+              let token = Messaging.messaging().fcmToken, !token.isEmpty else { return }
+        let marker = "\(familyID)|\(uid)|\(token)"
+        let key = SettingsKeys.fcmTokenSyncedMarker
+        if UserDefaults.standard.string(forKey: key) == marker { return }
+        do {
+            try await FirestoreFamilyBackend.publishFCMToken(familyId: familyID, uid: uid, token: token)
+            UserDefaults.standard.set(marker, forKey: key)
+        } catch {
+            AppLog.cloud.error("寫入 FCM 權杖失敗：\(error.localizedDescription)")
+        }
     }
 
     // MARK: - 建立 / 加入家庭圈（邀請碼取代 CKShare）

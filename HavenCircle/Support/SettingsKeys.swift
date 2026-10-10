@@ -3,6 +3,8 @@ import SwiftUI
 
 /// UserDefaults / @AppStorage 鍵值集中定義，避免字串打錯造成設定失效
 enum SettingsKeys {
+    /// 已同步到成員文件的 FCM 權杖標記（familyId|uid|token）；家庭變動時清除以強制重寫
+    static let fcmTokenSyncedMarker = "fcmTokenSyncedMarker"
     static let alertsEnabled = "alertsEnabled"
     static let alertsPaused = "alertsPaused"
     static let highConfidenceOnly = "highConfidenceOnly"

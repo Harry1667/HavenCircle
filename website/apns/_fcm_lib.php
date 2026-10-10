@@ -106,9 +106,11 @@ function fcm_send_wake(array $target, array $data = []): array {
     return fcm_send_message($message);
 }
 
-/// 套用 topic/condition；無有效目標回 null。
+/// 套用 token/topic/condition；無有效目標回 null。
 function fcm_apply_target(array $message, array $target): ?array {
-    if (isset($target['topic'])) {
+    if (isset($target['token'])) {
+        $message['token'] = $target['token']; // 單一裝置（家人推播：依 uid 取得的 FCM 註冊權杖）
+    } elseif (isset($target['topic'])) {
         $message['topic'] = $target['topic'];
     } elseif (isset($target['condition'])) {
         $message['condition'] = $target['condition'];
