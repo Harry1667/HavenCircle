@@ -306,6 +306,18 @@ enum FirestoreFamilyBackend {
         let requestSnapshot = try await familyRef.collection(FirestoreConfig.Path.locationRequests).getDocuments()
         for doc in requestSnapshot.documents { try await doc.reference.delete() }
 
+        // 全家共用的守護地點（家庭成員皆可刪，圈主當然也可以）；同樣每批 400 筆
+        while true {
+            let batchSnapshot = try await familyRef.collection(FirestoreConfig.Path.places)
+                .limit(to: 400)
+                .getDocuments()
+            if batchSnapshot.documents.isEmpty { break }
+            let batch = db.batch()
+            batchSnapshot.documents.forEach { batch.deleteDocument($0.reference) }
+            try await batch.commit()
+            if batchSnapshot.documents.count < 400 { break }
+        }
+
         // ②pings：分頁批次刪，每批最多 400 筆（Firestore WriteBatch 上限），
         // 反覆抓下一批直到抓不到為止，避免安否回報量大時一次性操作逾時。
         while true {
@@ -609,6 +621,67 @@ enum FirestoreFamilyBackend {
         let snap = try await db.collection(FirestoreConfig.Path.families).document(familyId)
             .collection(FirestoreConfig.Path.locations).getDocuments()
         return snap.documents.compactMap(liveLocation(from:))
+    }
+
+    // MARK: - 全家共用守護地點
+
+    /// 雲端守護地點文件（不含任何個人位置，只有「地點」本身）
+    struct PlaceDoc: Equatable {
+        let id: String
+        let name: String
+        let latitude: Double
+        let longitude: Double
+        let radiusMeters: Int
+        let addressText: String
+        let district: String
+        let createdBy: String
+    }
+
+    static func fetchPlaces(familyId: String) async throws -> [PlaceDoc] {
+        let db = FirestoreConfig.store()
+        let snap = try await db.collection(FirestoreConfig.Path.families).document(familyId)
+            .collection(FirestoreConfig.Path.places).getDocuments()
+        return snap.documents.compactMap { doc -> PlaceDoc? in
+            let data = doc.data()
+            guard let lat = data["latitude"] as? Double, let lon = data["longitude"] as? Double else { return nil }
+            return PlaceDoc(
+                id: doc.documentID,
+                name: data["name"] as? String ?? "守護地點",
+                latitude: lat,
+                longitude: lon,
+                radiusMeters: (data["radiusMeters"] as? Int) ?? Int(data["radiusMeters"] as? Double ?? 1_000),
+                addressText: data["addressText"] as? String ?? "",
+                district: data["district"] as? String ?? "未指定",
+                createdBy: data["createdBy"] as? String ?? ""
+            )
+        }
+    }
+
+    /// 新增或更新一個共用守護地點。isCreate 時才寫 createdAt；createdBy 一律由呼叫端帶入
+    /// （新建＝自己；編輯別人建立的＝原建立者，規則要求 createdBy 不可被改）。
+    static func upsertPlace(familyId: String, place: PlaceDoc, isCreate: Bool) async throws {
+        let db = FirestoreConfig.store()
+        let ref = db.collection(FirestoreConfig.Path.families).document(familyId)
+            .collection(FirestoreConfig.Path.places).document(place.id)
+        var data: [String: Any] = [
+            "name": place.name,
+            "latitude": place.latitude,
+            "longitude": place.longitude,
+            "radiusMeters": place.radiusMeters,
+            "addressText": place.addressText,
+            "district": place.district,
+            "createdBy": place.createdBy,
+            "updatedAt": FieldValue.serverTimestamp()
+        ]
+        if isCreate { data["createdAt"] = FieldValue.serverTimestamp() }
+        try await withWriteDeadline(seconds: 10) { try await ref.setData(data, merge: true) }
+    }
+
+    static func deletePlace(familyId: String, placeId: String) async throws {
+        let db = FirestoreConfig.store()
+        let ref = db.collection(FirestoreConfig.Path.families).document(familyId)
+            .collection(FirestoreConfig.Path.places).document(placeId)
+        try await withWriteDeadline(seconds: 10) { try await ref.delete() }
     }
 
     // MARK: - 守護地點到達／離開事件

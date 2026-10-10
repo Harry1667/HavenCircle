@@ -57,6 +57,11 @@ final class LocalLifeCircle {
     var locationPlaceName: String?
     var locationPlaceSince: Date?
     var sharedLocationID: String?
+    /// 全家共用守護地點的雲端文件 ID（families/{fid}/places/{id}）。nil＝尚未上雲（或沒有家庭）。
+    /// 新增的可選欄位，SwiftData 輕量遷移即可。
+    var remotePlaceId: String?
+    /// 共用守護地點的建立者 Firebase uid（家人頁顯示「由 X 新增」用）；本機專屬或舊資料為 nil。
+    var createdByUid: String?
     var member: LocalFamilyMember?
 
     init(

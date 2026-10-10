@@ -660,7 +660,15 @@ struct FamilyHomeView: View {
                                 .fontWeight(.medium)
                                 .foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: HCSpacing.x1) {
-                                Text(place.name)
+                                HStack(spacing: HCSpacing.x1) {
+                                    Text(place.name)
+                                    // 共用地點顯示建立者（名字沿用家人頁的 fallback 規則）
+                                    if let creator = fixedCircleOf(place)?.createdByUid, isInFamilyCircle {
+                                        Text("・由 \(sync.placeCreatorLabel(uid: creator, members: members)) 新增")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
                                 // 設計鐵律：一個守護地點＝剛好一個警戒圈，副標直接講那個圈的實際資訊
                                 // （地址或警戒半徑）比報數字有用；0 圈孤兒才需要提示「還沒設」。
                                 let fixedCircle = place.lifeCircles.first { $0.kind == .fixed }
@@ -672,8 +680,12 @@ struct FamilyHomeView: View {
                     }
                     .swipeActions {
                         Button(role: .destructive) {
+                            // 守護地點全家共用：先收集雲端 ID，刪本機後同步刪雲端
+                            let sharedIDs = place.lifeCircles.compactMap(\.remotePlaceId)
                             context.delete(place)
                             context.saveReporting()
+                            GeofenceSync.sync(context: context)
+                            if !sharedIDs.isEmpty { Task { await sync.deleteSharedPlaces(ids: sharedIDs) } }
                         } label: {
                             Label("刪除", systemImage: "trash")
                         }
@@ -687,6 +699,10 @@ struct FamilyHomeView: View {
                 HCCenteredLabel("新增守護地點", systemImage: "plus.circle.fill")
             }
         }
+    }
+
+    private func fixedCircleOf(_ place: LocalFamilyMember) -> LocalLifeCircle? {
+        place.lifeCircles.first { $0.kind == .fixed }
     }
 
     /// 地點列表副標：一個地點剛好一個警戒圈，直接講那個圈的實際資訊（地址優先，

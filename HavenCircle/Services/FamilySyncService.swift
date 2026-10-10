@@ -62,6 +62,9 @@ final class FamilySyncService {
     private var lastTrailCleanupAt: Date?
     /// MainActor 在 await 期間仍可重入；只允許一筆位置寫入在途，避免重複建立同一 doc
     private var liveLocationPublishInFlight = false
+    /// 共用守護地點同步狀態（見 syncPlaces）：避免重入、記錄本機近期寫入
+    private var placesSyncInFlight = false
+    private var recentPlaceWrites: [String: Date] = [:]
 
     /// Firebase 身份（未登入為 nil）
     private var uid: String? { AuthService.shared.uid }
@@ -1156,6 +1159,210 @@ final class FamilySyncService {
         }
     }
 
+    // MARK: - 全家共用守護地點（families/{fid}/places/{placeId}）
+    //
+    // 一個守護地點＝「地點成員（kind=place）＋其下一個固定圈」。雲端 placeId 就是固定圈的 circleKey
+    // （本機新建的用自己的 circleKey 上傳；別人建的用 placeId 當 circleKey 投影），
+    // 並用 LocalLifeCircle.remotePlaceId 標記「已上雲／來自雲端」。
+    // 沒有家庭時完全不碰雲端，維持純本機。
+
+    /// 近期（60 秒內）本機剛寫過雲端的地點：避免輪詢拿到寫入前的舊快照，把剛改的內容蓋回去
+    /// 或把剛上傳的地點誤判成「別人刪掉了」。
+    private static let placeWriteGrace: TimeInterval = 60
+
+    private var pendingPlaceDeleteKey: String { "hc.places.pendingDelete.\(currentFamilyID ?? "")" }
+
+    private func placeDoc(from circle: LocalLifeCircle, createdBy: String) -> FirestoreFamilyBackend.PlaceDoc {
+        // 名字以地點成員為準（與 GeofenceSync、家人頁列表一致）
+        let name = circle.member?.isPlace == true ? (circle.member?.name ?? circle.name) : circle.name
+        return FirestoreFamilyBackend.PlaceDoc(
+            id: circle.circleKey,
+            name: name,
+            latitude: circle.latitude,
+            longitude: circle.longitude,
+            radiusMeters: circle.radiusMeters,
+            addressText: circle.addressText,
+            district: circle.district,
+            createdBy: createdBy
+        )
+    }
+
+    /// 本機新增／編輯守護地點後呼叫：已在家庭中才寫雲端（沒有家庭維持本機）。
+    /// 失敗只記 log，不丟錯——地點仍在本機，下次 [syncPlaces] 會把「尚未上雲」的補傳。
+    func pushPlace(_ circle: LocalLifeCircle, context: ModelContext) async {
+        guard let familyID = currentFamilyID, let selfUID = uid,
+              circle.kind == .fixed, circle.member?.isPlace == true,
+              !(circle.latitude == 0 && circle.longitude == 0) else { return }
+        let isCreate = circle.remotePlaceId == nil
+        let doc = placeDoc(from: circle, createdBy: circle.createdByUid ?? selfUID)
+        do {
+            try await FirestoreFamilyBackend.upsertPlace(familyId: familyID, place: doc, isCreate: isCreate)
+            circle.remotePlaceId = doc.id
+            circle.createdByUid = doc.createdBy
+            recentPlaceWrites[doc.id] = .now
+            context.saveReporting()
+        } catch {
+            AppLog.cloud.error("寫入共用守護地點失敗：\(error.localizedDescription)")
+        }
+    }
+
+    /// 使用者在本機刪除守護地點時呼叫（呼叫端須在刪除前先收集 remotePlaceId）。
+    /// 失敗的 ID 記入待刪清單，下次 [syncPlaces] 重試；待刪期間不會被投影回本機。
+    func deleteSharedPlaces(ids: [String]) async {
+        guard let familyID = currentFamilyID, !ids.isEmpty else { return }
+        let defaults = UserDefaults.standard
+        let key = pendingPlaceDeleteKey
+        var pending = Set(defaults.stringArray(forKey: key) ?? [])
+        pending.formUnion(ids)
+        defaults.set(Array(pending), forKey: key)
+        for id in ids {
+            do {
+                try await FirestoreFamilyBackend.deletePlace(familyId: familyID, placeId: id)
+                pending.remove(id)
+            } catch {
+                AppLog.cloud.error("刪除共用守護地點失敗（稍後重試）：\(error.localizedDescription)")
+            }
+        }
+        defaults.set(Array(pending), forKey: key)
+    }
+
+    /// 家人頁「由 X 新增」用的建立者名稱：自己＝「你」；別人＝本機家人名字，查不到退回「家人 N」。
+    func placeCreatorLabel(uid creatorUid: String, members: [LocalFamilyMember]) -> String {
+        if creatorUid == uid { return "你" }
+        if let name = members.first(where: { $0.sharedIdentityKey == creatorUid })?.name,
+           !FamilyNaming.clean(name).isEmpty {
+            return name
+        }
+        return fallbackName(forUid: creatorUid)
+    }
+
+    /// 雙向同步守護地點（App 啟動、回前景、前景每 20 秒輪詢都會呼叫）：
+    /// ① 重試待刪的雲端地點 ② 遷移：把本機尚未上雲的固定圈上傳一次
+    /// ③ 投影：雲端 → 本機（新增、更新、別人刪掉的從本機移除）
+    /// 讀雲端失敗時整個中止，絕不因為「讀不到」而刪本機資料。
+    func syncPlaces(context: ModelContext) async {
+        guard let familyID = currentFamilyID, let selfUID = uid, !placesSyncInFlight else { return }
+        placesSyncInFlight = true
+        defer { placesSyncInFlight = false }
+        do {
+            let defaults = UserDefaults.standard
+            let key = pendingPlaceDeleteKey
+            var pending = Set(defaults.stringArray(forKey: key) ?? [])
+            for id in pending {
+                if (try? await FirestoreFamilyBackend.deletePlace(familyId: familyID, placeId: id)) != nil {
+                    pending.remove(id)
+                }
+            }
+            defaults.set(Array(pending), forKey: key)
+
+            let remote = try await FirestoreFamilyBackend.fetchPlaces(familyId: familyID)
+            let circles = (try? context.fetch(FetchDescriptor<LocalLifeCircle>())) ?? []
+            var changed = false
+            var knownRemoteIDs = Set(remote.map(\.id))
+
+            // ② 遷移／補傳：本機守護地點（地點成員下的固定圈）尚未上雲者上傳
+            for circle in circles
+            where circle.kind == .fixed && circle.member?.isPlace == true && circle.remotePlaceId == nil
+                && !(circle.latitude == 0 && circle.longitude == 0) {
+                let doc = placeDoc(from: circle, createdBy: selfUID)
+                do {
+                    try await FirestoreFamilyBackend.upsertPlace(familyId: familyID, place: doc, isCreate: true)
+                    circle.remotePlaceId = doc.id
+                    circle.createdByUid = selfUID
+                    recentPlaceWrites[doc.id] = .now
+                    knownRemoteIDs.insert(doc.id)
+                    changed = true
+                } catch {
+                    AppLog.cloud.error("上傳本機守護地點失敗：\(error.localizedDescription)")
+                }
+            }
+
+            // ③ 投影：雲端 → 本機
+            let now = Date.now
+            for place in remote where !pending.contains(place.id) {
+                if let circle = circles.first(where: { $0.remotePlaceId == place.id }) {
+                    if let wrote = recentPlaceWrites[place.id], now.timeIntervalSince(wrote) < Self.placeWriteGrace { continue }
+                    if circle.name != place.name { circle.name = place.name; changed = true }
+                    if let member = circle.member, member.isPlace, member.name != place.name {
+                        member.name = place.name; changed = true
+                    }
+                    if circle.latitude != place.latitude { circle.latitude = place.latitude; changed = true }
+                    if circle.longitude != place.longitude { circle.longitude = place.longitude; changed = true }
+                    if circle.radiusMeters != place.radiusMeters { circle.radiusMeters = place.radiusMeters; changed = true }
+                    if circle.district != place.district { circle.district = place.district; changed = true }
+                    if circle.addressText != place.addressText { circle.setAddress(place.addressText); changed = true }
+                    if circle.createdByUid != place.createdBy { circle.createdByUid = place.createdBy; changed = true }
+                } else {
+                    let member = LocalFamilyMember(name: place.name, relationship: "重要地點", kind: "place")
+                    context.insert(member)
+                    let circle = LocalLifeCircle(
+                        circleKey: place.id,
+                        name: place.name,
+                        encryptedAddress: "",
+                        latitude: place.latitude,
+                        longitude: place.longitude,
+                        radiusMeters: place.radiusMeters,
+                        alertTypes: EventCategory.defaultSelection,
+                        member: member
+                    )
+                    circle.setAddress(place.addressText)
+                    circle.district = place.district
+                    circle.kind = .fixed
+                    circle.remotePlaceId = place.id
+                    circle.createdByUid = place.createdBy
+                    context.insert(circle)
+                    changed = true
+                }
+            }
+
+            // 別人（或別台裝置）刪掉的：本機有 remotePlaceId 但雲端已沒有 → 移除
+            for circle in circles {
+                guard let id = circle.remotePlaceId, !knownRemoteIDs.contains(id) else { continue }
+                if let wrote = recentPlaceWrites[id], now.timeIntervalSince(wrote) < Self.placeWriteGrace { continue }
+                deleteProjectedPlace(circle, context: context)
+                changed = true
+            }
+            recentPlaceWrites = recentPlaceWrites.filter { now.timeIntervalSince($0.value) < Self.placeWriteGrace }
+
+            if changed {
+                context.saveReporting()
+                GeofenceSync.sync(context: context)
+                await EventPipeline.refresh(context: context)
+            }
+        } catch {
+            AppLog.cloud.error("同步共用守護地點失敗：\(error.localizedDescription)")
+        }
+    }
+
+    /// 刪除一個固定圈；它是地點成員唯一的圈時，連地點成員一起刪（避免留下 0 圈孤兒）
+    private func deleteProjectedPlace(_ circle: LocalLifeCircle, context: ModelContext) {
+        let circleID = circle.persistentModelID
+        let member = circle.member
+        let onlyCircle = member.map { $0.lifeCircles.allSatisfy { $0.persistentModelID == circleID } } ?? false
+        context.delete(circle)
+        if let member, member.isPlace, onlyCircle { context.delete(member) }
+    }
+
+    /// 離開／解散家庭圈時處理本機的共用地點：本人建立的保留成個人地點（清掉雲端標記，
+    /// 之後加入別的家庭會再次上傳）；別人建立的不屬於我，從本機移除。
+    private func detachSharedPlaces(context: ModelContext) {
+        let circles = (try? context.fetch(FetchDescriptor<LocalLifeCircle>())) ?? []
+        var changed = false
+        for circle in circles where circle.remotePlaceId != nil {
+            if circle.createdByUid == nil || circle.createdByUid == uid {
+                circle.remotePlaceId = nil
+                circle.createdByUid = nil
+            } else {
+                deleteProjectedPlace(circle, context: context)
+            }
+            changed = true
+        }
+        if changed {
+            context.saveReporting()
+            GeofenceSync.sync(context: context)
+        }
+    }
+
     // MARK: - 退出／解散家庭圈（帳號刪除流程／主動退出用）
 
     /// 退出（一般成員／圈主但還有其他成員）或解散（圈主且只剩自己一人）目前的家庭圈。
@@ -1183,6 +1390,7 @@ final class FamilySyncService {
         }
         if let context {
             purgeSyncedFamilyProjection(context: context)
+            detachSharedPlaces(context: context)
         }
         pings = []
         liveLocations = []

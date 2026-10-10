@@ -9,6 +9,7 @@ struct CircleEditorView: View {
     let circle: LocalLifeCircle?
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
+    @Environment(FamilySyncService.self) private var sync
     @State private var name = ""
     @State private var address = ""
     @State private var radius = 1000
@@ -526,8 +527,20 @@ struct CircleEditorView: View {
         target.scheduleEndHour = endHour
         target.district = district
         target.kind = .fixed
+        // 編輯既有守護地點時，地點成員名稱跟著改（列表、地理圍欄、共用同步都以成員名稱為準）
+        if member.isPlace, member.modelContext != nil {
+            let finalName = target.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if member.name != finalName { member.name = finalName }
+        }
         if circle == nil { context.insert(target) }
         context.saveReporting()
+        // 守護地點全家共用：已在家庭中就寫雲端（沒有家庭維持本機）；背景進行，不卡住關閉動畫
+        if member.isPlace {
+            Task { @MainActor in
+                await sync.pushPlace(target, context: context)
+                GeofenceSync.sync(context: context)
+            }
+        }
         // 一定要在 dismiss() 之前設 true：.onDisappear 觸發的孤兒清除判斷靠這個旗標
         // 分辨「有存過」跟「取消/下滑關閉」，順序反了會被自己剛存好的圈也一併判定成孤兒刪掉
         didSave = true

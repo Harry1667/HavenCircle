@@ -29,5 +29,7 @@ enum FirestoreConfig {
         static let trail = "trail"
         /// 家人要求「更新位置」的請求（families/{id}/locationRequests/{被請求者 uid}）
         static let locationRequests = "locationRequests"
+        /// 全家共用的守護地點（families/{id}/places/{placeId}）
+        static let places = "places"
     }
 }

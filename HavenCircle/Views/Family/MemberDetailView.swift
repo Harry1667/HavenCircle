@@ -8,6 +8,7 @@ import SwiftData
 struct MemberDetailView: View {
     let member: LocalFamilyMember
     @Environment(\.modelContext) private var context
+    @Environment(FamilySyncService.self) private var sync
     @State private var editing: LocalLifeCircle?
     /// 僅用於地點孤兒補救：地點成員已建立但一個警戒圈都沒有時，唯一的「補建」入口
     /// （不是「新增第二個」，member 本來就 0 圈，建立後仍維持 1 地點＝1 圈）
@@ -111,8 +112,11 @@ struct MemberDetailView: View {
                         .buttonStyle(.plain)
                         .swipeActions {
                             Button(role: .destructive) {
+                                let sharedID = circle.remotePlaceId
                                 context.delete(circle)
                                 context.saveReporting()
+                                GeofenceSync.sync(context: context)
+                                if let sharedID { Task { await sync.deleteSharedPlaces(ids: [sharedID]) } }
                             } label: {
                                 Label("刪除", systemImage: "trash")
                             }
