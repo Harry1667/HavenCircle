@@ -806,4 +806,41 @@ final class HavenCircleUITests: XCTestCase {
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap(); sleep(1)
         shot("地圖-點空白收合")
     }
+
+    /// 顯示範圍膠囊拆成兩顆：「調整」原地選單切換範圍（測完改回預設），左側按鈕把地圖移到範圍；
+    /// 以及「關於」連點版本號 7 下解鎖／收起「示範與開發」
+    func testScopeAndDevTools() throws {
+        app.tabBars.buttons["地圖"].firstMatch.tap(); sleep(4)
+        let adjust = app.buttons["調整地圖顯示範圍"].firstMatch
+        guard adjust.waitForExistence(timeout: 5) else { attach(text: app.debugDescription, name: "地圖結構"); XCTFail("找不到調整鈕"); return }
+        adjust.tap(); sleep(1)
+        shot("範圍選單")
+        app.buttons["只有我所在的縣市"].firstMatch.tap(); sleep(2)
+        shot("只有我所在的縣市")
+        adjust.tap(); sleep(1)
+        app.buttons["我和家人的縣市"].firstMatch.tap(); sleep(2)
+        let fly = app.buttons.containing(NSPredicate(format: "label BEGINSWITH '顯示範圍'")).firstMatch
+        if fly.exists { fly.tap(); sleep(2) }
+        shot("移到顯示範圍")
+
+        app.buttons["設定"].firstMatch.tap(); sleep(2)
+        let about = app.staticTexts["關於安心圈"].firstMatch
+        for _ in 0..<5 where !about.isHittable { app.swipeUp(); sleep(1) }
+        shot("設定頁")
+        about.tap(); sleep(2)
+        let version = app.staticTexts["版本"].firstMatch
+        guard version.waitForExistence(timeout: 5) else { XCTFail("找不到版本"); return }
+        for _ in 0..<7 { version.tap() }
+        sleep(1)
+        shot("關於-連點版本號後")
+        app.navigationBars.buttons.element(boundBy: 0).tap(); sleep(1)
+        app.swipeUp(); app.swipeUp(); sleep(1)
+        // 區塊標題可能已捲出畫面，改以區塊最後一顆「收起示範與開發」判斷
+        let hasDemo = app.buttons["收起示範與開發"].exists
+        shot("設定-示範與開發")
+        attach(text: "示範與開發出現=\(hasDemo)", name: "解鎖結果")
+        XCTAssertTrue(hasDemo, "連點 7 下後應出現示範與開發")
+        if app.buttons["收起示範與開發"].exists { app.buttons["收起示範與開發"].tap(); sleep(1) }
+        attach(text: "收起後仍存在=\(app.buttons["收起示範與開發"].exists)", name: "收起結果")
+    }
 }

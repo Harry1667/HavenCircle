@@ -99,6 +99,8 @@ enum SettingsKeys {
     static let mapShowHospitals = "mapShowHospitals"
     /// 地圖顯示範圍（MapDisplayScope.rawValue）：只影響地圖上畫哪些縣市的事件與塗層，不影響通知判斷
     static let mapDisplayScope = "mapDisplayScope"
+    /// 設定頁「示範與開發」是否解鎖：預設隱藏，在「關於安心圈」連點版本號 7 下切換
+    static let devToolsUnlocked = "devToolsUnlocked"
 }
 
 /// 地圖顯示範圍：預設只畫「我和家人所在的縣市」，全台事件與塗層太雜也拖慢舊機型。

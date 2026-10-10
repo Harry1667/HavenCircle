@@ -175,6 +175,7 @@ struct SafetyMapView: View {
 
     /// 範圍提示膠囊文字：最多列 3 個縣市，超過改「台中市等 4 個縣市」
     private var scopePillText: String {
+        if mapDisplayScope == .all { return "顯示範圍：全台" }
         let names = relevantCounties
         let list = names.count > 3 ? "\(names[0])等 \(names.count) 個縣市" : names.joined(separator: "、")
         return "顯示範圍：\(list)"
@@ -183,29 +184,72 @@ struct SafetyMapView: View {
     /// 範圍提示膠囊：點擊打開設定（與右上角齒輪同一路徑），文字明確標示目前範圍
     @ViewBuilder
     private var scopePill: some View {
-        if mapDisplayScope != .all, !relevantCounties.isEmpty {
-            Button {
-                router.showSettings = true
-            } label: {
-                HStack(spacing: HCSpacing.x2) {
-                    Image(systemName: "scope")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(HCColor.countyHighlight)
-                    Text(scopePillText)
-                        .font(.caption.weight(.semibold))
-                        .lineLimit(1)
-                    Text("｜調整")
+        // 2026-10-11 使用者回饋：原本整顆膠囊點下去開整個設定頁，找不到在哪調整也很突兀。
+        // 拆成兩顆：左邊「看範圍」把地圖移過去，右邊「調整」原地跳選單直接改。
+        // 全台時也顯示（否則選了全台就沒有從地圖改回來的入口）
+        if mapDisplayScope == .all || !relevantCounties.isEmpty {
+            HStack(spacing: 0) {
+                Button {
+                    flyToScope()
+                } label: {
+                    HStack(spacing: HCSpacing.x2) {
+                        Image(systemName: "scope")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(HCColor.countyHighlight)
+                        Text(scopePillText)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                    }
+                    .padding(.leading, HCSpacing.x3)
+                    .padding(.trailing, HCSpacing.x2)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(scopePillText)，點擊把地圖移到這個範圍")
+
+                Divider().frame(height: 16)
+
+                Menu {
+                    Section("只影響地圖上顯示的事件，不影響通知") {
+                        Picker("地圖顯示範圍", selection: $mapDisplayScopeRaw) {
+                            ForEach(MapDisplayScope.allCases) { scope in
+                                Text(scope.title).tag(scope.rawValue)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("調整", systemImage: "slider.horizontal.3")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(HCColor.brand)
+                        .padding(.leading, HCSpacing.x2)
+                        .padding(.trailing, HCSpacing.x3)
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
                 }
-                .padding(.horizontal, HCSpacing.x3)
-                .padding(.vertical, 6)
-                .background(.thinMaterial, in: Capsule())
-                .overlay(Capsule().stroke(HCColor.countyHighlight.opacity(0.7), lineWidth: 1))
+                .accessibilityLabel("調整地圖顯示範圍")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(scopePillText)，點擊調整地圖顯示範圍")
+            .background(.thinMaterial, in: Capsule())
+            .overlay(Capsule().stroke(HCColor.countyHighlight.opacity(0.7), lineWidth: 1))
         }
+    }
+
+    /// 把鏡頭移到目前顯示範圍：框住範圍內所有縣市外框；全台或沒有外框時回到全台視野
+    private func flyToScope() {
+        let points = countyHighlights.flatMap(\.ring)
+        guard mapDisplayScope != .all, !points.isEmpty else {
+            withAnimation(.easeInOut(duration: 0.8)) { cameraPosition = .region(Self.taiwanWideRegion) }
+            return
+        }
+        let lats = points.map(\.latitude), lons = points.map(\.longitude)
+        let (minLat, maxLat) = (lats.min()!, lats.max()!)
+        let (minLon, maxLon) = (lons.min()!, lons.max()!)
+        let region = MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2, longitude: (minLon + maxLon) / 2),
+            // 外加 20% 邊界，金色邊框不要貼著螢幕邊
+            span: MKCoordinateSpan(latitudeDelta: (maxLat - minLat) * 1.2, longitudeDelta: (maxLon - minLon) * 1.2)
+        )
+        withAnimation(.easeInOut(duration: 0.8)) { cameraPosition = .region(region) }
     }
 
     /// 叢集與逐筆標記共用的鏡頭範圍：地圖尚未回報時以開圖預設的全台視野估算，

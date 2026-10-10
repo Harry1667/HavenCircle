@@ -130,6 +130,11 @@ struct DataSourceView: View {
 
 /// 關於頁：版本、官網與隱私原則。
 struct AboutView: View {
+    @AppStorage(SettingsKeys.devToolsUnlocked) private var devToolsUnlocked = false
+    /// 連點版本號計數：7 下切換「示範與開發」顯示（類似 Android 開發者選項）
+    @State private var versionTaps = 0
+    @State private var unlockNote: String?
+
     private var versionText: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
@@ -140,6 +145,19 @@ struct AboutView: View {
         List {
             Section {
                 LabeledContent("版本", value: versionText)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        versionTaps += 1
+                        guard versionTaps >= 7 else { return }
+                        versionTaps = 0
+                        devToolsUnlocked.toggle()
+                        unlockNote = devToolsUnlocked ? "已顯示設定頁的「示範與開發」" : "已隱藏設定頁的「示範與開發」"
+                    }
+                if let unlockNote {
+                    Text(unlockNote)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
                 if let url = URL(string: "https://havencircle.looptw.com") {
                     Link("官方網站", destination: url)
                 }

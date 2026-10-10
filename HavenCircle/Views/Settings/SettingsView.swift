@@ -14,6 +14,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKeys.appleAccountEmail) private var appleEmail = ""
     @AppStorage(SettingsKeys.apnsDeviceToken) private var apnsToken = ""
     @AppStorage(SettingsKeys.analyticsEnabled) private var analyticsEnabled = true
+    @AppStorage(SettingsKeys.devToolsUnlocked) private var devToolsUnlocked = false
     @State private var showPaywall = false
     @State private var showDeleteConfirm = false
     @State private var showDeleteReauth = false
@@ -169,7 +170,8 @@ struct SettingsView: View {
                 }
 
                 #if DEBUG
-                demoSection
+                // 隱藏區：在「關於安心圈」連點版本號 7 下才出現（展示時不會被誤點）
+                if devToolsUnlocked { demoSection }
                 #endif
 
                 Section {
@@ -353,6 +355,7 @@ struct SettingsView: View {
                 }
             }
             #endif
+            Button("收起示範與開發") { devToolsUnlocked = false }
         } header: {
             Text("示範與開發")
         } footer: {
