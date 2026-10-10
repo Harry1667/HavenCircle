@@ -36,6 +36,8 @@ struct AppleSignInPage: View {
             .frame(height: 50)
             .padding(.horizontal, 32)
 
+            SignInTermsLine()
+
             if let signInError {
                 Text(signInError)
                     .font(.caption)
@@ -75,6 +77,7 @@ struct AppleSignInPage: View {
             Task {
                 do {
                     _ = try await AuthService.shared.completeAppleSignIn(credential)
+                    SignInTermsLine.recordLegalAcceptance()
                     onSignedIn()
                 } catch {
                     // 原始錯誤只進 log；UI 一律顯示轉譯過的人話（見 AuthService.userFacingMessage）
@@ -85,6 +88,43 @@ struct AppleSignInPage: View {
             // 取消／裝置未登入／網路問題都交給共用轉譯判斷；使用者主動取消時會回傳 nil，不吵他
             signInError = AuthService.userFacingMessage(for: error, context: "登入失敗")
         }
+    }
+}
+
+/// 兩個登入入口共用的條款一行：「繼續即表示你同意《使用條款》與《隱私權政策》」，兩份文件都可點開。
+/// 登入成功時由呼叫端寫入 legalAcceptanceVersion（見 recordLegalAcceptance）。
+struct SignInTermsLine: View {
+    @State private var showing: LegalDocumentKind?
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Text("繼續即表示你同意")
+            HStack(spacing: 0) {
+                Button("《使用條款》") { showing = .terms }
+                Text("與")
+                Button("《隱私權政策》") { showing = .privacy }
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.center)
+        .sheet(item: $showing) { doc in
+            NavigationStack {
+                LegalDocumentView(document: doc)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("完成") { showing = nil }
+                        }
+                    }
+            }
+            .formPresentationSizing()
+        }
+    }
+
+    /// 登入成功時記下同意的條款版本（條款改版號即可重新取得同意）
+    static func recordLegalAcceptance() {
+        UserDefaults.standard.set(LegalDocumentKind.revision, forKey: SettingsKeys.legalAcceptanceVersion)
     }
 }
 

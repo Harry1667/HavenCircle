@@ -133,22 +133,21 @@ struct SettingsView: View {
                         AboutView()
                     }
                     Button {
-                        // 種旗標＋關掉設定 sheet＋切到地圖分頁：地圖頁偵測到旗標會重播新手帶領
-                        // （消耗點在 SafetyMapView）
-                        UserDefaults.standard.set(true, forKey: SettingsKeys.firstRunCoachingPending)
-                        router.selection = TabRouter.mapTab
+                        // 清掉引導卡旗標＋關掉設定 sheet＋回到動態：三張情境卡下次進動態會重新出現
+                        FeedOnboardingFlags.reset()
+                        router.selection = TabRouter.eventsTab
                         dismiss()
                     } label: {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("重播地圖導覽")
+                                Text("重新顯示引導卡")
                                     .foregroundStyle(.primary)
-                                Text("回到地圖後會重新播放新手帶領")
+                                Text("回到動態後會重新顯示定位、通知與邀請碼引導卡")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                         } icon: {
-                            settingsIcon("book.fill", color: HCColor.brand)
+                            settingsIcon("rectangle.stack.badge.plus", color: HCColor.brand)
                         }
                     }
                 }
@@ -215,7 +214,7 @@ struct SettingsView: View {
                     onLocalWipe: { await wipeLocalData() },
                     onFinished: {
                         showDeleteReauth = false
-                        dismiss() // 退回主畫面：onboardingCompleted 已在 wipeLocalData 清掉，會自動落地新手著陸
+                        dismiss() // 退回主畫面：本機資料已清空，回到零導覽的動態首頁
                     }
                 )
                 // iPad 會忽略隱含尺寸而放大成整頁 sheet，這裡收斂成 form 尺寸
@@ -365,8 +364,8 @@ struct SettingsView: View {
         }
     }
 
-    /// 開發用：清空本機家庭資料＋重置所有新手旗標，讓完整新手流程（地圖著陸→帶領卡→第二次選身分）當場重來。
-    /// launchCount 設回 1，模擬「這是第一次開 App」；下次重開就會走到「第二次＝選身分」。
+    /// 開發用：清空本機家庭資料＋重置所有新手旗標，讓零導覽首次體驗（動態情境卡）當場重來。
+    /// launchCount 設回 1，模擬「這是第一次開 App」。
     private func resetOnboarding() {
         for member in (try? context.fetch(FetchDescriptor<LocalFamilyMember>())) ?? [] {
             context.delete(member)
@@ -376,13 +375,11 @@ struct SettingsView: View {
         }
         context.saveReporting()
         let defaults = UserDefaults.standard
-        for key in [SettingsKeys.onboardingCompleted, SettingsKeys.roleSelectionPending,
-                    SettingsKeys.firstRunCoachingPending, SettingsKeys.seenCircleAdjustHint] {
-            defaults.set(false, forKey: key)
-        }
+        defaults.set(false, forKey: SettingsKeys.seenCircleAdjustHint)
+        FeedOnboardingFlags.reset()
         defaults.set(1, forKey: SettingsKeys.launchCount)
         defaults.set("", forKey: SettingsKeys.profileDisplayName)
-        dismiss() // 收起設定 → ContentView 監看旗標，立刻換回地圖著陸頁重跑
+        dismiss() // 收起設定；ContentView 會重建「我」，動態頂端引導卡重新出現
     }
     #endif
 
@@ -459,8 +456,10 @@ struct SettingsView: View {
                     SettingsKeys.liveLocationSharingEnabled, SettingsKeys.liveCircleRadiusMeters,
                     SettingsKeys.liveLocationDeviceID, SettingsKeys.apnsDeviceToken,
                     SettingsKeys.legalAcceptanceVersion, SettingsKeys.knownFamilyMemberUids,
-                    SettingsKeys.notificationPromptDeclined, SettingsKeys.roleSelectionPending,
-                    SettingsKeys.firstRunCoachingPending, SettingsKeys.seenCircleAdjustHint] {
+                    SettingsKeys.notificationPromptDeclined, SettingsKeys.seenCircleAdjustHint,
+                    SettingsKeys.feedLocationCardDismissed, SettingsKeys.notificationCardEligibleAt,
+                    SettingsKeys.inviteRowDismissed, SettingsKeys.mapRangePillShown,
+                    SettingsKeys.feedLocationDeniedShown, SettingsKeys.hasOpenedEventDetail] {
             UserDefaults.standard.removeObject(forKey: key)
         }
         EventVisibility.reset()

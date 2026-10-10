@@ -257,7 +257,7 @@ final class HavenCircleUITests: XCTestCase {
     }
 
     private func auditLaunch(_ args: [String]) {
-        // 模擬器全新安裝時用 --demo-firstrun 跳過新手引導（環境變數 AUDIT_DEMO=1）；實機不要設
+        // 環境變數 AUDIT_DEMO=1：加 --demo-firstrun 清掉引導卡旗標並載入示範種子（彩排／截圖用）；實機不要設
         var args = args
         if ProcessInfo.processInfo.environment["AUDIT_DEMO"] == "1" { args.append("--demo-firstrun") }
         app.launchArguments = args
@@ -379,46 +379,35 @@ final class HavenCircleUITests: XCTestCase {
 
     // MARK: 1. 新手引導
 
+    /// 零導覽冷啟動：第一幀就是動態分頁（無著陸頁、無模態、無「輕點繼續」），
+    /// 定位／通知是動態頂端的情境卡，0 點擊也能使用；點卡片才會出現系統權限框。
     func testOnboardingTour() throws {
         let flow = "onboarding"
-        auditLaunch(["--start-tab", "2"].filter { _ in false }) // 不帶任何旗標：模擬全新使用者
-        auditShot(flow, "首次開啟")
-        // 偏好的「往前走」按鈕（越前面越優先）
-        let buttonPrefs = ["下一步", "完成", "開始使用", "開始", "繼續", "先看看，稍後再開", "先看看警報長什麼樣", "先不用", "稍後再說", "略過", "跳過"]
-        var lastSig = ""
-        var stuckCount = 0
-        var idle = 0
+        auditLaunch([]) // 不帶任何旗標：模擬全新使用者
+        auditShot(flow, "冷啟動首屏")
         var tapLog: [String] = []
-        for _ in 0..<30 {
-            var acted = false
-            // 0) 系統彈窗（定位/通知）：截圖後點「允許」類
-            if handleSystemAlert(flow, tapLog: &tapLog) { acted = true; continue }
-            // 1) 地圖著陸：點一下地圖索要定位
-            if firstMatch("點一下地圖", types: [.staticText, .other]) != nil, tapLog.last != "地圖中央" || stuckCount < 2 {
-                app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-                auditClicks += 1; sleep(3)
-                app.tap() // 讓 interruption monitor 處理定位彈窗
-                tapLog.append("地圖中央"); acted = true
-            } else if let pref = buttonPrefs.first(where: { l in clickableInventory().contains { $0.hasPrefix("按鈕:" + l) } }) {
-                let b = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", pref)).firstMatch
-                auditTap(b, wait: 2); tapLog.append(pref); acted = true
-            } else if let t = firstMatch("輕點繼續", types: [.staticText]) {
-                auditTap(t, wait: 2); tapLog.append("輕點繼續"); acted = true
-            }
-            if acted {
-                idle = 0
-                let sig = clickableInventory().joined() + (tapLog.last ?? "")
-                if sig == lastSig { stuckCount += 1 } else { stuckCount = 0 }
-                lastSig = sig
-                auditShot(flow, "點擊後-\(tapLog.count)", note: "點了「\(tapLog.last ?? "")」")
-                if stuckCount >= 3 { auditLines.append("\(flow)|--|STUCK|\(auditClicks)|畫面不變卡住||"); break }
-            } else {
-                idle += 1
-                if idle >= 5 { break }
-                sleep(3)
-            }
+        // 驗收 1：第一幀是動態分頁，沒有舊的強制帶領
+        XCTAssertTrue(app.navigationBars["動態"].waitForExistence(timeout: 8), "冷啟動第一幀應為動態分頁")
+        XCTAssertFalse(app.staticTexts["輕點繼續"].exists, "不應再有「輕點繼續」帶領")
+        XCTAssertFalse(app.staticTexts["點一下地圖"].exists, "不應再有地圖著陸頁")
+        // 定位邀請卡 → 點「允許定位」→ 系統框
+        let allowLocation = app.buttons["允許定位"]
+        if allowLocation.waitForExistence(timeout: 5) {
+            auditShot(flow, "定位邀請卡")
+            auditTap(allowLocation, wait: 2); tapLog.append("允許定位")
+            _ = handleSystemAlert(flow, tapLog: &tapLog)
+            auditShot(flow, "允許定位後")
+        } else {
+            missing.append("找不到「允許定位」卡（可能已授權／已決定）")
         }
-        auditShot(flow, "終點-主畫面", note: "點擊序列：" + tapLog.joined(separator: " > "))
+        // 通知邀請卡（首次渲染 3 秒後出現）
+        let allowNotify = app.buttons["開啟通知"]
+        if allowNotify.waitForExistence(timeout: 8) {
+            auditShot(flow, "通知邀請卡")
+            auditTap(allowNotify, wait: 2); tapLog.append("開啟通知")
+            _ = handleSystemAlert(flow, tapLog: &tapLog)
+        }
+        auditShot(flow, "終點-動態", note: "點擊序列：" + tapLog.joined(separator: " > "))
         attach(text: "總點擊數 \(auditClicks)；序列：" + tapLog.joined(separator: " > "), name: "onboarding-summary")
         flushAudit(flow)
     }
@@ -506,8 +495,6 @@ final class HavenCircleUITests: XCTestCase {
                 if allow.exists { allow.tap() } else if let b = sb.buttons.allElementsBoundByIndex.last { b.tap() }
                 sleep(1); continue
             }
-            let cont = app.staticTexts["輕點繼續"]
-            if cont.exists { cont.tap(); sleep(1); continue }
             for l in ["略過", "稍後再說", "先不用", "跳過"] {
                 let b = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", l)).firstMatch
                 if b.exists && b.isHittable { b.tap(); sleep(1); hit = true; break }

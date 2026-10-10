@@ -38,7 +38,7 @@ struct PostJoinActivationView: View {
                 questionCard(
                     icon: "location.fill",
                     title: "要讓家人看得到你的位置嗎？",
-                    subtitle: "災害時家人能立刻知道你在哪。可以隨時關閉。",
+                    subtitle: "開啟後位置只分享給家庭圈成員，可隨時暫停；軌跡只保留 24 小時。",
                     primaryLabel: "開啟位置分享",
                     primaryAction: { Task { await enableLocation() } },
                     secondaryAction: { Task { await checkNotificationsStep() } }

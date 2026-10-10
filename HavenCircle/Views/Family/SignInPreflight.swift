@@ -99,6 +99,8 @@ private struct SignInPreflightCard: View {
             .frame(height: 50)
             .padding(.horizontal, 32)
 
+            SignInTermsLine()
+
             if let signInError {
                 Text(signInError)
                     .font(.caption)
@@ -139,6 +141,7 @@ private struct SignInPreflightCard: View {
             Task {
                 do {
                     _ = try await AuthService.shared.completeAppleSignIn(credential)
+                    SignInTermsLine.recordLegalAcceptance()
                     onSignedIn()
                     dismiss()
                 } catch {
