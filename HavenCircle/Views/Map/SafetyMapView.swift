@@ -110,10 +110,11 @@ struct SafetyMapView: View {
         return Set(relevantCounties)
     }
 
-    /// 事件是否在範圍內：演練事件一律顯示；座標不在任何縣市內（海上等）也保留，寧可多顯示不漏掉
+    /// 事件是否在範圍內：演練事件一律顯示；文字與座標都判不出縣市時保留，寧可多顯示不漏掉
     private func isInScope(_ event: LocalSafetyEvent, _ scope: Set<String>?) -> Bool {
         guard let scope, !event.isDrill else { return true }
         guard let county = CountyBoundaries.shared.county(
+            ofLocation: event.approximateLocation + " " + event.title,
             at: CLLocationCoordinate2D(latitude: event.latitude, longitude: event.longitude)
         ) else { return true }
         return scope.contains(county)

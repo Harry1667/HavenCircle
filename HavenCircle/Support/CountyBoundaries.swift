@@ -10,6 +10,8 @@ final class CountyBoundaries {
     private let outlines: [String: [[CLLocationCoordinate2D]]]
     /// 座標 → 縣市快取（座標取小數 3 位≈110m；事件座標多半是行政區中心，命中率高）
     private var countyCache: [CoordKey: String?] = [:]
+    /// 地點文字 → 縣市的快取：地圖每次重繪都要對全部事件判一次，不能每次重新比對 22 個縣市名
+    private var textCountyCache: [String: String?] = [:]
 
     private struct CoordKey: Hashable {
         let lat: Int
@@ -70,6 +72,36 @@ final class CountyBoundaries {
         if countyCache.count > 3_000 { countyCache.removeAll() }
         countyCache[key] = .some(result)
         return result
+    }
+
+    /// 全台 22 縣市名（已統一「台」）：從事件地點文字辨識縣市用
+    nonisolated private static let countyNames = [
+        "台北市", "新北市", "桃園市", "台中市", "台南市", "高雄市", "基隆市", "新竹市", "嘉義市",
+        "新竹縣", "苗栗縣", "彰化縣", "南投縣", "雲林縣", "嘉義縣", "屏東縣", "宜蘭縣", "花蓮縣",
+        "台東縣", "澎湖縣", "金門縣", "連江縣",
+    ]
+
+    /// 地點文字中第一個出現的縣市名（例「新北市貢寮區澳底海域」→ 新北市）；沒寫縣市回 nil
+    nonisolated static func county(inText text: String) -> String? {
+        let normalized = normalize(text)
+        return countyNames
+            .compactMap { name in normalized.range(of: name).map { (name, $0.lowerBound) } }
+            .min { $0.1 < $1.1 }?.0
+    }
+
+    /// 事件所在縣市：優先採地點文字裡寫明的縣市，沒寫才用座標點面內判。
+    /// 2026-10-11 實機資料：599 件中 13 件座標落在邊界外（海上翻船、外島、簡化邊界縫隙），
+    /// 只靠座標會判不出縣市而漏過範圍過濾；文字縣市與座標縣市則 0 件不一致。
+    func county(ofLocation text: String, at coord: CLLocationCoordinate2D) -> String? {
+        let fromText: String?
+        if let hit = textCountyCache[text] {
+            fromText = hit
+        } else {
+            fromText = Self.county(inText: text)
+            if textCountyCache.count > 3_000 { textCountyCache.removeAll() }
+            textCountyCache[text] = .some(fromText)
+        }
+        return fromText ?? county(at: coord)
     }
 }
 
