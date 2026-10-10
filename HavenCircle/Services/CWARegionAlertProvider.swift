@@ -15,7 +15,7 @@ import Foundation
 ///
 /// 這支 Provider 補上第 1、3 點：把已經在抓的官方地震資料接進 App，且用區域比對（縣市展開
 /// 成轄下所有區）取代距離比對，不會因為震央定位在別的城市就漏掉真正有感的使用者。
-struct CWARegionAlertProvider: RegionAlertProvider {
+nonisolated struct CWARegionAlertProvider: RegionAlertProvider {
     let sourceName = "中央氣象署"
 
     private let endpoint = URL(string: "https://havencircle.looptw.com/crawler/api/latest.php?dataset=cwa")!
@@ -27,7 +27,7 @@ struct CWARegionAlertProvider: RegionAlertProvider {
     /// 顯示壽命：地震本身是瞬時事件，但使用者仍需要一段時間確認家人平安、查看餘震資訊
     private static let ttlSeconds: TimeInterval = 12 * 3_600
 
-    func fetchAlerts() async throws -> [RawRegionAlert] {
+    @concurrent func fetchAlerts() async throws -> [RawRegionAlert] {
         let (data, response) = try await URLSession.shared.data(from: endpoint)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw NCDRProviderError.badResponse
@@ -117,20 +117,20 @@ struct CWARegionAlertProvider: RegionAlertProvider {
 
 // MARK: - CWA JSON 解碼結構（對應 fetch_cwa.py 產出、經 ingest.php dataset=cwa 存放的形狀）
 
-private struct CWAEnvelope: Decodable {
+private nonisolated struct CWAEnvelope: Decodable {
     let data: CWAPayload
 }
 
-private struct CWAPayload: Decodable {
+private nonisolated struct CWAPayload: Decodable {
     let datasets: CWADatasets
 }
 
-private struct CWADatasets: Decodable {
+private nonisolated struct CWADatasets: Decodable {
     let localQuakes: CWAQuakeDataset?
     let significantQuakes: CWAQuakeDataset?
 }
 
-private struct CWAQuakeDataset: Decodable {
+private nonisolated struct CWAQuakeDataset: Decodable {
     let earthquake: [CWAEarthquake]
 
     enum CodingKeys: String, CodingKey {
@@ -138,7 +138,7 @@ private struct CWAQuakeDataset: Decodable {
     }
 }
 
-private struct CWAEarthquake: Decodable {
+private nonisolated struct CWAEarthquake: Decodable {
     let earthquakeNo: Int
     let reportContent: String?
     let web: String?
@@ -154,7 +154,7 @@ private struct CWAEarthquake: Decodable {
     }
 }
 
-private struct CWAEarthquakeInfo: Decodable {
+private nonisolated struct CWAEarthquakeInfo: Decodable {
     let originTime: String?
     let epicenter: CWAEpicenter?
     let earthquakeMagnitude: CWAMagnitude?
@@ -166,7 +166,7 @@ private struct CWAEarthquakeInfo: Decodable {
     }
 }
 
-private struct CWAEpicenter: Decodable {
+private nonisolated struct CWAEpicenter: Decodable {
     let location: String?
 
     enum CodingKeys: String, CodingKey {
@@ -174,7 +174,7 @@ private struct CWAEpicenter: Decodable {
     }
 }
 
-private struct CWAMagnitude: Decodable {
+private nonisolated struct CWAMagnitude: Decodable {
     let magnitudeValue: Double?
 
     enum CodingKeys: String, CodingKey {
@@ -182,7 +182,7 @@ private struct CWAMagnitude: Decodable {
     }
 }
 
-private struct CWAIntensity: Decodable {
+private nonisolated struct CWAIntensity: Decodable {
     let shakingArea: [CWAShakingArea]?
 
     enum CodingKeys: String, CodingKey {
@@ -190,7 +190,7 @@ private struct CWAIntensity: Decodable {
     }
 }
 
-private struct CWAShakingArea: Decodable {
+private nonisolated struct CWAShakingArea: Decodable {
     let countyName: String
     let areaIntensity: String
 

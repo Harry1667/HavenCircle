@@ -30,12 +30,14 @@ nonisolated struct RawEventReport: Sendable {
     var isOngoing: Bool = true
 }
 
-protocol EventProvider {
+/// 來源協定一律 nonisolated + Sendable：網路回應的 JSON 解碼、欄位轉換、地名定位
+/// 都由各 provider 的 `@concurrent` fetch 在背景執行緒完成，只把值型結果交回主執行緒。
+nonisolated protocol EventProvider: Sendable {
     var sourceName: String { get }
-    func fetchReports() async throws -> [RawEventReport]
+    @concurrent func fetchReports() async throws -> [RawEventReport]
 }
 
-struct RawRegionAlert {
+nonisolated struct RawRegionAlert: Sendable {
     let alertKey: String
     let title: String
     let kind: String
@@ -47,9 +49,9 @@ struct RawRegionAlert {
     let ttlSeconds: TimeInterval
 }
 
-protocol RegionAlertProvider {
+nonisolated protocol RegionAlertProvider: Sendable {
     var sourceName: String { get }
-    func fetchAlerts() async throws -> [RawRegionAlert]
+    @concurrent func fetchAlerts() async throws -> [RawRegionAlert]
 }
 
 // MARK: - 管線
@@ -144,21 +146,38 @@ enum EventPipeline {
         // 只有新聞端點成功解碼時才會有值（空陣列也代表成功）。若網路或端點失敗，
         // 絕不能把本機所有新聞誤當成已下線而清掉。
         var currentNewsEventKeys: Set<String>?
-        for provider in providers {
+        // 各來源平行抓取（總請求數不變）；RemoteConfig 開關在主執行緒先判斷，
+        // 結果依 providers 原順序合併，分組輸入順序與以前串行時完全一致
+        let activeProviders = providers.filter { provider in
             // 遠端開關：媒體報導層可從 config/app.json 整層關閉
             // （新聞源出問題時免送審止血；官方 NCDR 源不設開關，那是產品底線）
-            if provider is NewsEventProvider, !RemoteConfig.feature("newsEvents", default: true) {
-                continue
+            !(provider is NewsEventProvider) || RemoteConfig.feature("newsEvents", default: true)
+        }
+        let results = await withTaskGroup(of: (Int, Result<[RawEventReport], Error>).self) { group in
+            for (index, provider) in activeProviders.enumerated() {
+                group.addTask {
+                    do {
+                        return (index, .success(try await provider.fetchReports()))
+                    } catch {
+                        return (index, .failure(error))
+                    }
+                }
             }
-            do {
-                let providerReports = try await provider.fetchReports()
+            var collected: [(Int, Result<[RawEventReport], Error>)] = []
+            for await item in group { collected.append(item) }
+            return collected.sorted { $0.0 < $1.0 }
+        }
+        for (index, result) in results {
+            let provider = activeProviders[index]
+            switch result {
+            case .success(let providerReports):
                 if provider is NewsEventProvider {
                     currentNewsEventKeys = Set(providerReports.compactMap { report in
                         report.stableDeduplicationKey.map { "evt-\($0)" }
                     })
                 }
                 reports += providerReports
-            } catch {
+            case .failure(let error):
                 // 來源健康度：擷取失敗要留下紀錄，不能整條管線靜默失敗
                 AppLog.pipeline.error("來源擷取失敗（\(provider.sourceName)）：\(error.localizedDescription)")
             }
@@ -351,12 +370,28 @@ enum EventPipeline {
     // MARK: 區域警報
 
     private static func ingestRegionAlerts(context: ModelContext, members: [LocalFamilyMember]) async {
+        // 區域警報來源同樣平行抓取，依原順序合併
+        let regionResults = await withTaskGroup(of: (Int, Result<[RawRegionAlert], Error>).self) { group in
+            for (index, provider) in regionProviders.enumerated() {
+                group.addTask {
+                    do {
+                        return (index, .success(try await provider.fetchAlerts()))
+                    } catch {
+                        return (index, .failure(error))
+                    }
+                }
+            }
+            var collected: [(Int, Result<[RawRegionAlert], Error>)] = []
+            for await item in group { collected.append(item) }
+            return collected.sorted { $0.0 < $1.0 }
+        }
         var raws: [RawRegionAlert] = []
-        for provider in regionProviders {
-            do {
-                raws += try await provider.fetchAlerts()
-            } catch {
-                AppLog.pipeline.error("區域警報擷取失敗（\(provider.sourceName)）：\(error.localizedDescription)")
+        for (index, result) in regionResults {
+            switch result {
+            case .success(let alerts):
+                raws += alerts
+            case .failure(let error):
+                AppLog.pipeline.error("區域警報擷取失敗（\(regionProviders[index].sourceName)）：\(error.localizedDescription)")
             }
         }
         for raw in raws {

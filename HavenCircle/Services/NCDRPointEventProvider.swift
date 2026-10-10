@@ -3,12 +3,12 @@ import Foundation
 /// NCDR 點狀事件來源：從同一份中繼站資料裡，挑出「附精確座標」的示警
 /// （CAP circle 欄位，目前主要是消防署火災通報）轉成地圖上的點狀事件。
 /// 這是點狀事件管線的第一個真實來源，取代原本的 mock provider。
-struct NCDRPointEventProvider: EventProvider {
+nonisolated struct NCDRPointEventProvider: EventProvider {
     let sourceName = "NCDR 民生示警平台"
 
     private let endpoint = URL(string: "https://havencircle.looptw.com/crawler/api/latest.php")!
 
-    func fetchReports() async throws -> [RawEventReport] {
+    @concurrent func fetchReports() async throws -> [RawEventReport] {
         let (data, response) = try await URLSession.shared.data(from: endpoint)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw NCDRProviderError.badResponse
@@ -88,15 +88,15 @@ struct NCDRPointEventProvider: EventProvider {
     }
 }
 
-private struct PointEnvelope: Decodable {
+private nonisolated struct PointEnvelope: Decodable {
     let data: PointPayload
 }
 
-private struct PointPayload: Decodable {
+private nonisolated struct PointPayload: Decodable {
     let events: [PointCapEvent]
 }
 
-private struct PointCapEvent: Decodable {
+private nonisolated struct PointCapEvent: Decodable {
     let event: String?
     let effective: String?
     let expires: String?

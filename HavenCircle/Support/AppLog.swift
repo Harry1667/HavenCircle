@@ -3,7 +3,7 @@ import SwiftData
 import os
 
 /// 集中管理的 Logger：錯誤一律明確記錄，不做 silent fail
-enum AppLog {
+nonisolated enum AppLog {
     private static let subsystem = "com.gomiigo.CamMenuApp.HavenCircle"
     static let data = Logger(subsystem: subsystem, category: "data")
     static let notifications = Logger(subsystem: subsystem, category: "notifications")

@@ -11,7 +11,7 @@ import Foundation
 ///
 /// 爬蟲端已用 EventType 白名單只保留「1＝交通事故」（壅塞／施工／管制等交通資訊
 /// 不算鄰里安全事件），故這裡收到的一律是事故，不需要再判斷事件類型。
-struct FreewayIncidentProvider: EventProvider {
+nonisolated struct FreewayIncidentProvider: EventProvider {
     let sourceName = "高速公路局"
 
     private let endpoint = URL(string: "https://havencircle.looptw.com/crawler/api/latest.php?dataset=freeway")!
@@ -26,7 +26,7 @@ struct FreewayIncidentProvider: EventProvider {
     /// App 端不會突然把壅塞、施工事件也當成事故推播出去
     private static let relevantEventType = "1"
 
-    func fetchReports() async throws -> [RawEventReport] {
+    @concurrent func fetchReports() async throws -> [RawEventReport] {
         let (data, response) = try await URLSession.shared.data(from: endpoint)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw NCDRProviderError.badResponse
@@ -74,15 +74,15 @@ struct FreewayIncidentProvider: EventProvider {
     }
 }
 
-private struct FreewayEnvelope: Decodable {
+private nonisolated struct FreewayEnvelope: Decodable {
     let data: FreewayPayload
 }
 
-private struct FreewayPayload: Decodable {
+private nonisolated struct FreewayPayload: Decodable {
     let events: [FreewayRecord]
 }
 
-private struct FreewayRecord: Decodable {
+private nonisolated struct FreewayRecord: Decodable {
     let eventId: String
     let road: String
     let direction: String

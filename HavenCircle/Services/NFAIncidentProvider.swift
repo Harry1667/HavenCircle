@@ -14,7 +14,7 @@ import Foundation
 ///
 /// 座標只到「縣市＋鄉鎮市區」精度（消防署公告本身不含經緯度），沿用
 /// NewsEventProvider.locate(county:district:) 同一份查表，不重複造輪子。
-struct NFAIncidentProvider: EventProvider {
+nonisolated struct NFAIncidentProvider: EventProvider {
     let sourceName = "內政部消防署"
 
     private let endpoint = URL(string: "https://havencircle.looptw.com/crawler/api/latest.php?dataset=nfa")!
@@ -23,7 +23,7 @@ struct NFAIncidentProvider: EventProvider {
     private static let resolvedTTLSeconds: TimeInterval = 2 * 3_600
     private static let ongoingTTLSeconds: TimeInterval = 12 * 3_600
 
-    func fetchReports() async throws -> [RawEventReport] {
+    @concurrent func fetchReports() async throws -> [RawEventReport] {
         let (data, response) = try await URLSession.shared.data(from: endpoint)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw NCDRProviderError.badResponse
@@ -103,15 +103,15 @@ struct NFAIncidentProvider: EventProvider {
     }
 }
 
-private struct NFAEnvelope: Decodable {
+private nonisolated struct NFAEnvelope: Decodable {
     let data: NFAPayload
 }
 
-private struct NFAPayload: Decodable {
+private nonisolated struct NFAPayload: Decodable {
     let events: [NFARecord]
 }
 
-private struct NFARecord: Decodable {
+private nonisolated struct NFARecord: Decodable {
     let id: String?
     let title: String
     let category: String
@@ -125,7 +125,7 @@ private struct NFARecord: Decodable {
     let sourceURL: String?
 }
 
-private extension ISO8601DateFormatter {
+private nonisolated extension ISO8601DateFormatter {
     /// Python 端輸出帶時區偏移的 ISO8601（例：2026-07-24T00:00:00+08:00），
     /// 標準 ISO8601DateFormatter 預設不含小數秒也能解析，這裡明確指定選項避免依賴預設值。
     static let nfaFlexible: ISO8601DateFormatter = {

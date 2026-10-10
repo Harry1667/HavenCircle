@@ -5,7 +5,7 @@ import Foundation
 ///
 /// 官方公開頁面提供 119 受理時間、案別、行政區與處理狀態。為避免收集或顯示
 /// 不必要的精確位置，App 只使用行政區中心與 3 公里精度，不帶入街道地址。
-struct TaichungFireEventProvider: EventProvider {
+nonisolated struct TaichungFireEventProvider: EventProvider {
     let sourceName = "台中市消防局即時災情"
 
     private let endpoint = URL(
@@ -16,7 +16,7 @@ struct TaichungFireEventProvider: EventProvider {
     private static let ongoingTTL: TimeInterval = 6 * 3_600
     private static let resolvedTTL: TimeInterval = 60 * 60
 
-    func fetchReports() async throws -> [RawEventReport] {
+    @concurrent func fetchReports() async throws -> [RawEventReport] {
         let (data, response) = try await URLSession.shared.data(from: endpoint)
         guard let http = response as? HTTPURLResponse,
               (200..<300).contains(http.statusCode) else {
@@ -73,7 +73,7 @@ struct TaichungFireEventProvider: EventProvider {
     }()
 }
 
-private struct Envelope: Decodable {
+private nonisolated struct Envelope: Decodable {
     let data: Payload
 
     struct Payload: Decodable {

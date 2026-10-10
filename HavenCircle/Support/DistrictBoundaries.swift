@@ -5,7 +5,7 @@ import CoreLocation
 /// 來源：內政部鄉鎮市區界線（政府資料開放授權），經 Douglas-Peucker 簡化到約 200 公尺容差
 /// （20MB → 341KB）——塗色顯示用，不做精確定位判斷。
 /// 用途：區域警報的「行政區塗層」——把受影響的行政區整片著色，取代誤導性的單點標記。
-struct DistrictBoundaries {
+nonisolated struct DistrictBoundaries {
     struct District {
         let county: String
         let town: String
@@ -162,21 +162,21 @@ struct DistrictBoundaries {
 
 // MARK: - GeoJSON 解碼（座標維度不同，手動分流）
 
-private struct FeatureCollection: Decodable {
+private nonisolated struct FeatureCollection: Decodable {
     let features: [Feature]
 }
 
-private struct Feature: Decodable {
+private nonisolated struct Feature: Decodable {
     let properties: Properties
     let geometry: Geometry
 }
 
-private struct Properties: Decodable {
+private nonisolated struct Properties: Decodable {
     let county: String
     let town: String
 }
 
-private struct Geometry: Decodable {
+private nonisolated struct Geometry: Decodable {
     let type: String
     let polygonCoordinates: [[[Double]]]?
     let multiPolygonCoordinates: [[[[Double]]]]?

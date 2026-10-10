@@ -6,7 +6,7 @@ import CoreLocation
 /// `isOfficial = false` → 單一來源只進「持續確認中」層；多來源合併後可升為
 /// 「多來源交叉驗證」。是否通知仍由 AlertPolicy 與使用者的提醒設定決定。
 /// 每則事件都帶 sourceName＋sourceURL，詳情頁的「來源」區會如實列出。
-struct NewsEventProvider: EventProvider {
+nonisolated struct NewsEventProvider: EventProvider {
     let sourceName = "媒體報導"
 
     private let endpoint = URL(string: "https://havencircle.looptw.com/crawler/api/latest.php?dataset=news")!
@@ -14,7 +14,7 @@ struct NewsEventProvider: EventProvider {
     /// 顯示壽命：發布後 12 小時。新聞的守護價值在即時性，過了半天還掛著只會誤導
     private static let ttlSeconds: TimeInterval = 12 * 3_600
 
-    func fetchReports() async throws -> [RawEventReport] {
+    @concurrent func fetchReports() async throws -> [RawEventReport] {
         let (data, response) = try await URLSession.shared.data(from: endpoint)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw NCDRProviderError.badResponse
@@ -211,15 +211,15 @@ struct NewsEventProvider: EventProvider {
 
 // MARK: - 中繼站信封解碼
 
-private struct NewsEnvelope: Decodable {
+private nonisolated struct NewsEnvelope: Decodable {
     let data: NewsPayload
 }
 
-private struct NewsPayload: Decodable {
+private nonisolated struct NewsPayload: Decodable {
     let events: [NewsEvent]
 }
 
-private struct NewsEvent: Decodable {
+private nonisolated struct NewsEvent: Decodable {
     let id: String
     let title: String
     let publishedAt: String
