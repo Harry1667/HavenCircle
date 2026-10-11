@@ -104,12 +104,25 @@ extension LocalLifeCircle {
         return LiveLocationPresence.isReporting(lastReportedAt: locationUpdatedAt)
     }
 
+    /// 超過 15 分鐘沒回報但最後是靜止的（見 LiveLocationPresence.isQuietStationary）：
+    /// 顯示上不當失聯（不灰、不警示），但 isActiveForAlerts 仍是 false，照樣不參與警報判斷
+    var isQuietStationary: Bool {
+        kind == .live && LiveLocationPresence.isQuietStationary(
+            lastReportedAt: locationUpdatedAt,
+            stationarySince: locationStationarySince,
+            movedAt: locationMovedAt
+        )
+    }
+
+    /// 顯示用：回報中或靜止寬限內，都不畫成失聯
+    var looksPresent: Bool { isActiveForAlerts || isQuietStationary }
+
     /// 狀態文案（純文字、不靠顏色）：在同一地點多久・多久前確認／多久沒有回報
     var locationFreshnessText: String {
         guard kind == .live else { return "固定位置" }
         // 自己的圈在自己手機上：位置來自這支手機本身，「沒有回報」是對家人說的話，
         // 對本人顯示成「X 小時沒有回報」只會嚇到自己；誠實標示來源即可。
-        if member?.isCurrentUser == true && !isActiveForAlerts {
+        if member?.isCurrentUser == true && !looksPresent {
             return "這支手機的位置（尚未回報給家人）"
         }
         return LiveLocationPresence.statusText(

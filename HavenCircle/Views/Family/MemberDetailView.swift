@@ -169,10 +169,12 @@ struct MemberDetailView: View {
             if circle.kind == .live {
                 Label(
                     circle.locationFreshnessText,
-                    systemImage: circle.isActiveForAlerts ? "checkmark.circle.fill" : "clock.badge.exclamationmark"
+                    systemImage: circle.isActiveForAlerts ? "checkmark.circle.fill"
+                        : circle.isQuietStationary ? "moon.zzz" : "clock.badge.exclamationmark"
                 )
                 .font(.caption)
-                .foregroundStyle(circle.isActiveForAlerts ? HCColor.safe : HCColor.attention)
+                .foregroundStyle(circle.isActiveForAlerts ? HCColor.safe
+                    : circle.isQuietStationary ? Color.secondary : HCColor.attention)
             }
             Text("提醒：\(circle.alertTypes.joined(separator: "、")) · \(circle.scheduleText)")
                 .font(.caption)

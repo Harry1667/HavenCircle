@@ -18,11 +18,32 @@ enum LiveLocationPresence {
     static let stationaryRadiusMeters: Double = 100
     /// 最近這麼久內確認過實際位移，才顯示「移動中」
     static let movingDisplayWindow: TimeInterval = 5 * 60
+    /// 「靜止中」的寬限：2026-10-11 起背景改用移動圍欄（不顯示藍色膠囊），人沒動時 App 被 iOS 掛起、
+    /// 不再每 5 分鐘心跳，只靠伺服器靜默推播約每 30 分鐘補一次時間戳（iOS 可能延後或略過一次）。
+    /// 最後回報時確定是靜止的人，在這段時間內顯示「靜止中・最後確認 X 分鐘前」而不是「沒有回報」；
+    /// 但仍超過 15 分鐘，**照樣不參與警報判斷**（AGENTS 紅線），只是不對家人誤報失聯。
+    static let quietStationaryInterval: TimeInterval = 60 * 60
 
     /// 手機是否仍在回報（＝即時圈是否可參與警報判斷）
     static func isReporting(lastReportedAt: Date?, now: Date = .now) -> Bool {
         guard let lastReportedAt else { return false }
         return lastReportedAt > now.addingTimeInterval(-staleInterval)
+    }
+
+    /// 超過 15 分鐘沒回報，但最後一次回報時人是靜止的、且在 [quietStationaryInterval] 內：
+    /// 多半只是手機在背景被掛起，不是失聯。只影響顯示，不影響警報判斷。
+    static func isQuietStationary(
+        lastReportedAt: Date?,
+        stationarySince: Date?,
+        movedAt: Date?,
+        now: Date = .now
+    ) -> Bool {
+        guard let lastReportedAt, stationarySince != nil,
+              !isReporting(lastReportedAt: lastReportedAt, now: now),
+              lastReportedAt > now.addingTimeInterval(-quietStationaryInterval) else { return false }
+        // 最後回報時還在移動（剛確認過位移）→ 不能推定他停在原地
+        if let movedAt, lastReportedAt.timeIntervalSince(movedAt) < movingDisplayWindow { return false }
+        return true
     }
 
     /// 家人列表「位置：」那一行的文字（純函式）。
@@ -80,6 +101,7 @@ enum LiveLocationPresence {
     }
 
     /// 給家人看的狀態句（純文字，不靠顏色）。
+    /// - 靜止寬限（見 [isQuietStationary]）：「靜止中・在家・最後確認 25 分鐘前」
     /// - 失聯：「20 分鐘沒有回報（可能沒電、關機或沒有網路）」
     /// - 在守護地點內：「在家・從 08:30 起・2 分鐘前確認」
     /// - 最近 5 分鐘內確認過實際位移（movedAt）：「移動中・3 分鐘前」
@@ -99,6 +121,12 @@ enum LiveLocationPresence {
         guard let lastReportedAt else { return "尚未取得位置" }
         let sinceReport = max(0, now.timeIntervalSince(lastReportedAt))
         guard isReporting(lastReportedAt: lastReportedAt, now: now) else {
+            if isQuietStationary(lastReportedAt: lastReportedAt, stationarySince: stationarySince, movedAt: movedAt, now: now) {
+                let ago = "最後確認 \(agoText(sinceReport))"
+                if let placeName, !placeName.isEmpty { return "靜止中・在\(placeName)・\(ago)" }
+                if let district, !district.isEmpty, district != Districts.unspecified { return "靜止中・\(district)・\(ago)" }
+                return "靜止中・\(ago)"
+            }
             return "\(durationText(sinceReport))沒有回報（可能沒電、關機或沒有網路）"
         }
         if let placeName, !placeName.isEmpty {

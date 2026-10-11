@@ -28,7 +28,7 @@ struct FamilyStatusCard: View {
     private var staleFamilyLiveCircleCount: Int {
         guard !isSoloUser else { return 0 }
         return members.filter { !$0.isCurrentUser }.flatMap(\.lifeCircles).filter {
-            $0.kind == .live && !$0.isActiveForAlerts
+            $0.kind == .live && !$0.looksPresent // 靜止寬限內不算失聯
         }.count
     }
 

@@ -584,7 +584,7 @@ struct SafetyMapView: View {
                         for: circle.member?.memberKey ?? circle.circleKey,
                         isCurrentUser: circle.member?.isCurrentUser == true
                     )
-                    let renderedColor = circle.isActiveForAlerts ? circleColor : Color.gray
+                    let renderedColor = circle.looksPresent ? circleColor : Color.gray
                     MapCircle(
                         center: .init(latitude: circle.latitude, longitude: circle.longitude),
                         radius: CLLocationDistance(circle.radiusMeters)
@@ -619,7 +619,7 @@ struct SafetyMapView: View {
                             if circle.kind == .live {
                                 Text(circle.locationFreshnessText)
                                     .font(.caption2.weight(.medium))
-                                    .foregroundStyle(circle.isActiveForAlerts || circle.member?.isCurrentUser == true ? .secondary : HCColor.attention)
+                                    .foregroundStyle(circle.looksPresent || circle.member?.isCurrentUser == true ? .secondary : HCColor.attention)
                                     .padding(.horizontal, 4)
                                     .padding(.vertical, 1)
                                     .background(.thinMaterial, in: Capsule())
@@ -1102,7 +1102,7 @@ struct SafetyMapView: View {
                                         member.displayName
                                     )
                                 }
-                                legendRow(Color.gray.opacity(0.8), "即時位置超過 15 分鐘沒有回報")
+                                legendRow(Color.gray.opacity(0.8), "即時位置太久沒有回報（可能沒電或關機）")
                             }
                             if showsSeverity {
                                 Text("警報區").font(.caption2.bold())
