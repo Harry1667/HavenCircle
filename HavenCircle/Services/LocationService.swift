@@ -1,5 +1,6 @@
 import Foundation
 import CoreLocation
+import UIKit
 import Observation
 import os // Swift 6.2 MemberImportVisibility：用 os.Logger 插值的檔案必須自行 import
 
@@ -42,6 +43,14 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
     private static let lastCoordinateMinMove: CLLocationDistance = 2_000
     private var hasFollowCircle = false
     private var liveSharingEnabled = false
+    /// 移動圍欄：分享中以最後位置為圓心畫一個看不見的圈，走出去時系統在背景喚醒 App 上傳新位置並重畫。
+    /// 2026-10-11 實機（iOS 27、權限「永遠」）實測：標準定位在背景幾十秒就被掛起，5 分鐘心跳全停；
+    /// 改用 CLBackgroundActivitySession 可以持續跑，但 iOS 一定顯示藍色定位膠囊，使用者選擇「背景靜默優先」。
+    /// 圍欄喚醒不顯示膠囊，代價是只在移動時更新（約每 200 公尺），靜止時靠伺服器靜默推播補時間戳。
+    static let anchorRegionID = "hc-anchor"
+    private static let anchorRadius: CLLocationDistance = 150
+    /// 圓心與新位置相差超過這個距離才重畫，避免前景時每筆定位都重設圍欄
+    private static let anchorRecenterMeters: CLLocationDistance = 50
     /// 心跳排程：分享期間每 15 秒醒來檢查一次是否該補一筆「仍在此處」（到期才真的取位，平常不耗電；15 秒是為了上傳失敗時能快速重試）
     private var heartbeatTask: Task<Void, Never>?
     /// 心跳取位等待中：distanceFilter 暫時放開，下一筆定位到手就恢復
@@ -203,7 +212,7 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
             return
         }
         let center = manager.location.map { ($0.coordinate.latitude, $0.coordinate.longitude) }
-        let desired = GeofencePlanner.select(places, near: center)
+        let desired = GeofencePlanner.select(places, near: center, limit: GeofencePlanner.systemLimit - 1) // 留一格給移動圍欄
         let desiredIDs = Set(desired.map { GeofencePlanner.identifier(forCircleKey: $0.id) })
 
         for region in existing where !desiredIDs.contains(region.identifier) {
@@ -245,6 +254,10 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
     }
 
     func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
+        if region.identifier == Self.anchorRegionID {
+            handleAnchorExit()
+            return
+        }
         guard region.identifier.hasPrefix(GeofencePlanner.identifierPrefix) else { return }
         let name = storedGeofenceNames()[region.identifier] ?? currentPlace?.name ?? "守護地點"
         if currentPlace?.id == region.identifier { setCurrentPlace(nil) }
@@ -307,6 +320,7 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
         }) ?? true {
             lastCoordinate = latest.coordinate
         }
+        if liveSharingEnabled { updateAnchorFence(at: latest) }
         let arrivedAt = Date.now
         if liveSharingEnabled, motionDetector.state == .stationary, oneShot == nil, !heartbeatAwaitingFix,
            let lastProcessedFixAt,
@@ -359,6 +373,7 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
     private func reconcileMonitoring() {
         guard isAuthorized else {
             stopHeartbeat()
+            removeAnchorFence()
             manager.stopUpdatingLocation()
             manager.stopMonitoringSignificantLocationChanges()
             manager.stopMonitoringVisits()
@@ -375,10 +390,16 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
             let always = authorization == .authorizedAlways
             manager.allowsBackgroundLocationUpdates = always
             manager.showsBackgroundLocationIndicator = false
+            if always, let location = manager.location {
+                updateAnchorFence(at: location)
+            } else if !always {
+                removeAnchorFence()
+            }
             applyProfile()
             manager.startUpdatingLocation()
         } else {
             stopHeartbeat()
+            removeAnchorFence()
             manager.stopUpdatingLocation()
             manager.allowsBackgroundLocationUpdates = false
             manager.showsBackgroundLocationIndicator = false
@@ -401,12 +422,58 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
         }
     }
 
+    // MARK: - 移動圍欄（不顯示膠囊的背景追蹤）
+
+    private func updateAnchorFence(at location: CLLocation) {
+        guard liveSharingEnabled, authorization == .authorizedAlways,
+              location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 200,
+              CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else { return }
+        if let current = manager.monitoredRegions.first(where: { $0.identifier == Self.anchorRegionID }) as? CLCircularRegion,
+           CLLocation(latitude: current.center.latitude, longitude: current.center.longitude)
+            .distance(from: location) < Self.anchorRecenterMeters {
+            return
+        }
+        let region = CLCircularRegion(
+            center: location.coordinate,
+            radius: min(Self.anchorRadius, manager.maximumRegionMonitoringDistance),
+            identifier: Self.anchorRegionID
+        )
+        region.notifyOnEntry = false
+        region.notifyOnExit = true
+        manager.startMonitoring(for: region) // 同一個 identifier 會直接取代舊圍欄
+    }
+
+    private func removeAnchorFence() {
+        for region in manager.monitoredRegions where region.identifier == Self.anchorRegionID {
+            manager.stopMonitoring(for: region)
+        }
+    }
+
+    /// 走出移動圍欄：App 可能剛在背景被喚醒，只有約 10 秒。向系統多要時間，強制取一筆新位置上傳
+    /// （走心跳取位那條路：不受靜止節流、取到後 didUpdateLocations 會順手把圍欄重畫到新位置）。
+    private func handleAnchorExit() {
+        AppLog.data.info("走出移動圍欄，取新位置上傳")
+        var taskID = UIBackgroundTaskIdentifier.invalid
+        taskID = UIApplication.shared.beginBackgroundTask(withName: "anchor-exit") {
+            UIApplication.shared.endBackgroundTask(taskID)
+            taskID = .invalid
+        }
+        lastLiveDeliveryAt = nil
+        if heartbeatAwaitingFix { finishHeartbeatFix() }
+        heartbeatTickIfDue()
+        Task {
+            try? await Task.sleep(for: .seconds(25))
+            if taskID != .invalid { UIApplication.shared.endBackgroundTask(taskID) }
+        }
+    }
+
     // MARK: - 心跳（只在家庭分享期間運作）
 
     /// iOS 背景限制下的實際保證：
     /// - 前景：Task 正常排程，保證約每 5 分鐘一筆。
-    /// - 背景＋「永遠允許」：標準定位持續運作（allowsBackgroundLocationUpdates、且不自動暫停），
-    ///   App 不會被掛起，這個 Task 會繼續醒來，原則上同樣約每 5 分鐘一筆。
+    /// - 背景＋「永遠允許」：2026-10-11 實機（iOS 27）實測 App 進背景幾十秒就被掛起，這個 Task 跟著停。
+    ///   背景更新改靠移動圍欄（走出約 150 公尺圈就喚醒上傳）、顯著位置變更、拜訪，
+    ///   以及伺服器對 20 分鐘沒更新的人發靜默推播喚醒（family_push.php，最快每 30 分鐘一次）。
     /// - 背景＋「使用 App 期間」：App 進背景就被掛起，心跳停止；家人端 15 分鐘後會如實顯示「沒有回報」。
     /// - 使用者滑掉 App、系統因記憶體回收終止、低電量關機：標準定位停止，心跳停止（同樣如實顯示失聯）；
     ///   顯著位置變更在移動約 500 公尺時會重新喚醒 App 並恢復分享。
@@ -424,6 +491,7 @@ final class LocationService: NSObject, @preconcurrency CLLocationManagerDelegate
             }
         }
     }
+
 
     private func stopHeartbeat() {
         heartbeatTask?.cancel()

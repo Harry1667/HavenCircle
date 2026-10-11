@@ -51,6 +51,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate, MessagingDelegate {
                     guard defaults.bool(forKey: SettingsKeys.liveLocationSharingEnabled),
                           let sync = AppRuntime.familySync else { return }
                     let storedRadius = defaults.integer(forKey: SettingsKeys.liveCircleRadiusMeters)
+                    // 背景喚醒（圍欄、顯著位置變更）只有約 10 秒，向系統多要時間讓上傳做完
+                    var taskID = UIBackgroundTaskIdentifier.invalid
+                    taskID = UIApplication.shared.beginBackgroundTask(withName: "live-location-upload") {
+                        UIApplication.shared.endBackgroundTask(taskID)
+                        taskID = .invalid
+                    }
+                    defer { if taskID != .invalid { UIApplication.shared.endBackgroundTask(taskID) } }
                     await sync.publishLiveLocation(
                         location,
                         displayName: defaults.string(forKey: SettingsKeys.profileDisplayName) ?? "",

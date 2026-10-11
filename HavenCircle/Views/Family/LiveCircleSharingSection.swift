@@ -86,7 +86,7 @@ struct LiveCircleSharingSection: View {
         VStack(alignment: .leading, spacing: 6) {
             switch location.authorization {
             case .authorizedAlways:
-                Label("定位權限：永遠（背景持續更新中）", systemImage: "location.fill")
+                Label("定位權限：永遠（移動時背景更新）", systemImage: "location.fill")
                     .font(.caption)
             case .authorizedWhenInUse:
                 Label("定位權限：使用期間", systemImage: "location")

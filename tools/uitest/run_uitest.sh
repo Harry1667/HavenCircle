@@ -36,7 +36,7 @@ for test in json.load(open(mf)):
         dst = os.path.join(out, base + ext)
         if os.path.exists(src):
             os.replace(src, dst)
-        if base.startswith("invite-code") or base.startswith("missing-elements"):
+        if base.startswith(("invite-code","missing-elements","location-permission")):
             print("== %s ==" % base); print(open(dst).read())
 PY
 # 測試會重裝 App 並在結束時關掉它；背景定位要 App 跑起來才會恢復，所以測完一律重新啟動

@@ -951,4 +951,16 @@ final class HavenCircleUITests: XCTestCase {
         let ack = app.staticTexts["quickSafe.ackSummary"].firstMatch
         attach(text: "有人收到=\(ack.exists) \(ack.exists ? ack.label : "")", name: "收到摘要")
     }
+
+    /// 讀出這台裝置的定位權限（家庭圈管理 > 位置分享區塊的「定位權限：…」標籤），不改任何設定
+    func testLocationPermission() throws {
+        app.buttons["家人"].firstMatch.tap(); sleep(2)
+        guard tapIf("家庭圈管理") else { shot("找不到家庭圈管理"); XCTFail("找不到家庭圈管理"); return }
+        sleep(2)
+        let q = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH '定位權限'"))
+        for _ in 0..<6 where !q.firstMatch.exists { app.swipeUp(); sleep(1) }
+        let labels = q.allElementsBoundByIndex.map(\.label)
+        attach(text: labels.isEmpty ? "找不到定位權限標籤（可能沒在分享）" : labels.joined(separator: "\n"), name: "location-permission")
+        shot("位置分享區塊")
+    }
 }
